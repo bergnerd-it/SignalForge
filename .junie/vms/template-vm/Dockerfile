@@ -12,5 +12,5 @@ FROM registry.jetbrains.team/p/junie-cli/containers/demo-base:2
 
 USER root
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends openjdk-17-jdk && \
+    apt-get install -y --no-install-recommends openjdk-21-jdk && \
     rm -rf /var/lib/apt/lists/*
