@@ -237,7 +237,7 @@ cd /opt/finally
 ```yaml
 services:
   finally:
-    image: ghcr.io/<your-org>/finally:latest
+    image: ghcr.io/bergnerd-it/finally:latest
     container_name: finally-prod
     restart: unless-stopped
     ports:
