@@ -1,0 +1,28 @@
+services:
+  app-test:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: finally-test:latest
+    ports:
+      - "8000:8000"
+    environment:
+      - LLM_MOCK=true
+      - SPRING_DATASOURCE_URL=jdbc:sqlite::memory:
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/api/health || exit 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  playwright:
+    image: mcr.microsoft.com/playwright:v1.45.0-jammy
+    working_dir: /app
+    volumes:
+      - .:/app
+    depends_on:
+      app-test:
+        condition: service_healthy
+    environment:
+      - BASE_URL=http://app-test:8000
+    command: ["npx", "playwright", "test"]

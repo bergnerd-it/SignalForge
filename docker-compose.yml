@@ -1,0 +1,23 @@
+services:
+  finally:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: finally:latest
+    container_name: finally-app
+    ports:
+      - "8000:8000"
+    environment:
+      - LLM_PROVIDER=${LLM_PROVIDER:-openai}
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - LLM_MODEL=${LLM_MODEL:-gpt-4o-mini}
+      - LLM_BASE_URL=${LLM_BASE_URL:-}
+      - MASSIVE_API_KEY=${MASSIVE_API_KEY:-}
+      - LLM_MOCK=${LLM_MOCK:-false}
+      - SPRING_DATASOURCE_URL=jdbc:sqlite:/app/db/finally.db
+    volumes:
+      - finally-data:/app/db
+    restart: unless-stopped
+
+volumes:
+  finally-data:

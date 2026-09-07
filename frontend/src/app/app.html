@@ -1,0 +1,94 @@
+<div class="workstation-root">
+  <!-- Top Navigation / Header -->
+  <app-header
+    [portfolio]="portfolio"
+    [status]="connectionStatus"
+  ></app-header>
+
+  <!-- Main Trading Workspace Grid -->
+  <main class="workspace-grid">
+    <!-- Left Column: Watchlist -->
+    <aside class="grid-col watchlist-col" aria-label="Watchlist">
+      <app-watchlist
+        [entries]="watchlist"
+        [livePrices]="livePrices"
+        [priceHistory]="priceHistory"
+        [selectedTicker]="selectedTicker"
+        (selectTicker)="onSelectTicker($event)"
+        (addTicker)="onAddWatchlistTicker($event)"
+        (removeTicker)="onRemoveWatchlistTicker($event)"
+      ></app-watchlist>
+    </aside>
+
+    <!-- Center Column: Main Charts, Heatmap, Positions & Trade Bar -->
+    <section class="grid-col center-col">
+      <!-- Active Ticker Main Chart & Trade Ticket Bar -->
+      <div class="chart-and-trade-box">
+        <div class="main-chart-wrapper">
+          <app-main-chart
+            [ticker]="selectedTicker"
+            [currentTick]="currentSelectedTick"
+            [history]="currentSelectedHistory"
+          ></app-main-chart>
+        </div>
+        <div class="trade-bar-wrapper">
+          <app-trade-bar
+            [ticker]="selectedTicker"
+            [currentPrice]="currentSelectedTick?.price ?? 100"
+            [isSubmitting]="isTrading"
+            (selectTicker)="onSelectTicker($event)"
+            (executeTrade)="onExecuteTrade($event)"
+          ></app-trade-bar>
+        </div>
+      </div>
+
+      <!-- Heatmap & Performance P&L Charts side-by-side -->
+      <div class="mid-charts-row">
+        <div class="heatmap-wrapper">
+          <app-heatmap
+            [positions]="portfolio?.positions ?? []"
+            [totalPositionValue]="portfolio?.totalPositionValue ?? 0"
+            [livePrices]="livePrices"
+            (selectTicker)="onSelectTicker($event)"
+          ></app-heatmap>
+        </div>
+        <div class="pnl-wrapper">
+          <app-pnl-chart
+            [snapshots]="snapshots"
+            [currentValue]="portfolio?.totalPortfolioValue ?? 10000"
+          ></app-pnl-chart>
+        </div>
+      </div>
+
+      <!-- Positions Table -->
+      <div class="positions-wrapper">
+        <app-positions-table
+          [positions]="portfolio?.positions ?? []"
+          [livePrices]="livePrices"
+          (selectTicker)="onSelectTicker($event)"
+          (quickSell)="onQuickSell($event)"
+        ></app-positions-table>
+      </div>
+    </section>
+
+    <!-- Right Column: AI Assistant Chat Panel -->
+    <aside class="grid-col chat-col" aria-label="AI Copilot Chat">
+      <app-chat-panel
+        [messages]="chatMessages"
+        [isThinking]="isThinking"
+        (sendMessage)="onSendMessage($event)"
+        (clearChat)="onClearChatHistory()"
+      ></app-chat-panel>
+    </aside>
+  </main>
+
+  <!-- Notification Toast -->
+  <div
+    *ngIf="toastMessage"
+    class="toast-notification font-mono"
+    [ngClass]="toastType === 'success' ? 'toast-success' : 'toast-error'"
+  >
+    <span class="toast-icon">{{ toastType === 'success' ? '✓' : '⚠' }}</span>
+    <span class="toast-text">{{ toastMessage }}</span>
+  </div>
+</div>

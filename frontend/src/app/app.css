@@ -1,0 +1,161 @@
+.workstation-root {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  width: 100vw;
+  overflow: hidden;
+  background-color: var(--bg-main);
+}
+
+.workspace-grid {
+  display: grid;
+  grid-template-columns: 320px minmax(500px, 1fr) 380px;
+  gap: 12px;
+  padding: 12px;
+  flex: 1;
+  overflow: hidden;
+}
+
+@media (max-width: 1280px) {
+  .workspace-grid {
+    grid-template-columns: 280px minmax(400px, 1fr) 340px;
+    gap: 8px;
+    padding: 8px;
+  }
+}
+
+@media (max-width: 1024px) {
+  .workstation-root {
+    height: auto;
+    overflow-y: auto;
+  }
+  .workspace-grid {
+    display: flex;
+    flex-direction: column;
+    overflow: visible;
+  }
+  .watchlist-col, .center-col, .chat-col {
+    height: auto !important;
+    min-height: 400px;
+  }
+}
+
+.grid-col {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.watchlist-col {
+  height: 100%;
+  min-height: 0;
+}
+
+.watchlist-col app-watchlist,
+.chat-col app-chat-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+}
+
+.center-col {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+  padding-right: 2px;
+  min-height: 0;
+}
+
+.chart-and-trade-box {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.main-chart-wrapper {
+  height: 280px;
+}
+
+.trade-bar-wrapper {
+  flex-shrink: 0;
+}
+
+.mid-charts-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  height: 220px;
+}
+
+@media (max-width: 768px) {
+  .mid-charts-row {
+    grid-template-columns: 1fr;
+    height: auto;
+  }
+  .heatmap-wrapper, .pnl-wrapper {
+    height: 200px;
+  }
+}
+
+.heatmap-wrapper, .pnl-wrapper {
+  height: 100%;
+}
+
+.positions-wrapper {
+  min-height: 200px;
+  flex: 1;
+}
+
+.chat-col {
+  height: 100%;
+}
+
+/* Toast Notifications */
+.toast-notification {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 18px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.6);
+  z-index: 9999;
+  animation: slideIn 0.25s ease-out forwards;
+}
+
+@keyframes slideIn {
+  from {
+    transform: translateY(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.toast-success {
+  background-color: #064e3b;
+  border: 1px solid #10b981;
+  color: #a7f3d0;
+}
+
+.toast-error {
+  background-color: #7f1d1d;
+  border: 1px solid #ef4444;
+  color: #fecaca;
+}
+
+.toast-icon {
+  font-size: 14px;
+  font-weight: 700;
+}

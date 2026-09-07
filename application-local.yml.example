@@ -1,0 +1,25 @@
+# Local configuration overrides for FinAlly
+# Copy this file to application-local.yml in the repository root or backend/src/main/resources/application-local.yml
+# and configure your local settings.
+
+finally:
+  llm:
+    # Provider options: openai (default), ollama, groq, custom, mock
+    provider: openai
+
+    # Required for cloud providers: API key (e.g. OpenAI, Groq)
+    api-key: your-api-key-here
+
+    # Optional: Model name (defaults depend on provider: gpt-4o-mini for openai, llama3.1 for ollama, llama-3.3-70b-versatile for groq)
+    model: gpt-4o-mini
+
+    # Optional: Custom OpenAI-compatible base URL (defaults: OpenAI, Ollama, Groq endpoints)
+    base-url:
+
+    # Optional: Set to true for deterministic mock LLM responses (testing)
+    mock: false
+
+  massive:
+    # Optional: Massive (Polygon.io) API key for real market data
+    # If not set, the built-in market simulator is used (recommended)
+    api-key:

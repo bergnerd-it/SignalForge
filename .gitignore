@@ -1,0 +1,37 @@
+# Environment and secrets
+.env
+*.env.local
+application-local.yml
+application-local.yaml
+**/application-local.yml
+**/application-local.yaml
+
+# Database
+db/*.db
+db/*.sqlite
+db/*.sqlite3
+!db/.gitkeep
+
+# Java & Gradle
+backend/.gradle/
+backend/build/
+backend/.settings/
+backend/.classpath
+backend/.project
+backend/bin/
+
+# Node & Angular
+frontend/node_modules/
+frontend/dist/
+frontend/.angular/
+frontend/.vscode/
+
+# OS and IDE files
+.DS_Store
+Thumbs.db
+*.log
+.idea/
+*.iml
+/backend/build/
+.class
+
