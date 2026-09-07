@@ -32,7 +32,7 @@ FinAlly is engineered as a **unified single-container, single-port application**
 
 ### Prerequisites
 - **Java**: JDK 21 or higher (`java -version`)
-- **Node.js**: Node.js v20+ and npm (`node -v`, `npm -v`)
+- **Node.js**: Node.js v24+ and npm (`node -v`, `npm -v`)
 
 ---
 
@@ -108,13 +108,13 @@ Docker provides the easiest one-command deployment, bundling the frontend build,
 ### 1. Multi-Stage `Dockerfile` Walkthrough
 
 The project uses a 3-stage `Dockerfile`:
-- **Stage 1 (`frontend-builder`)**: Uses `node:20-slim` to install dependencies and execute `npm run build`.
+- **Stage 1 (`frontend-builder`)**: Uses `node:24-slim` to install dependencies and execute `npm run build`.
 - **Stage 2 (`backend-builder`)**: Uses `eclipse-temurin:21-jdk`, copies the Angular assets into `src/main/resources/static/`, and runs `./gradlew bootJar`.
 - **Stage 3 (`Runtime`)**: Uses a lightweight `eclipse-temurin:21-jre` image, copies the fat JAR, sets up the SQLite volume directory `/app/db`, and exposes port `8000`.
 
 ```dockerfile
 # Stage 1: Build Angular Frontend
-FROM node:20-slim AS frontend-builder
+FROM node:24-slim AS frontend-builder
 WORKDIR /app/frontend
 COPY frontend/package*.json ./
 RUN npm install
