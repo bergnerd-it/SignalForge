@@ -17,6 +17,7 @@ import java.util.List;
 
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -68,5 +69,38 @@ class WatchlistControllerTest {
         mockMvc.perform(delete("/api/watchlist/TSLA"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.removed").value(true));
+    }
+
+    @Test
+    void shouldRejectNullOriginForMutation() throws Exception {
+        mockMvc.perform(post("/api/watchlist")
+                        .header("Origin", "null")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"ticker\":\"PYPL\"}"))
+                .andExpect(status().isForbidden());
+
+        verifyNoInteractions(watchlistService);
+    }
+
+    @Test
+    void shouldRejectMissingOriginWithUntrustedHost() throws Exception {
+        mockMvc.perform(post("/api/watchlist")
+                        .header("Host", "evil.example")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"ticker\":\"PYPL\"}"))
+                .andExpect(status().isForbidden());
+
+        verifyNoInteractions(watchlistService);
+    }
+
+    @Test
+    void shouldRejectMissingOriginWithNonJsonContent() throws Exception {
+        mockMvc.perform(post("/api/watchlist")
+                        .header("Host", "localhost:8000")
+                        .contentType(MediaType.TEXT_PLAIN)
+                        .content("PYPL"))
+                .andExpect(status().isForbidden());
+
+        verifyNoInteractions(watchlistService);
     }
 }

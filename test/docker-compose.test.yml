@@ -5,10 +5,13 @@ services:
       dockerfile: Dockerfile
     image: signalforge-test:latest
     ports:
-      - "8000:8000"
+      - "127.0.0.1:18000:8000"
     environment:
       - LLM_MOCK=true
-      - SPRING_DATASOURCE_URL=jdbc:sqlite::memory:
+      - SERVER_ADDRESS=0.0.0.0
+      - SPRING_DATASOURCE_URL=jdbc:sqlite:/app/test-db/signalforge-e2e.db
+    volumes:
+      - e2e-data:/app/test-db
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8000/api/health || exit 1"]
       interval: 3s
@@ -25,4 +28,7 @@ services:
         condition: service_healthy
     environment:
       - BASE_URL=http://app-test:8000
-    command: ["npx", "playwright", "test"]
+    command: ["sh", "-c", "npm ci && npm test"]
+
+volumes:
+  e2e-data:

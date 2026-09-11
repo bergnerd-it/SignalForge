@@ -4,7 +4,13 @@ import com.bergnerd.signalforge.app.chat.ChatConfig;
 import com.bergnerd.signalforge.app.chat.MockLlmClient;
 import com.bergnerd.signalforge.app.chat.OpenAiCompatibleLlmClient;
 import org.junit.jupiter.api.Test;
+import org.springframework.boot.WebApplicationType;
+import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.context.ConfigurableApplicationContext;
+
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -12,6 +18,46 @@ class ApplicationLocalConfigTest {
 
     private final ApplicationContextRunner contextRunner = new ApplicationContextRunner()
             .withUserConfiguration(ChatConfig.class);
+
+    @Test
+    void shouldStartFromShippedYamlWithoutPrivateLocalConfig() throws Exception {
+        Path database = Files.createTempFile("signalforge-yaml-", ".db");
+        try (ConfigurableApplicationContext context = start(database, "--spring.config.import=")) {
+            assertThat(context.getEnvironment().getProperty("spring.application.name"))
+                    .isEqualTo("signalforge-backend");
+            assertThat(context.getEnvironment().getProperty("server.address")).isEqualTo("127.0.0.1");
+            assertThat(context.getEnvironment().getProperty("signalforge.llm.model")).isEqualTo("gpt-4o-mini");
+        } finally {
+            TemporarySqliteInitializer.deleteDatabaseFiles(database);
+        }
+    }
+
+    @Test
+    void shouldApplySafeTemporaryYamlOverride() throws Exception {
+        Path database = Files.createTempFile("signalforge-yaml-override-", ".db");
+        Path override = Files.createTempFile("signalforge-local-", ".yml");
+        Files.writeString(override, "signalforge:\n  llm:\n    model: safe-test-model\n    mock: true\n");
+        try (ConfigurableApplicationContext context = start(
+                database, "--spring.config.import=optional:file:" + override)) {
+            assertThat(context.getEnvironment().getProperty("signalforge.llm.model"))
+                    .isEqualTo("safe-test-model");
+            assertThat(context.getEnvironment().getProperty("signalforge.llm.mock")).isEqualTo("true");
+        } finally {
+            Files.deleteIfExists(override);
+            TemporarySqliteInitializer.deleteDatabaseFiles(database);
+        }
+    }
+
+    private ConfigurableApplicationContext start(Path database, String configImport) {
+        return new SpringApplicationBuilder(SignalForgeApplication.class)
+                .web(WebApplicationType.NONE)
+                .run(
+                        "--spring.datasource.url=jdbc:sqlite:" + database,
+                        configImport,
+                        "--signalforge.llm.mock=true",
+                        "--signalforge.massive.api-key="
+                );
+    }
 
     @Test
     void shouldLoadDefaultConfigWhenNoProfileOrLocalOverrides() {

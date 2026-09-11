@@ -17,7 +17,7 @@ SignalForge is a modern, data-dense trading workstation that pairs real-time mar
   - Natural language conversational assistant for portfolio analysis and strategy discussions.
   - **Autonomous Action Execution**: Leverages JSON Schema Structured Outputs to automatically execute trades and modify watchlists upon user request.
   - Supports multiple LLM providers: **OpenAI**, **Groq**, **Ollama** (local models), custom OpenAI-compatible endpoints, and a deterministic **Mock** mode for testing.
-- **Single Container, Zero-Config Deployment**: Bundled as a single self-contained Docker container serving both the Angular SPA and Spring Boot REST/SSE endpoints on port `8000` with an embedded SQLite database.
+- **Single Container, Local Deployment**: Bundled as a single container serving the Angular SPA and Spring Boot REST/SSE endpoints on host loopback port `8000` with an embedded SQLite database.
 
 ---
 
@@ -158,7 +158,7 @@ If you prefer to run the backend and frontend independently during development:
 cd backend
 ./gradlew bootRun
 ```
-The backend starts on `http://localhost:8000`. Database schema and seed data are automatically initialized on startup.
+The backend binds to `127.0.0.1` and starts on `http://localhost:8000`. Database schema and seed data are automatically initialized on startup.
 
 ### 2. Frontend (Angular)
 
@@ -166,7 +166,7 @@ The backend starts on `http://localhost:8000`. Database schema and seed data are
 
 ```bash
 cd frontend
-npm install
+npm ci
 npm start
 ```
 The Angular development server starts on `http://localhost:4200` and automatically proxies `/api` calls to the Spring Boot backend on port `8000`.
@@ -184,12 +184,13 @@ cd backend
 ### Run Frontend Unit Tests
 ```bash
 cd frontend
-npm run test
+npm run test -- --watch=false
 ```
 
 ### Run Playwright End-to-End Tests
 ```bash
-docker compose -f test/docker-compose.test.yml up --build --abort-on-container-exit
+docker compose -p signalforge-m1a-e2e -f test/docker-compose.test.yml up --build --abort-on-container-exit --exit-code-from playwright
+docker compose -p signalforge-m1a-e2e -f test/docker-compose.test.yml down --volumes
 ```
 
 ---

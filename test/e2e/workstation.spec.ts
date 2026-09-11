@@ -6,7 +6,7 @@ test.describe('SignalForge Trading Workstation E2E Tests', () => {
 
     // Check title & branding
     await expect(page.locator('.title')).toHaveText('SignalForge');
-    await expect(page.locator('.subtitle')).toHaveText('AI TRADING WORKSTATION');
+    await expect(page.locator('.subtitle')).toHaveText('AI Trading Workstation');
 
     // Check default cash balance
     await expect(page.locator('.metric-card').filter({ hasText: 'CASH BALANCE' })).toContainText('$10,000.00');

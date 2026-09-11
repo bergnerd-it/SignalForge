@@ -2,7 +2,7 @@
 FROM node:24-slim AS frontend-builder
 WORKDIR /app/frontend
 COPY frontend/package*.json ./
-RUN npm install
+RUN npm ci
 COPY frontend/ ./
 RUN npm run build
 
@@ -17,13 +17,17 @@ RUN ./gradlew bootJar --no-daemon
 # Stage 3: Runtime
 FROM eclipse-temurin:21-jre
 WORKDIR /app
-RUN mkdir -p /app/db
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /app/db
 COPY --from=backend-builder /app/backend/build/libs/signalforge-backend-*.jar app.jar
 
 ENV SERVER_PORT=8000
+ENV SERVER_ADDRESS=0.0.0.0
 ENV SPRING_DATASOURCE_URL=jdbc:sqlite:/app/db/signalforge.db
 
 EXPOSE 8000
 VOLUME ["/app/db"]
 
-CMD ["java", "-Dspring.datasource.url=${SPRING_DATASOURCE_URL}", "-jar", "app.jar"]
+CMD ["java", "-jar", "app.jar"]

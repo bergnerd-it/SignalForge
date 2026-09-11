@@ -1,4 +1,5 @@
 server:
+  address: ${SERVER_ADDRESS:127.0.0.1}
   port: 8000
   error:
     include-message: always
@@ -19,6 +20,8 @@ spring:
   datasource:
     url: ${SPRING_DATASOURCE_URL:jdbc:sqlite:../db/signalforge.db}
     driver-class-name: org.sqlite.JDBC
+    hikari:
+      connection-init-sql: PRAGMA foreign_keys=ON
 
 signalforge:
   llm:
