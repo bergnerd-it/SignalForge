@@ -42,6 +42,21 @@ test.describe('SignalForge Trading Workstation E2E Tests', () => {
     await expect(page.locator('.ticker-row')).toHaveCount(10);
   });
 
+  test('Cross-origin mutation is rejected without changing the watchlist', async ({ page }) => {
+    await page.goto('/');
+    const before = await page.locator('.ticker-row').allTextContents();
+
+    const response = await page.request.post('/api/watchlist', {
+      data: { ticker: 'ZZZZ' },
+      headers: { Origin: 'https://evil.example' },
+    });
+
+    expect(response.status()).toBe(403);
+    await page.reload();
+    await expect(page.locator('.ticker-row')).toHaveCount(before.length);
+    await expect(page.locator('.watchlist-table')).not.toContainText('ZZZZ');
+  });
+
   test('Manual Trading: buy shares and observe portfolio update', async ({ page }) => {
     await page.goto('/');
 

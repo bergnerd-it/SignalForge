@@ -162,7 +162,7 @@ The backend binds to `127.0.0.1` and starts on `http://localhost:8000`. Database
 
 ### 2. Frontend (Angular)
 
-**Requirements**: Node.js 20+, npm
+**Requirements**: Node.js 24.21.0, npm
 
 ```bash
 cd frontend

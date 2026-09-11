@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@codex'
 created_date: '2026-09-11 21:48'
-updated_date: '2026-09-11 22:04'
+updated_date: '2026-09-11 22:31'
 labels: []
 dependencies: []
 type: feature
@@ -30,17 +30,19 @@ Implement the bounded M1a prerequisite defined by planning/SIGNALFORGE-SPEC-v0.2
 ## Implementation Plan
 
 <!-- SECTION:PLAN:BEGIN -->
-1. Stabilize shipped configuration and isolated integration database harness. 2. Add exact local host/origin enforcement and tests. 3. Harden Docker, npm and Playwright inputs plus sample configuration/docs. 4. Run native and Docker checks where available. 5. Write and validate the M1a report, then stop before M1b.
+1. Resolve source/spec identity and tool compatibility evidence. 2. Inspect E2E advisories and align Playwright/image only if evidence requires it. 3. Run a uniquely named disposable Docker stack, browser/origin checks, and executable restart-persistence assertions. 4. Re-run native regression gates, calculate final diff checksum, and write the closeout report.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
 Validated on Java 21: ./gradlew clean test bootJar passed with 59/59 tests; packaged loopback HTTP startup passed. Frontend npm ci and 19/19 tests passed; Node 24 production build passed. Compose syntax passed. Docker daemon unavailable, so clean container restart/persistence and Playwright remain NOT VERIFIED with rerun commands in planning/reports/research-M1a.md.
+
+Closeout: M1a is now commit 2c781c4 plus closeout manifest adf3502c. Angular 22.1.7 engines confirm Node 26 was supported; prior abort cause remains unconfirmed, and Node 24.21.0 is pinned/verified. Updated E2E-only Playwright/image from 1.45.0 to 1.63.0 for GHSA-7mvr-c777-76hp; clean audit is zero. Added browser denial and executable restart-persistence checks. Docker daemon 29.7.2 ran and isolation resolved, but two clean builds failed before stages due Docker Hub TLS timeouts; no project resources were created. Final native gates: backend 59/59 and bootJar, frontend 19/19 and production build.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-Implemented M1a baseline stabilization: real YAML startup tests, unique file-backed SQLite contexts with per-connection foreign keys and cleanup, loopback/origin enforcement with no-side-effect denial tests, deterministic Docker/E2E inputs, and completion report. Native gates pass; Docker runtime gates are documented as NOT VERIFIED because the daemon is unavailable.
+Completed all feasible M1a closeout work and documented it in planning/reports/research-M1a-closeout.md. Native gates and dependency audit pass; container/browser/restart gates remain blocked by Docker Hub TLS reachability and are not claimed as verified.
 <!-- SECTION:FINAL_SUMMARY:END -->
