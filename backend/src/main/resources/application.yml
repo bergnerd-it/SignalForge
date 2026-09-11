@@ -30,16 +30,6 @@ signalforge:
   massive:
     api-key: ${MASSIVE_API_KEY:}
 
-signalforge:
-  llm:
-    provider: ${LLM_PROVIDER:openai}
-    base-url: ${LLM_BASE_URL:}
-    api-key: ${LLM_API_KEY:}
-    model: ${LLM_MODEL:gpt-4o-mini}
-    mock: ${LLM_MOCK:false}
-  massive:
-    api-key: ${MASSIVE_API_KEY:}
-
 management:
   endpoints:
     web:
