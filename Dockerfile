@@ -18,10 +18,10 @@ RUN ./gradlew bootJar --no-daemon
 FROM eclipse-temurin:21-jre
 WORKDIR /app
 RUN mkdir -p /app/db
-COPY --from=backend-builder /app/backend/build/libs/finally-backend-*.jar app.jar
+COPY --from=backend-builder /app/backend/build/libs/signalforge-backend-*.jar app.jar
 
 ENV SERVER_PORT=8000
-ENV SPRING_DATASOURCE_URL=jdbc:sqlite:/app/db/finally.db
+ENV SPRING_DATASOURCE_URL=jdbc:sqlite:/app/db/signalforge.db
 
 EXPOSE 8000
 VOLUME ["/app/db"]

@@ -51,7 +51,7 @@ export class ChatService {
           this.messagesSubject.next([
             {
               role: 'assistant',
-              content: 'Hello! I am FinAlly, your AI trading assistant. I can analyze your positions, suggest portfolio adjustments, and execute market trades or manage your watchlist directly. How can I help you today?',
+              content: 'Hello! I am SignalForge, your AI trading assistant. I can analyze your positions, suggest portfolio adjustments, and execute market trades or manage your watchlist directly. How can I help you today?',
               createdAt: new Date().toISOString(),
             },
           ]);

@@ -25,7 +25,7 @@ describe('Component Unit Tests', () => {
     fixture.detectChanges();
 
     const compiled = fixture.nativeElement as HTMLElement;
-    expect(compiled.textContent).toContain('FinAlly');
+    expect(compiled.textContent).toContain('SignalForge');
     expect(compiled.textContent).toContain('$12,500.00');
     expect(compiled.textContent).toContain('$10,000.00');
     expect(compiled.textContent).toContain('CONNECTED');

@@ -1,6 +1,6 @@
-# FinAlly — The AI-Powered Trading Workstation
+# SignalForge — The AI-Powered Trading Workstation
 
-FinAlly (**Finance Ally**) is a modern, data-dense trading workstation that pairs real-time market streaming and portfolio simulation with an intelligent AI copilot. Designed with a dark terminal aesthetic inspired by professional financial software, FinAlly allows users to monitor real-time stock prices, analyze positions, execute simulated trades, and converse with an LLM assistant capable of performing automated portfolio actions.
+SignalForge is a modern, data-dense trading workstation that pairs real-time market streaming and portfolio simulation with an intelligent AI copilot. Designed with a dark terminal aesthetic inspired by professional financial software, SignalForge allows users to monitor real-time stock prices, analyze positions, execute simulated trades, and converse with an LLM assistant capable of performing automated portfolio actions.
 
 ---
 
@@ -34,7 +34,7 @@ FinAlly (**Finance Ally**) is a modern, data-dense trading workstation that pair
 │  └── /*              Static Resource Serving            │
 │                      (Angular Production SPA)           │
 │                                                         │
-│  SQLite Database (/app/db/finally.db)                   │
+│  SQLite Database (/app/db/signalforge.db)                │
 │  Background Scheduler: Market Simulator & Snapshots     │
 └─────────────────────────────────────────────────────────┘
 ```
@@ -60,9 +60,9 @@ Copy the configuration template and set your LLM credentials:
 cp application-local.yml.example application-local.yml
 ```
 
-Edit `application-local.yml` to specify your provider and API key (e.g. OpenAI or Groq). If no API key is provided, FinAlly can run using Ollama locally, mock LLM mode, or standard trading terminal mode.
+Edit `application-local.yml` to specify your provider and API key (e.g. OpenAI or Groq). If no API key is provided, SignalForge can run using Ollama locally, mock LLM mode, or standard trading terminal mode.
 
-### 2. Launch FinAlly
+### 2. Launch SignalForge
 
 **macOS / Linux:**
 ```bash
@@ -99,25 +99,27 @@ docker compose down
 
 ## Configuration
 
-FinAlly can be configured either via `application-local.yml` or standard environment variables.
+SignalForge can be configured either via `application-local.yml` or standard environment variables.
 
 ### Configuration Properties
 
 | Property / Env Variable | Description | Default |
 |---|---|---|
-| `finally.llm.provider` / `LLM_PROVIDER` | LLM provider: `openai`, `groq`, `ollama`, `custom`, `mock` | `openai` |
-| `finally.llm.api-key` / `LLM_API_KEY` | API Key for LLM provider (OpenAI / Groq) | `""` |
-| `finally.llm.model` / `LLM_MODEL` | Model identifier | `gpt-4o-mini` (OpenAI), `llama-3.3-70b-versatile` (Groq), `llama3.1` (Ollama) |
-| `finally.llm.base-url` / `LLM_BASE_URL` | Custom base URL for OpenAI-compatible endpoint | Provider default |
-| `finally.llm.mock` / `LLM_MOCK` | Enable deterministic mock responses for testing | `false` |
-| `finally.massive.api-key` / `MASSIVE_API_KEY` | Polygon.io / Massive API Key for live stock data | `""` (uses built-in GBM simulator) |
-| `SPRING_DATASOURCE_URL` | SQLite database JDBC connection URL | `jdbc:sqlite:../db/finally.db` (local) / `/app/db/finally.db` (Docker) |
+| `signalforge.llm.provider` / `LLM_PROVIDER` | LLM provider: `openai`, `groq`, `ollama`, `custom`, `mock` | `openai` |
+| `signalforge.llm.api-key` / `LLM_API_KEY` | API Key for LLM provider (OpenAI / Groq) | `""` |
+| `signalforge.llm.model` / `LLM_MODEL` | Model identifier | `gpt-4o-mini` (OpenAI), `llama-3.3-70b-versatile` (Groq), `llama3.1` (Ollama) |
+| `signalforge.llm.base-url` / `LLM_BASE_URL` | Custom base URL for OpenAI-compatible endpoint | Provider default |
+| `signalforge.llm.mock` / `LLM_MOCK` | Enable deterministic mock responses for testing | `false` |
+| `signalforge.massive.api-key` / `MASSIVE_API_KEY` | Polygon.io / Massive API Key for live stock data | `""` (uses built-in GBM simulator) |
+| `SPRING_DATASOURCE_URL` | SQLite database JDBC connection URL | `jdbc:sqlite:../db/signalforge.db` (local) / `/app/db/signalforge.db` (Docker) |
+
+*(Note: Legacy `finally.llm.*` and `finally.massive.*` property names remain supported for backward compatibility.)*
 
 ### Provider Examples in `application-local.yml`
 
 #### OpenAI
 ```yaml
-finally:
+signalforge:
   llm:
     provider: openai
     api-key: sk-proj-...
@@ -126,7 +128,7 @@ finally:
 
 #### Groq
 ```yaml
-finally:
+signalforge:
   llm:
     provider: groq
     api-key: gsk_...
@@ -135,7 +137,7 @@ finally:
 
 #### Ollama (Local LLM)
 ```yaml
-finally:
+signalforge:
   llm:
     provider: ollama
     base-url: http://localhost:11434/v1
@@ -195,7 +197,7 @@ docker compose -f test/docker-compose.test.yml up --build --abort-on-container-e
 ## Project Structure
 
 ```
-finally/
+SignalForge/
 ├── backend/                  # Spring Boot application (Java 21)
 │   ├── src/main/java/        # Domain services, controllers, LLM client, repositories
 │   ├── src/main/resources/   # Application configuration & database scripts

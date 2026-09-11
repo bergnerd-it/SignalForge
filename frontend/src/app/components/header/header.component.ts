@@ -13,7 +13,7 @@ import { ConnectionStatus } from '../../services/price-stream.service';
         <div class="logo-box">
           <span class="logo-icon">⚡</span>
           <div class="logo-text">
-            <span class="title">FinAlly</span>
+            <span class="title">SignalForge</span>
             <span class="subtitle">AI Trading Workstation</span>
           </div>
         </div>

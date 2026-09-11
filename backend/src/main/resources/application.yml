@@ -5,7 +5,7 @@ server:
 
 spring:
   application:
-    name: finally-backend
+    name: signalforge-backend
   profiles:
     active: ${SPRING_PROFILES_ACTIVE:local}
   config:
@@ -17,8 +17,18 @@ spring:
     virtual:
       enabled: true
   datasource:
-    url: ${SPRING_DATASOURCE_URL:jdbc:sqlite:../db/finally.db}
+    url: ${SPRING_DATASOURCE_URL:jdbc:sqlite:../db/signalforge.db}
     driver-class-name: org.sqlite.JDBC
+
+signalforge:
+  llm:
+    provider: ${LLM_PROVIDER:openai}
+    base-url: ${LLM_BASE_URL:}
+    api-key: ${LLM_API_KEY:}
+    model: ${LLM_MODEL:gpt-4o-mini}
+    mock: ${LLM_MOCK:false}
+  massive:
+    api-key: ${MASSIVE_API_KEY:}
 
 finally:
   llm:

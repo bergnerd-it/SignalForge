@@ -1,4 +1,4 @@
-project_name: "Finance Ally"
+project_name: "SignalForge"
 default_status: "To Do"
 statuses: ["To Do", "In Progress", "Done"]
 labels: []

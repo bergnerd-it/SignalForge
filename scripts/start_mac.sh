@@ -12,14 +12,14 @@ if [[ "$1" == "--build" ]]; then
 fi
 
 echo "=========================================="
-echo "⚡ Starting FinAlly AI Trading Workstation"
+echo "⚡ Starting SignalForge AI Trading Workstation"
 echo "=========================================="
 
 # Build and start via docker-compose
 docker compose up -d $BUILD_FLAG
 
 echo ""
-echo "🚀 FinAlly is up and running!"
+echo "🚀 SignalForge is up and running!"
 echo "👉 Open your browser at: http://localhost:8000"
 echo "=========================================="
 

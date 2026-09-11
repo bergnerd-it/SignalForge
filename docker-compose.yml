@@ -1,10 +1,10 @@
 services:
-  finally:
+  signalforge:
     build:
       context: .
       dockerfile: Dockerfile
-    image: finally:latest
-    container_name: finally-app
+    image: signalforge:latest
+    container_name: signalforge-app
     ports:
       - "8000:8000"
     environment:
@@ -14,10 +14,10 @@ services:
       - LLM_BASE_URL=${LLM_BASE_URL:-}
       - MASSIVE_API_KEY=${MASSIVE_API_KEY:-}
       - LLM_MOCK=${LLM_MOCK:-false}
-      - SPRING_DATASOURCE_URL=jdbc:sqlite:/app/db/finally.db
+      - SPRING_DATASOURCE_URL=jdbc:sqlite:/app/db/signalforge.db
     volumes:
-      - finally-data:/app/db
+      - signalforge-data:/app/db
     restart: unless-stopped
 
 volumes:
-  finally-data:
+  signalforge-data:

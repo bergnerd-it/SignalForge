@@ -1,11 +1,11 @@
 import { test, expect } from '@playwright/test';
 
-test.describe('FinAlly Trading Workstation E2E Tests', () => {
+test.describe('SignalForge Trading Workstation E2E Tests', () => {
   test('Fresh launch should show $10,000 cash balance, streaming watchlist, and AI panel', async ({ page }) => {
     await page.goto('/');
 
     // Check title & branding
-    await expect(page.locator('.title')).toHaveText('FinAlly');
+    await expect(page.locator('.title')).toHaveText('SignalForge');
     await expect(page.locator('.subtitle')).toHaveText('AI TRADING WORKSTATION');
 
     // Check default cash balance
@@ -77,7 +77,7 @@ test.describe('FinAlly Trading Workstation E2E Tests', () => {
     await page.locator('.btn-send').click();
 
     // Verify assistant responds with executed trade confirmation
-    await expect(page.locator('.message-bubble').filter({ hasText: 'FINALLY AI' }).last()).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('.message-bubble').filter({ hasText: 'SIGNALFORGE AI' }).last()).toBeVisible({ timeout: 10000 });
     await expect(page.locator('.action-card').filter({ hasText: 'MSFT' })).toBeVisible();
 
     // Verify MSFT holding now appears in positions table

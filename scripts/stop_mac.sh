@@ -7,9 +7,9 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$ROOT_DIR"
 
 echo "=========================================="
-echo "🛑 Stopping FinAlly AI Trading Workstation"
+echo "🛑 Stopping SignalForge AI Trading Workstation"
 echo "=========================================="
 
 docker compose down
 
-echo "✓ FinAlly stopped successfully (database volume preserved)."
+echo "✓ SignalForge stopped successfully (database volume preserved)."

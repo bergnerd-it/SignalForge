@@ -1,8 +1,8 @@
-# Local configuration overrides for FinAlly
+# Local configuration overrides for SignalForge
 # Copy this file to application-local.yml in the repository root or backend/src/main/resources/application-local.yml
 # and configure your local settings.
 
-finally:
+signalforge:
   llm:
     # Provider options: openai (default), ollama, groq, custom, mock
     provider: openai

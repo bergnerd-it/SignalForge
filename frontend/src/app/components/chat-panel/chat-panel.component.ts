@@ -34,7 +34,7 @@ import { ChatMessage } from '../../models/market.model';
       <div class="messages-container" #scrollContainer (scroll)="onScroll($event)">
         <div *ngFor="let msg of messages" class="message-wrapper" [ngClass]="msg.role === 'user' ? 'user-wrapper' : 'assistant-wrapper'">
           <div class="message-bubble" [ngClass]="msg.role === 'user' ? 'user-bubble' : 'assistant-bubble'">
-            <div class="sender-tag font-mono">{{ msg.role === 'user' ? 'YOU' : 'FINALLY AI' }}</div>
+            <div class="sender-tag font-mono">{{ msg.role === 'user' ? 'YOU' : 'SIGNALFORGE AI' }}</div>
             <div class="message-text">{{ msg.content }}</div>
 
             <!-- Inline Action Confirmation Cards -->

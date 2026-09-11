@@ -17,11 +17,11 @@ The FinAlly backend is built on **Spring Boot 3.4+** running on **Java 21 (LTS)*
 
 ## 2. Layered Architecture & Module Breakdown
 
-The backend follows a domain-driven, layered package design located in `com.financeally.app`:
+The backend follows a domain-driven, layered package design located in `com.bergnerd.signalforge.app`:
 
 ```
-com.financeally.app
-├── FinAllyApplication.java          # Spring Boot Main Entrypoint
+com.bergnerd.signalforge.app
+├── SignalForgeApplication.java          # Spring Boot Main Entrypoint
 ├── chat/                            # AI Assistant, LLM Clients, JSON Schema parsing
 │   ├── ChatConfig.java              # Bean resolution (OpenAI/Ollama/Groq/Custom/Mock)
 │   ├── ChatController.java          # REST endpoints for chat & history
