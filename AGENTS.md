@@ -1,4 +1,4 @@
-# FinAlly Project - the Finance Ally
+# SignalForge Project - the Finance Ally
 
 All project documentation is in the `planning` directory.
 

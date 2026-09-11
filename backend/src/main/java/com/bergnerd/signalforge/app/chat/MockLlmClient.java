@@ -61,7 +61,7 @@ public class MockLlmClient implements LlmClient {
             if (lower.contains("portfolio") || lower.contains("balance") || lower.contains("performance") || lower.contains("analyze")) {
                 messageBuilder.append("Your portfolio is currently being tracked in real time. Your virtual cash balance and live equity values are streaming on the dashboard. Diversification across tech and defensive sectors is recommended.");
             } else if (lower.contains("help") || lower.contains("hello") || lower.contains("hi")) {
-                messageBuilder.append("Hello! I am FinAlly, your AI trading assistant. You can ask me to analyze your portfolio, execute trades (e.g. 'buy 10 AAPL'), or manage your watchlist (e.g. 'add NVDA').");
+                messageBuilder.append("Hello! I am SignalForge, your AI trading assistant. You can ask me to analyze your portfolio, execute trades (e.g. 'buy 10 AAPL'), or manage your watchlist (e.g. 'add NVDA').");
             } else {
                 messageBuilder.append(String.format("Received request: \"%s\". Markets are actively streaming live prices. Let me know if you would like me to execute any orders or adjust your watchlist.", userMessage));
             }

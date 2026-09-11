@@ -171,6 +171,6 @@ describe('ChatService', () => {
 
     expect(messages.length).toBe(1);
     expect(messages[0].role).toBe('assistant');
-    expect(messages[0].content).toContain('FinAlly');
+    expect(messages[0].content).toContain('SignalForge');
   });
 });

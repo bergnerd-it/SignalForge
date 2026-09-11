@@ -9,8 +9,8 @@ public class MarketConfig {
 
     @Bean
     public MarketDataSource marketDataSource(
-            @Value("${signalforge.massive.api-key:${finally.massive.api-key:}}") String massiveApiKey,
-            @Value("${signalforge.llm.mock:${finally.llm.mock:false}}") boolean mockMode
+            @Value("${signalforge.massive.api-key:${signalforge.massive.api-key:}}") String massiveApiKey,
+            @Value("${signalforge.llm.mock:${signalforge.llm.mock:false}}") boolean mockMode
     ) {
         if (massiveApiKey != null && !massiveApiKey.trim().isEmpty()) {
             return new MassiveMarketClient(massiveApiKey.trim());

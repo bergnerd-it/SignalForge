@@ -30,7 +30,7 @@ signalforge:
   massive:
     api-key: ${MASSIVE_API_KEY:}
 
-finally:
+signalforge:
   llm:
     provider: ${LLM_PROVIDER:openai}
     base-url: ${LLM_BASE_URL:}

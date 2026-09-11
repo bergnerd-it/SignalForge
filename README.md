@@ -113,7 +113,7 @@ SignalForge can be configured either via `application-local.yml` or standard env
 | `signalforge.massive.api-key` / `MASSIVE_API_KEY` | Polygon.io / Massive API Key for live stock data | `""` (uses built-in GBM simulator) |
 | `SPRING_DATASOURCE_URL` | SQLite database JDBC connection URL | `jdbc:sqlite:../db/signalforge.db` (local) / `/app/db/signalforge.db` (Docker) |
 
-*(Note: Legacy `finally.llm.*` and `finally.massive.*` property names remain supported for backward compatibility.)*
+*(Note: Legacy `signalforge.llm.*` and `signalforge.massive.*` property names remain supported for backward compatibility.)*
 
 ### Provider Examples in `application-local.yml`
 

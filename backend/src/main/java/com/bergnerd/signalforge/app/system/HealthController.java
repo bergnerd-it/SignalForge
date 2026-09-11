@@ -16,7 +16,7 @@ public class HealthController {
     public ResponseEntity<Map<String, Object>> health() {
         return ResponseEntity.ok(Map.of(
                 "status", "UP",
-                "app", "FinAlly Trading Workstation",
+                "app", "SignalForge Trading Workstation",
                 "timestamp", Instant.now().toString()
         ));
     }

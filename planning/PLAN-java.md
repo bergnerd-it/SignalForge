@@ -1,4 +1,4 @@
-# FinAlly — AI Trading Workstation (Java + Angular Edition)
+# SignalForge — AI Trading Workstation (Java + Angular Edition)
 
 ## Project Specification
 
@@ -6,7 +6,7 @@
 
 ## 1. Vision
 
-FinAlly (Finance Ally) is a visually stunning AI-powered trading workstation that streams live market data, lets users trade a simulated portfolio, and integrates an LLM chat assistant that can analyze positions and execute trades on the user's behalf. It looks and feels like a modern Bloomberg terminal with an AI copilot.
+SignalForge (Finance Ally) is a visually stunning AI-powered trading workstation that streams live market data, lets users trade a simulated portfolio, and integrates an LLM chat assistant that can analyze positions and execute trades on the user's behalf. It looks and feels like a modern Bloomberg terminal with an AI copilot.
 
 This is the capstone project for an agentic AI coding course. It is built entirely by Coding Agents demonstrating how orchestrated AI agents can produce a production-quality full-stack application. Agents interact through files in `planning/`.
 
@@ -66,7 +66,7 @@ The user runs a single Docker command (or a provided start script). A browser op
 
 - **Frontend**: Angular with TypeScript, built via `ng build` (production), whose static output is served by Spring Boot as static resources
 - **Backend**: Spring Boot (Java 21), managed as a Gradle project (Gradle Wrapper committed)
-- **Database**: SQLite, single file at `db/finally.db`, volume-mounted for persistence
+- **Database**: SQLite, single file at `db/signalforge.db`, volume-mounted for persistence
 - **Real-time data**: Server-Sent Events (SSE) — simpler than WebSockets, one-way server→client push, works everywhere
 - **AI integration**: OpenAI-compatible REST API (OpenAI, Ollama, Groq, custom), called directly from Java via Spring's `RestClient`, using JSON-schema Structured Outputs for trade execution
 - **Market data**: Environment-variable driven — simulator by default, real data via Massive API if key provided
@@ -91,7 +91,7 @@ The user runs a single Docker command (or a provided start script). A browser op
 ## 4. Directory Structure
 
 ```
-finally/
+signalforge/
 ├── frontend/                 # Angular TypeScript project (production build)
 │   ├── src/
 │   ├── angular.json
@@ -116,7 +116,7 @@ finally/
 │   └── stop_windows.ps1      # Stop Docker container (Windows PowerShell)
 ├── test/                     # Playwright E2E tests + docker-compose.test.yml
 ├── db/                       # Volume mount target (SQLite file lives here at runtime)
-│   └── .gitkeep              # Directory exists in repo; finally.db is gitignored
+│   └── .gitkeep              # Directory exists in repo; signalforge.db is gitignored
 ├── Dockerfile                # Multi-stage build (Node → JDK build → JRE runtime)
 ├── docker-compose.yml        # Optional convenience wrapper
 ├── .env                      # Environment variables (gitignored, .env.example committed)
@@ -128,7 +128,7 @@ finally/
 - **`frontend/`** is a self-contained Angular project. It knows nothing about Java. It talks to the backend via `/api/*` endpoints and `/api/stream/*` SSE endpoints. Internal structure (modules, standalone components, services) is up to the Frontend Engineer agent.
 - **`backend/`** is a self-contained Gradle project with its own `build.gradle(.kts)`. It owns all server logic including database initialization, schema, seed data, API routes, SSE streaming, market data, and LLM integration. Internal package structure (controllers, services, repositories, config) is up to the Backend/Market Data agents.
 - **`backend/src/main/resources/db/`** contains schema SQL definitions and seed logic. The backend lazily initializes the database on first request/startup — creating tables and seeding default data if the SQLite file doesn't exist or is empty.
-- **`db/`** at the top level is the runtime volume mount point. The SQLite file (`db/finally.db`) is created here by the backend and persists across container restarts via Docker volume.
+- **`db/`** at the top level is the runtime volume mount point. The SQLite file (`db/signalforge.db`) is created here by the backend and persists across container restarts via Docker volume.
 - **`planning/`** contains project-wide documentation, including this plan. All agents reference files here as the shared contract.
 - **`test/`** contains Playwright E2E tests and supporting infrastructure (e.g., `docker-compose.test.yml`). Unit tests live within `frontend/` and `backend/` respectively, following each framework's conventions.
 - **`scripts/`** contains start/stop scripts that wrap Docker commands.
@@ -374,7 +374,7 @@ If a trade fails validation (e.g., insufficient cash), the error is included in 
 
 ### System Prompt Guidance
 
-The LLM should be prompted as "FinAlly, an AI trading assistant" with instructions to:
+The LLM should be prompted as "SignalForge, an AI trading assistant" with instructions to:
 - Analyze portfolio composition, risk concentration, and P&L
 - Suggest trades with reasoning
 - Execute trades when the user asks or agrees
@@ -445,10 +445,10 @@ Spring Boot serves the static frontend files (from the classpath `static/` direc
 The SQLite database persists via a named Docker volume:
 
 ```bash
-docker run -v finally-data:/app/db -p 8000:8000 --env-file .env finally
+docker run -v signalforge-data:/app/db -p 8000:8000 --env-file .env signalforge
 ```
 
-The `db/` directory in the project root maps to `/app/db` in the container. The backend writes `finally.db` to this path (configure the SQLite JDBC URL, e.g. `jdbc:sqlite:/app/db/finally.db`).
+The `db/` directory in the project root maps to `/app/db` in the container. The backend writes `signalforge.db` to this path (configure the SQLite JDBC URL, e.g. `jdbc:sqlite:/app/db/signalforge.db`).
 
 ### Start/Stop Scripts
 

@@ -1,12 +1,12 @@
-# FinAlly Deployment Guide
+# SignalForge Deployment Guide
 
 ## 1. Architectural Deployment Overview
 
-FinAlly is engineered as a **unified single-container, single-port application** (port `8000` by default). In production builds:
+SignalForge is engineered as a **unified single-container, single-port application** (port `8000` by default). In production builds:
 1. The **Angular frontend** is compiled into static HTML/JS/CSS bundles via `ng build`.
 2. Static assets are packaged directly into the **Spring Boot backend** (`src/main/resources/static/`).
 3. Spring Boot's embedded Tomcat web server serves the Angular SPA static resources, REST endpoints (`/api/*`), and real-time Server-Sent Events (`/api/stream/*`) from a single origin, eliminating CORS overhead.
-4. Embedded **SQLite** database stores all data in a single file mounted to `/app/db/finally.db`.
+4. Embedded **SQLite** database stores all data in a single file mounted to `/app/db/signalforge.db`.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -22,7 +22,7 @@ FinAlly is engineered as a **unified single-container, single-port application**
 │  └── /api/stream/*    -> Real-time SSE Price Stream         │
 │                                                             │
 │  Mounted Persistence Volume:                                │
-│  └── /app/db/finally.db (SQLite Database File)              │
+│  └── /app/db/signalforge.db (SQLite Database File)              │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -92,10 +92,10 @@ cd backend
 ./gradlew bootJar
 
 # Run the fat JAR
-java -Dspring.datasource.url=jdbc:sqlite:./finally.db \
+java -Dspring.datasource.url=jdbc:sqlite:./signalforge.db \
      -DLLM_PROVIDER=openai \
      -DLLM_API_KEY=your_api_key_here \
-     -jar build/libs/finally-backend-0.0.1-SNAPSHOT.jar
+     -jar build/libs/signalforge-backend-0.0.1-SNAPSHOT.jar
 ```
 - Open your browser at `http://localhost:8000`.
 
@@ -132,10 +132,10 @@ RUN ./gradlew bootJar --no-daemon
 FROM eclipse-temurin:21-jre
 WORKDIR /app
 RUN mkdir -p /app/db
-COPY --from=backend-builder /app/backend/build/libs/finally-backend-*.jar app.jar
+COPY --from=backend-builder /app/backend/build/libs/signalforge-backend-*.jar app.jar
 
 ENV SERVER_PORT=8000
-ENV SPRING_DATASOURCE_URL=jdbc:sqlite:/app/db/finally.db
+ENV SPRING_DATASOURCE_URL=jdbc:sqlite:/app/db/signalforge.db
 
 EXPOSE 8000
 VOLUME ["/app/db"]
@@ -179,7 +179,7 @@ docker compose ps
 ```bash
 docker compose down
 ```
-*Note: The SQLite database is safely persisted in the named Docker volume `finally-data`.*
+*Note: The SQLite database is safely persisted in the named Docker volume `signalforge-data`.*
 
 ---
 
@@ -204,7 +204,7 @@ Convenience scripts are provided in `scripts/`:
 
 ## 4. Remote Deployment With Docker (Production / VPS)
 
-Deploying FinAlly to a cloud virtual machine (e.g., AWS EC2, DigitalOcean Droplet, Hetzner, GCP Compute Engine).
+Deploying SignalForge to a cloud virtual machine (e.g., AWS EC2, DigitalOcean Droplet, Hetzner, GCP Compute Engine).
 
 ### Step 1: Build & Push Docker Image
 
@@ -215,10 +215,10 @@ Build and push the multi-arch image to a container registry (e.g., Docker Hub, G
 docker login ghcr.io -u <YOUR_GITHUB_USERNAME>
 
 # Build and tag image
-docker build -t ghcr.io/<your-org>/finally:latest .
+docker build -t ghcr.io/<your-org>/signalforge:latest .
 
 # Push to registry
-docker push ghcr.io/<your-org>/finally:latest
+docker push ghcr.io/<your-org>/signalforge:latest
 ```
 
 ---
@@ -229,16 +229,16 @@ On the remote Linux server:
 
 #### 1. Create Deployment Directory
 ```bash
-mkdir -p /opt/finally/db
-cd /opt/finally
+mkdir -p /opt/signalforge/db
+cd /opt/signalforge
 ```
 
 #### 2. Create Production `docker-compose.yml`
 ```yaml
 services:
-  finally:
-    image: ghcr.io/bergnerd-it/finally:latest
-    container_name: finally-prod
+  signalforge:
+    image: ghcr.io/bergnerd-it/signalforge:latest
+    container_name: signalforge-prod
     restart: unless-stopped
     ports:
       - "127.0.0.1:8000:8000"
@@ -247,9 +247,9 @@ services:
       - LLM_API_KEY=${LLM_API_KEY}
       - LLM_MODEL=gpt-4o-mini
       - LLM_MOCK=false
-      - SPRING_DATASOURCE_URL=jdbc:sqlite:/app/db/finally.db
+      - SPRING_DATASOURCE_URL=jdbc:sqlite:/app/db/signalforge.db
     volumes:
-      - /opt/finally/db:/app/db
+      - /opt/signalforge/db:/app/db
 ```
 
 #### 3. Start the Production Service
@@ -268,7 +268,7 @@ For production deployments, terminate SSL/TLS with Nginx or Caddy and proxy traf
 
 > **CRITICAL FOR SSE (Server-Sent Events)**: You **must disable proxy buffering** (`proxy_buffering off;`) and pass appropriate streaming headers so price ticks are delivered instantaneously to clients without being buffered by Nginx.
 
-#### Sample Nginx Configuration (`/etc/nginx/sites-available/finally.conf`):
+#### Sample Nginx Configuration (`/etc/nginx/sites-available/signalforge.conf`):
 
 ```nginx
 server {
@@ -327,9 +327,9 @@ server {
 - **Database Backups**: Because SQLite operates as a single file, take automated backups safely using the online backup command:
   ```bash
   # Safe live SQLite backup without downtime
-  docker exec finally-prod sqlite3 /app/db/finally.db ".backup /app/db/backup-$(date +%Y%m%d%H%M%S).db"
+  docker exec signalforge-prod sqlite3 /app/db/signalforge.db ".backup /app/db/backup-$(date +%Y%m%d%H%M%S).db"
   ```
 - **Log Inspection**:
   ```bash
-  docker logs -f --tail 100 finally-prod
+  docker logs -f --tail 100 signalforge-prod
   ```

@@ -11,11 +11,11 @@ public class ChatConfig {
 
     @Bean
     public LlmClient llmClient(
-            @Value("${signalforge.llm.provider:${finally.llm.provider:openai}}") String provider,
-            @Value("${signalforge.llm.base-url:${finally.llm.base-url:}}") String baseUrl,
-            @Value("${signalforge.llm.api-key:${finally.llm.api-key:}}") String apiKey,
-            @Value("${signalforge.llm.model:${finally.llm.model:}}") String model,
-            @Value("${signalforge.llm.mock:${finally.llm.mock:false}}") boolean mockMode
+            @Value("${signalforge.llm.provider:${signalforge.llm.provider:openai}}") String provider,
+            @Value("${signalforge.llm.base-url:${signalforge.llm.base-url:}}") String baseUrl,
+            @Value("${signalforge.llm.api-key:${signalforge.llm.api-key:}}") String apiKey,
+            @Value("${signalforge.llm.model:${signalforge.llm.model:}}") String model,
+            @Value("${signalforge.llm.mock:${signalforge.llm.mock:false}}") boolean mockMode
     ) {
         String effectiveProvider = (provider == null || provider.isBlank()) ? "openai" : provider.trim().toLowerCase();
 

@@ -1,8 +1,8 @@
-# FinAlly Backend Architecture & Database Specification
+# SignalForge Backend Architecture & Database Specification
 
 ## 1. Overview & Technology Stack
 
-The FinAlly backend is built on **Spring Boot 3.4+** running on **Java 21 (LTS)**. It functions as the central engine for real-time market data generation and ingestion, portfolio accounting, order execution, chat history persistence, and LLM copilot orchestration.
+The SignalForge backend is built on **Spring Boot 3.4+** running on **Java 21 (LTS)**. It functions as the central engine for real-time market data generation and ingestion, portfolio accounting, order execution, chat history persistence, and LLM copilot orchestration.
 
 ### Core Technologies
 - **Runtime & Language**: Java 21 (LTS) with **Virtual Threads** (`spring.threads.virtual.enabled=true`) for lightweight concurrent I/O.
@@ -57,7 +57,7 @@ com.bergnerd.signalforge.app
 
 ## 3. Database Architecture & Schema (SQLite)
 
-Persistence is managed with an embedded SQLite database file located at `db/finally.db` (or configurable via `SPRING_DATASOURCE_URL`). Tables and initial data are seeded idempotently on startup by `DatabaseInitializer`.
+Persistence is managed with an embedded SQLite database file located at `db/signalforge.db` (or configurable via `SPRING_DATASOURCE_URL`). Tables and initial data are seeded idempotently on startup by `DatabaseInitializer`.
 
 ```
 ┌──────────────────┐       1:N       ┌──────────────────┐
@@ -297,7 +297,7 @@ The backend follows Spring test slicing best practices:
   - `ChatControllerTest`: Tests chat HTTP controller serialization, request validation, and error responses.
   - `HealthControllerTest`: Verifies health check endpoints.
 - **Full Integration Tests (`@SpringBootTest`)**:
-  - `FinAllyIntegrationTest`: End-to-end testing with an in-memory SQLite database verifying database initialization, market orders, balance updates, and watchlist modifications.
+  - `SignalForgeIntegrationTest`: End-to-end testing with an in-memory SQLite database verifying database initialization, market orders, balance updates, and watchlist modifications.
 - **Execution Command**:
   ```bash
   cd backend && ./gradlew clean test

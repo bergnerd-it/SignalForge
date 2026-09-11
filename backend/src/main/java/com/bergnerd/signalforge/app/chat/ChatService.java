@@ -155,7 +155,7 @@ public class ChatService {
 
     private String buildSystemPrompt(PortfolioResponse portfolio, List<WatchlistEntryDto> watchlist) {
         StringBuilder sb = new StringBuilder();
-        sb.append("You are FinAlly, an expert AI trading copilot in a simulated trading terminal workstation.\n");
+        sb.append("You are SignalForge, an expert AI trading copilot in a simulated trading terminal workstation.\n");
         sb.append("You have the power to execute market orders and modify the user's watchlist autonomously.\n\n");
 
         sb.append("PORTFOLIO STATUS:\n");

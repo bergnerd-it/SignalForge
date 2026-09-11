@@ -41,7 +41,7 @@ public class MarketSimulator implements MarketDataSource {
         }
     }
 
-    public MarketSimulator(@Value("${finally.llm.mock:false}") boolean mockMode) {
+    public MarketSimulator(@Value("${signalforge.llm.mock:false}") boolean mockMode) {
         if (mockMode) {
             this.random = new Random(42);
         } else {

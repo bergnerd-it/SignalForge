@@ -51,9 +51,9 @@ class ApplicationLocalConfigTest {
     void shouldFallbackToLegacyFinallyProperties() {
         contextRunner
                 .withPropertyValues(
-                        "finally.llm.provider=groq",
-                        "finally.llm.api-key=test-legacy-key",
-                        "finally.llm.model=llama-3.3-70b-versatile"
+                        "signalforge.llm.provider=groq",
+                        "signalforge.llm.api-key=test-legacy-key",
+                        "signalforge.llm.model=llama-3.3-70b-versatile"
                 )
                 .run(context -> {
                     assertThat(context).hasSingleBean(OpenAiCompatibleLlmClient.class);

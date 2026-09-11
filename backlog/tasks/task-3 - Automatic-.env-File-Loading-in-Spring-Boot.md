@@ -32,7 +32,7 @@ When running the backend locally or in the IDE, .env variables are not loaded in
 
 2. Create DotenvEnvironmentPostProcessor and register in META-INF/spring/org.springframework.boot.env.EnvironmentPostProcessor.imports so Spring Boot automatically integrates .env in all environments and tests.
 
-3. Invoke DotenvLoader in FinAllyApplication.main() for early bootstrap initialization.
+3. Invoke DotenvLoader in SignalForgeApplication.main() for early bootstrap initialization.
 
 4. Add comprehensive unit tests in DotenvLoaderTest and DotenvEnvironmentPostProcessorTest.
 

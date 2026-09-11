@@ -1,8 +1,8 @@
-# FinAlly Frontend Architecture
+# SignalForge Frontend Architecture
 
 ## 1. Overview & Technology Stack
 
-The FinAlly frontend is a single-page application (SPA) designed as an AI-assisted trading workstation inspired by professional financial terminals (e.g., Bloomberg, Refinitiv). It provides real-time market data visualization, simulated order execution, interactive portfolio analytics, and a conversational AI copilot.
+The SignalForge frontend is a single-page application (SPA) designed as an AI-assisted trading workstation inspired by professional financial terminals (e.g., Bloomberg, Refinitiv). It provides real-time market data visualization, simulated order execution, interactive portfolio analytics, and a conversational AI copilot.
 
 ### Core Technologies
 - **Framework**: Angular 19+ (Standalone Components, Zoneless-ready architecture)
