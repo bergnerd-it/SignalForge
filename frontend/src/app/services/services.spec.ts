@@ -6,6 +6,7 @@ import { PortfolioService } from './portfolio.service';
 import { WatchlistService } from './watchlist.service';
 import { ChatService } from './chat.service';
 import { Portfolio, WatchlistEntry, ChatResponse } from '../models/market.model';
+import { BacktestService } from './backtest.service';
 
 describe('PortfolioService', () => {
   let service: PortfolioService;
@@ -524,3 +525,139 @@ describe('HistoricalDataService', () => {
     });
   });
 });
+
+describe('BacktestService', () => {
+  let service: any;
+  let httpTesting: HttpTestingController;
+
+  const mockRun: any = {
+    id: 'bt-run-1',
+    ownerId: 'default',
+    idempotencyKey: 'key-1',
+    canonicalHash: 'hash-1',
+    strategyId: 'ETF_BUY_HOLD_V1',
+    strategyVersion: '1.0.0',
+    datasetId: 'ds-1',
+    candidateListingId: 'listing-1',
+    benchmarkListingId: 'listing-1',
+    initialCash: '1000.00',
+    currency: 'EUR',
+    evaluationCutoff: '2024-02-07T23:59:59Z',
+    requestedStartDate: '2024-01-31',
+    requestedEndDate: '2024-02-07',
+    commissionPerFill: '1.00',
+    spreadBps: '0',
+    slippageBps: '0',
+    status: 'COMPLETED',
+    progressPct: 100,
+    failureReason: null,
+    completedAt: '2026-09-12T00:00:00Z',
+    createdAt: '2026-09-12T00:00:00Z',
+    updatedAt: '2026-09-12T00:00:00Z',
+    candidateSummary: {
+      initialEquity: '1000.00',
+      finalEquity: '1018.00',
+      cumulativeReturn: 0.018,
+      cagr: null,
+      maxDrawdown: -0.001,
+      peakDate: '2024-02-01',
+      troughDate: '2024-02-01',
+      recoveryDate: '2024-02-07',
+      drawdownDurationDays: 6,
+      isRecovered: true,
+      annualizedVolatility: 0.12,
+      turnoverRatio: 0.998,
+      fillCount: 2,
+      totalCommissions: '2.00',
+      endingCash: '18.00',
+      endingHoldingsValue: '1000.00',
+      endingReceivables: '0.00',
+      endingUnits: '20.00000000',
+      endingCostBasis: '1000.00',
+      annualReturns: [],
+      benchmarkDifference: 0.0,
+    },
+    benchmarkSummary: null,
+  };
+
+  beforeEach(() => {
+    TestBed.resetTestingModule();
+    TestBed.configureTestingModule({
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+      ],
+    });
+
+    service = TestBed.inject(BacktestService);
+    httpTesting = TestBed.inject(HttpTestingController);
+  });
+
+  afterEach(() => {
+    httpTesting.verify();
+  });
+
+  it('fetches runs on initialization and refreshRuns()', () => {
+    const initReq = httpTesting.expectOne('/api/research/backtests');
+    initReq.flush([mockRun]);
+
+    service.runs$.subscribe((runs: any[]) => {
+      expect(runs.length).toBe(1);
+      expect(runs[0].id).toBe('bt-run-1');
+    });
+  });
+
+  it('submits a new backtest run with Idempotency-Key header', () => {
+    httpTesting.expectOne('/api/research/backtests').flush([]);
+
+    const createReq = {
+      datasetId: 'ds-1',
+      candidateListingId: 'listing-1',
+      benchmarkListingId: 'listing-1',
+      evaluationCutoff: '2024-02-07T23:59:59Z',
+      requestedStartDate: '2024-01-31',
+      requestedEndDate: '2024-02-07',
+      initialCash: '1000.00',
+      currency: 'EUR',
+      commissionPerFill: '1.00',
+      spreadBps: '0',
+      slippageBps: '0',
+      strategyId: 'ETF_BUY_HOLD_V1',
+      strategyVersion: '1.0.0',
+    };
+
+    service.createRun(createReq, 'idem-test-key').subscribe((res: any) => {
+      expect(res.id).toBe('bt-run-1');
+    });
+
+    const req = httpTesting.expectOne('/api/research/backtests');
+    expect(req.request.method).toBe('POST');
+    expect(req.request.headers.get('Idempotency-Key')).toBe('idem-test-key');
+    req.flush(mockRun);
+
+    httpTesting.expectOne('/api/research/backtests').flush([mockRun]);
+  });
+
+  it('loads run details on selectRun(id)', () => {
+    httpTesting.expectOne('/api/research/backtests').flush([]);
+
+    service.selectRun('bt-run-1');
+    const getReq = httpTesting.expectOne('/api/research/backtests/bt-run-1');
+    getReq.flush(mockRun);
+
+    // Should load equity, orders, events
+    httpTesting.expectOne('/api/research/backtests/bt-run-1/equity').flush([]);
+    httpTesting.expectOne('/api/research/backtests/bt-run-1/orders').flush([]);
+    httpTesting.expectOne('/api/research/backtests/bt-run-1/events').flush([]);
+
+    service.selectedRun$.subscribe((r: any) => {
+      expect(r?.id).toBe('bt-run-1');
+    });
+  });
+
+  it('provides export zip URL', () => {
+    httpTesting.expectOne('/api/research/backtests').flush([]);
+    expect(service.getExportUrl('bt-run-1')).toBe('/api/research/backtests/bt-run-1/export');
+  });
+});
+

@@ -28,6 +28,7 @@ import {
 
 import { ResearchComponent } from './components/research/research.component';
 import { ResearchDataComponent } from './components/research-data/research-data.component';
+import { ResearchBacktestsComponent } from './components/research-backtests/research-backtests.component';
 
 @Component({
   selector: 'app-root',
@@ -44,12 +45,13 @@ import { ResearchDataComponent } from './components/research-data/research-data.
     ChatPanelComponent,
     ResearchComponent,
     ResearchDataComponent,
+    ResearchBacktestsComponent,
   ],
   templateUrl: './app.html',
   styleUrl: './app.css',
 })
 export class App implements OnInit, OnDestroy {
-  public currentView: 'demo' | 'research' | 'research-data' = 'demo';
+  public currentView: 'demo' | 'research' | 'research-data' | 'research-backtests' = 'demo';
   public portfolio: Portfolio | null = null;
   public snapshots: PortfolioSnapshot[] = [];
   public watchlist: WatchlistEntry[] = [];
@@ -77,7 +79,9 @@ export class App implements OnInit, OnDestroy {
 
   ngOnInit(): void {
     if (typeof window !== 'undefined') {
-      if (window.location.pathname.startsWith('/research/data')) {
+      if (window.location.pathname.startsWith('/research/backtests')) {
+        this.currentView = 'research-backtests';
+      } else if (window.location.pathname.startsWith('/research/data')) {
         this.currentView = 'research-data';
       } else if (window.location.pathname.startsWith('/research')) {
         this.currentView = 'research';
@@ -287,10 +291,17 @@ export class App implements OnInit, OnDestroy {
     }, 4000);
   }
 
-  public onViewChange(view: 'demo' | 'research' | 'research-data'): void {
+  public onViewChange(view: 'demo' | 'research' | 'research-data' | 'research-backtests'): void {
     this.currentView = view;
     if (typeof window !== 'undefined' && window.history) {
-      const targetPath = view === 'research-data' ? '/research/data' : (view === 'research' ? '/research' : '/demo');
+      const targetPath =
+        view === 'research-backtests'
+          ? '/research/backtests'
+          : view === 'research-data'
+          ? '/research/data'
+          : view === 'research'
+          ? '/research'
+          : '/demo';
       window.history.pushState({}, '', targetPath);
     }
     this.cdr.markForCheck();
@@ -298,7 +309,9 @@ export class App implements OnInit, OnDestroy {
 
   private handlePopState = (): void => {
     if (typeof window !== 'undefined') {
-      if (window.location.pathname.startsWith('/research/data')) {
+      if (window.location.pathname.startsWith('/research/backtests')) {
+        this.currentView = 'research-backtests';
+      } else if (window.location.pathname.startsWith('/research/data')) {
         this.currentView = 'research-data';
       } else if (window.location.pathname.startsWith('/research')) {
         this.currentView = 'research';

@@ -1,0 +1,261 @@
+package com.bergnerd.signalforge.app.research.backtest;
+
+import com.bergnerd.signalforge.app.accounting.AccountingCore;
+import com.fasterxml.jackson.annotation.JsonInclude;
+
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.List;
+
+public final class BacktestDtos {
+
+    private BacktestDtos() {}
+
+    public enum Status {
+        QUEUED,
+        RUNNING,
+        COMPLETED,
+        FAILED,
+        CANCELLED,
+        INTERRUPTED
+    }
+
+    public enum SeriesType {
+        CANDIDATE,
+        BENCHMARK
+    }
+
+    public enum OrderType {
+        INITIAL_BUY,
+        REINVEST
+    }
+
+    public enum OrderStatus {
+        FILLED,
+        SKIPPED
+    }
+
+    public enum EventType {
+        FUNDING,
+        SPLIT,
+        ENTITLEMENT,
+        PAYMENT,
+        EXECUTION,
+        CLOSING_MARK
+    }
+
+    public record CreateBacktestRequest(
+            String datasetId,
+            String candidateListingId,
+            String benchmarkListingId,
+            String evaluationCutoff,
+            String requestedStartDate,
+            String requestedEndDate,
+            String initialCash,
+            String currency,
+            String commissionPerFill,
+            String spreadBps,
+            String slippageBps,
+            String strategyId,
+            String strategyVersion
+    ) {
+        public CreateBacktestRequest {
+            if (strategyId == null || strategyId.isBlank()) {
+                strategyId = "ETF_BUY_HOLD_V1";
+            }
+            if (strategyVersion == null || strategyVersion.isBlank()) {
+                strategyVersion = "1.0.0";
+            }
+            if (currency == null || currency.isBlank()) {
+                currency = "EUR";
+            }
+            if (initialCash == null || initialCash.isBlank()) {
+                initialCash = "1000.00";
+            }
+            if (commissionPerFill == null || commissionPerFill.isBlank()) {
+                commissionPerFill = "1.00";
+            }
+            if (spreadBps == null || spreadBps.isBlank()) {
+                spreadBps = "10";
+            }
+            if (slippageBps == null || slippageBps.isBlank()) {
+                slippageBps = "5";
+            }
+        }
+
+        public String canonicalHash() {
+            try {
+                MessageDigest md = MessageDigest.getInstance("SHA-256");
+                BigDecimal normCash = AccountingCore.normalizeStartingCash(new BigDecimal(initialCash));
+                BigDecimal normCommission = AccountingCore.normalizeCash(new BigDecimal(commissionPerFill), "commission");
+                BigDecimal normSpread = new BigDecimal(spreadBps).setScale(2, RoundingMode.HALF_EVEN);
+                BigDecimal normSlippage = new BigDecimal(slippageBps).setScale(2, RoundingMode.HALF_EVEN);
+
+                String canonical = String.join("|",
+                        strategyId.trim(),
+                        strategyVersion.trim(),
+                        datasetId.trim(),
+                        candidateListingId.trim(),
+                        benchmarkListingId.trim(),
+                        evaluationCutoff.trim(),
+                        requestedStartDate.trim(),
+                        requestedEndDate.trim(),
+                        normCash.toPlainString(),
+                        currency.trim().toUpperCase(),
+                        normCommission.toPlainString(),
+                        normSpread.toPlainString(),
+                        normSlippage.toPlainString()
+                );
+                byte[] digest = md.digest(canonical.getBytes(StandardCharsets.UTF_8));
+                StringBuilder sb = new StringBuilder();
+                for (byte b : digest) {
+                    sb.append(String.format("%02x", b));
+                }
+                return sb.toString();
+            } catch (NoSuchAlgorithmException e) {
+                throw new IllegalStateException("SHA-256 not available", e);
+            }
+        }
+    }
+
+    public record AnnualReturn(
+            int year,
+            Double candidateReturn,
+            Double benchmarkReturn,
+            boolean isPartial
+    ) {}
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public record BacktestAnalyticsSummary(
+            String initialEquity,
+            String finalEquity,
+            Double cumulativeReturn,
+            Double cagr,
+            Double benchmarkReturn,
+            Double benchmarkDifference,
+            Double maxDrawdown,
+            String peakDate,
+            String troughDate,
+            String recoveryDate,
+            Integer underwaterDurationDays,
+            boolean isRecovered,
+            Double annualizedVolatility,
+            Double turnover,
+            int fillCount,
+            String totalCommissions,
+            String totalSpreadSlippageEstimate,
+            String realizedGain,
+            String unrealizedGain,
+            String endingCash,
+            String endingReceivables,
+            String endingHoldingsValue,
+            String endingCostBasis,
+            String endingUnits,
+            List<AnnualReturn> annualReturns
+    ) {}
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public record BacktestSummaryResponse(
+            String id,
+            String ownerId,
+            String idempotencyKey,
+            String canonicalHash,
+            String status,
+            int progressPct,
+            String strategyId,
+            String strategyVersion,
+            String datasetId,
+            String candidateListingId,
+            String benchmarkListingId,
+            String initialCash,
+            String currency,
+            String evaluationCutoff,
+            String requestedStartDate,
+            String requestedEndDate,
+            String effectiveStartDate,
+            String effectiveEndDate,
+            String commissionPerFill,
+            String spreadBps,
+            String slippageBps,
+            String failureReason,
+            BacktestAnalyticsSummary candidateSummary,
+            BacktestAnalyticsSummary benchmarkSummary,
+            String createdAt,
+            String updatedAt,
+            String completedAt
+    ) {}
+
+    public record DailyEquityPoint(
+            String sessionDate,
+            String seriesType,
+            String cash,
+            String holdingsValue,
+            String receivables,
+            String totalEquity,
+            Double dailyReturn,
+            Double drawdown,
+            String peakEquity,
+            String units,
+            String costBasis,
+            String rawClose
+    ) {}
+
+    public record BacktestOrderDto(
+            String id,
+            String runId,
+            String seriesType,
+            String orderType,
+            String listingId,
+            String sessionDate,
+            String requestedQuantity,
+            String executedQuantity,
+            String rawOpen,
+            String fillPrice,
+            String commission,
+            String spreadCost,
+            String slippageCost,
+            String status,
+            String skipReason,
+            String createdAt
+    ) {}
+
+    public record BacktestEventDto(
+            String id,
+            String runId,
+            String seriesType,
+            int eventSeq,
+            String eventType,
+            String eventDate,
+            String eventTime,
+            String description,
+            String detailsJson,
+            String cashDelta,
+            String unitsDelta,
+            String basisDelta,
+            String receivableDelta,
+            String createdAt
+    ) {}
+
+    public record BacktestHoldingsDto(
+            String seriesType,
+            String listingId,
+            String units,
+            String totalCostBasis,
+            String averageCost,
+            String currentPrice,
+            String marketValue,
+            String unrealizedGain,
+            String updatedAt
+    ) {}
+
+    public record PagedResponse<T>(
+            List<T> items,
+            int total,
+            int limit,
+            int offset,
+            boolean hasMore
+    ) {}
+}

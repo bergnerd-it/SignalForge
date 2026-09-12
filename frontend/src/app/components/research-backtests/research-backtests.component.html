@@ -1,0 +1,687 @@
+<div class="backtest-container">
+  <!-- Page Header -->
+  <header class="page-header">
+    <div class="header-titles">
+      <h1 class="page-title">Strategy Backtesting</h1>
+      <p class="page-subtitle">Run deterministic historical simulations with modeled execution costs and benchmark comparison.</p>
+    </div>
+    <div class="header-actions">
+      <button class="btn btn-primary" id="btn-new-backtest" (click)="openNewModal()">
+        + NEW BACKTEST
+      </button>
+    </div>
+  </header>
+
+  <!-- Detail View (When a run is selected) -->
+  <div *ngIf="selectedRun" class="detail-container">
+    <div class="detail-header-card">
+      <div class="detail-title-row">
+        <div class="detail-meta">
+          <button class="btn btn-outline btn-sm" id="btn-back-to-runs" (click)="clearSelection()">
+            ← ALL RUNS
+          </button>
+          <span class="run-id font-mono">{{ selectedRun.id }}</span>
+          <span class="badge" [ngClass]="'badge-' + selectedRun.status.toLowerCase()">
+            {{ selectedRun.status }}
+          </span>
+          <span class="strategy-badge font-mono">{{ selectedRun.strategyId }} (v{{ selectedRun.strategyVersion }})</span>
+        </div>
+        <div class="detail-actions">
+          <button
+            *ngIf="selectedRun.status === 'RUNNING' || selectedRun.status === 'QUEUED'"
+            class="btn btn-danger btn-sm"
+            [disabled]="isCancelling"
+            (click)="cancelCurrentRun()"
+          >
+            {{ isCancelling ? 'CANCELING...' : 'CANCEL RUN' }}
+          </button>
+          <a
+            *ngIf="selectedRun.status === 'COMPLETED'"
+            class="btn btn-secondary btn-sm"
+            [href]="getExportUrl(selectedRun.id)"
+            download
+            id="btn-export-zip"
+          >
+            ↓ EXPORT ZIP
+          </a>
+        </div>
+      </div>
+
+      <div class="detail-summary-bar font-mono">
+        <span>DATASET: <strong>{{ selectedRun.datasetId }}</strong></span>
+        <span>CANDIDATE: <strong>{{ selectedRun.candidateListingId }}</strong></span>
+        <span>BENCHMARK: <strong>{{ selectedRun.benchmarkListingId }}</strong></span>
+        <span>RANGE: <strong>{{ selectedRun.requestedStartDate }} → {{ selectedRun.requestedEndDate }}</strong></span>
+        <span>START CASH: <strong>{{ selectedRun.initialCash }} {{ selectedRun.currency }}</strong></span>
+      </div>
+
+      <!-- Active Progress Bar -->
+      <div *ngIf="selectedRun.status === 'RUNNING' || selectedRun.status === 'QUEUED'" class="progress-bar-container">
+        <div class="progress-track">
+          <div class="progress-fill" [style.width.%]="selectedRun.progressPct"></div>
+        </div>
+        <div class="progress-text font-mono">
+          <span>{{ selectedRun.status === 'QUEUED' ? 'Queued in worker pool...' : 'Simulating market sessions...' }}</span>
+          <span>{{ selectedRun.progressPct }}%</span>
+        </div>
+      </div>
+
+      <!-- Error / Interruption Banner -->
+      <div *ngIf="selectedRun.status === 'FAILED' || selectedRun.status === 'INTERRUPTED' || selectedRun.status === 'CANCELLED'" class="alert-banner" [ngClass]="'alert-' + selectedRun.status.toLowerCase()">
+        <span class="alert-icon">⚠</span>
+        <div class="alert-content">
+          <strong>Run {{ selectedRun.status }}:</strong>
+          <span>{{ selectedRun.failureReason || 'Backtest execution was terminated.' }}</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Completed Run Analytics & Visualizations -->
+    <div *ngIf="selectedRun.status === 'COMPLETED' && selectedRun.candidateSummary" class="analytics-wrapper">
+      <!-- KPI Cards Grid -->
+      <div class="kpi-grid">
+        <div class="kpi-card">
+          <span class="kpi-label">CUMULATIVE RETURN</span>
+          <span class="kpi-value font-mono" [ngClass]="selectedRun.candidateSummary.cumulativeReturn >= 0 ? 'text-green' : 'text-red'">
+            {{ formatPct(selectedRun.candidateSummary.cumulativeReturn) }}
+          </span>
+          <span class="kpi-sub font-mono">Benchmark: {{ formatPct(selectedRun.benchmarkSummary?.cumulativeReturn) }}</span>
+        </div>
+
+        <div class="kpi-card">
+          <span class="kpi-label">FINAL EQUITY</span>
+          <span class="kpi-value font-mono text-cyan">
+            {{ selectedRun.candidateSummary.finalEquity }} {{ selectedRun.currency }}
+          </span>
+          <span class="kpi-sub font-mono">Start: {{ selectedRun.candidateSummary.initialEquity }} {{ selectedRun.currency }}</span>
+        </div>
+
+        <div class="kpi-card">
+          <span class="kpi-label">CAGR</span>
+          <span class="kpi-value font-mono">
+            {{ selectedRun.candidateSummary.cagr !== null ? formatPct(selectedRun.candidateSummary.cagr) : 'N/A (< 1 yr)' }}
+          </span>
+          <span class="kpi-sub font-mono">Benchmark: {{ selectedRun.benchmarkSummary?.cagr !== null ? formatPct(selectedRun.benchmarkSummary?.cagr) : 'N/A' }}</span>
+        </div>
+
+        <div class="kpi-card">
+          <span class="kpi-label">MAX DRAWDOWN</span>
+          <span class="kpi-value font-mono text-red">
+            {{ formatPct(selectedRun.candidateSummary.maxDrawdown) }}
+          </span>
+          <span class="kpi-sub font-mono">
+            {{ selectedRun.candidateSummary.isRecovered ? 'Recovered (' + (selectedRun.candidateSummary.underwaterDurationDays ?? selectedRun.candidateSummary.drawdownDurationDays ?? 0) + 'd)' : 'Underwater (' + (selectedRun.candidateSummary.underwaterDurationDays ?? selectedRun.candidateSummary.drawdownDurationDays ?? 0) + 'd)' }}
+          </span>
+        </div>
+
+        <div class="kpi-card">
+          <span class="kpi-label">ANNUALIZED VOLATILITY</span>
+          <span class="kpi-value font-mono">
+            {{ selectedRun.candidateSummary.annualizedVolatility !== null ? formatPct(selectedRun.candidateSummary.annualizedVolatility) : 'N/A (< 2 days)' }}
+          </span>
+          <span class="kpi-sub font-mono">252-day annualized</span>
+        </div>
+
+        <div class="kpi-card">
+          <span class="kpi-label">BENCHMARK DIFFERENCE</span>
+          <span class="kpi-value font-mono" [ngClass]="(selectedRun.candidateSummary.benchmarkDifference ?? 0) >= 0 ? 'text-green' : 'text-red'">
+            {{ formatPct(selectedRun.candidateSummary.benchmarkDifference) }}
+          </span>
+          <span class="kpi-sub font-mono">Relative to S1 Buy & Hold</span>
+        </div>
+
+        <div class="kpi-card">
+          <span class="kpi-label">PORTFOLIO TURNOVER</span>
+          <span class="kpi-value font-mono">
+            {{ formatNumber(((selectedRun.candidateSummary.turnover ?? selectedRun.candidateSummary.turnoverRatio ?? 0) * 100)) }}%
+          </span>
+          <span class="kpi-sub font-mono">Fills: {{ selectedRun.candidateSummary.fillCount }}</span>
+        </div>
+
+        <div class="kpi-card">
+          <span class="kpi-label">COMMISSIONS PAID</span>
+          <span class="kpi-value font-mono text-muted">
+            {{ selectedRun.candidateSummary.totalCommissions }} {{ selectedRun.currency }}
+          </span>
+          <span class="kpi-sub font-mono">Modeled execution</span>
+        </div>
+      </div>
+
+      <!-- Interactive Charts -->
+      <div class="charts-card">
+        <div class="chart-header">
+          <div class="chart-title-group">
+            <span class="chart-title">EQUITY CURVE & UNDERWATER DRAWDOWN</span>
+            <div class="chart-legend font-mono">
+              <span class="legend-item"><span class="legend-dot dot-green"></span> Candidate Strategy</span>
+              <span class="legend-item"><span class="legend-dot dot-cyan"></span> S1 Benchmark</span>
+              <span class="legend-item"><span class="legend-dot dot-red"></span> Drawdown</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="chart-body" *ngIf="candidatePoints.length > 0">
+          <!-- Main Equity SVG -->
+          <svg class="chart-svg equity-svg" viewBox="0 0 600 180" preserveAspectRatio="none">
+            <defs>
+              <linearGradient id="equityGrad" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="#10b981" stop-opacity="0.25"/>
+                <stop offset="100%" stop-color="#10b981" stop-opacity="0.0"/>
+              </linearGradient>
+            </defs>
+            <!-- Area under candidate -->
+            <polygon *ngIf="candidateAreaPolygon" [attr.points]="candidateAreaPolygon" fill="url(#equityGrad)" />
+            <!-- Benchmark Polyline -->
+            <polyline
+              *ngIf="equityBenchmarkPolyline"
+              [attr.points]="equityBenchmarkPolyline"
+              fill="none"
+              stroke="#06b6d4"
+              stroke-width="1.8"
+              stroke-dasharray="4,3"
+            />
+            <!-- Candidate Polyline -->
+            <polyline
+              *ngIf="equityCandidatePolyline"
+              [attr.points]="equityCandidatePolyline"
+              fill="none"
+              stroke="#10b981"
+              stroke-width="2.2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+
+          <!-- Underwater Drawdown SVG -->
+          <div class="drawdown-chart-wrapper">
+            <span class="drawdown-label font-mono">UNDERWATER DRAWDOWN</span>
+            <svg class="chart-svg dd-svg" viewBox="0 0 600 70" preserveAspectRatio="none">
+              <defs>
+                <linearGradient id="ddGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stop-color="#ef4444" stop-opacity="0.4"/>
+                  <stop offset="100%" stop-color="#ef4444" stop-opacity="0.05"/>
+                </linearGradient>
+              </defs>
+              <polygon *ngIf="drawdownPolygon" [attr.points]="drawdownPolygon" fill="url(#ddGrad)" />
+              <polyline
+                *ngIf="drawdownPolyline"
+                [attr.points]="drawdownPolyline"
+                fill="none"
+                stroke="#ef4444"
+                stroke-width="1.5"
+              />
+            </svg>
+          </div>
+
+          <!-- Date Axis Labels -->
+          <div class="chart-axis-labels font-mono" *ngIf="chartDates.length >= 3">
+            <span>{{ chartDates[0] }}</span>
+            <span>{{ chartDates[1] }}</span>
+            <span>{{ chartDates[2] }}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Annual Returns Table -->
+      <div *ngIf="selectedRun.candidateSummary.annualReturns.length > 0" class="annual-returns-card">
+        <h2 class="card-subtitle">Annual Performance Breakdown</h2>
+        <table class="data-table font-mono">
+          <thead>
+            <tr>
+              <th>YEAR</th>
+              <th>CANDIDATE RETURN</th>
+              <th>BENCHMARK RETURN</th>
+              <th>DIFFERENCE</th>
+              <th>START EQUITY</th>
+              <th>END EQUITY</th>
+              <th>TYPE</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr *ngFor="let ar of selectedRun.candidateSummary.annualReturns">
+              <td><strong>{{ ar.year }}</strong></td>
+              <td [ngClass]="(ar.candidateReturn ?? 0) >= 0 ? 'text-green' : 'text-red'">
+                {{ formatPct(ar.candidateReturn) }}
+              </td>
+              <td>{{ formatPct(ar.benchmarkReturn) }}</td>
+              <td [ngClass]="((ar.difference ?? (ar.candidateReturn ?? 0) - (ar.benchmarkReturn ?? 0))) >= 0 ? 'text-green' : 'text-red'">
+                {{ formatPct(ar.difference ?? ((ar.candidateReturn ?? 0) - (ar.benchmarkReturn ?? 0))) }}
+              </td>
+              <td>{{ ar.candidateStartEquity || selectedRun.candidateSummary.initialEquity }}</td>
+              <td>{{ ar.candidateEndEquity || selectedRun.candidateSummary.finalEquity }}</td>
+              <td>
+                <span *ngIf="ar.isPartial || ar.isPartialYear" class="badge-partial">PARTIAL</span>
+                <span *ngIf="!ar.isPartial && !ar.isPartialYear" class="badge-full">FULL</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Tabbed Deep Dive Section -->
+      <div class="deep-dive-card">
+        <div class="tab-bar font-mono">
+          <button
+            class="tab-btn"
+            [class.active]="activeTab === 'equity'"
+            (click)="activeTab = 'equity'"
+          >
+            DAILY EQUITY SERIES ({{ dailyEquity.length }})
+          </button>
+          <button
+            class="tab-btn"
+            [class.active]="activeTab === 'orders'"
+            (click)="activeTab = 'orders'"
+          >
+            ORDERS & FILLS ({{ orders.length }})
+          </button>
+          <button
+            class="tab-btn"
+            [class.active]="activeTab === 'events'"
+            (click)="activeTab = 'events'"
+          >
+            AUDIT EVENTS ({{ events.length }})
+          </button>
+          <button
+            class="tab-btn"
+            [class.active]="activeTab === 'config'"
+            (click)="activeTab = 'config'"
+          >
+            ASSUMPTIONS & CONFIG
+          </button>
+        </div>
+
+        <!-- Tab 1: Daily Equity Series -->
+        <div *ngIf="activeTab === 'equity'" class="tab-pane">
+          <div class="table-scroll-box">
+            <table class="data-table font-mono">
+              <thead>
+                <tr>
+                  <th>DATE</th>
+                  <th>SERIES</th>
+                  <th>CASH</th>
+                  <th>HOLDINGS</th>
+                  <th>RECEIVABLES</th>
+                  <th>TOTAL EQUITY</th>
+                  <th>DAILY RETURN</th>
+                  <th>DRAWDOWN</th>
+                  <th>UNITS</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr *ngFor="let row of dailyEquity">
+                  <td>{{ row.sessionDate }}</td>
+                  <td><span [ngClass]="row.seriesType === 'CANDIDATE' ? 'tag-candidate' : 'tag-benchmark'">{{ row.seriesType }}</span></td>
+                  <td>{{ row.cashBalance }}</td>
+                  <td>{{ row.holdingsValue }}</td>
+                  <td>{{ row.receivablesBalance }}</td>
+                  <td><strong>{{ row.totalEquity }}</strong></td>
+                  <td [ngClass]="(row.dailyReturn ?? 0) >= 0 ? 'text-green' : 'text-red'">
+                    {{ formatPct(row.dailyReturn) }}
+                  </td>
+                  <td class="text-red">{{ formatPct(row.drawdown) }}</td>
+                  <td>{{ row.units }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Tab 2: Orders & Fills -->
+        <div *ngIf="activeTab === 'orders'" class="tab-pane">
+          <div class="table-scroll-box">
+            <table class="data-table font-mono">
+              <thead>
+                <tr>
+                  <th>DATE</th>
+                  <th>SERIES</th>
+                  <th>SIDE</th>
+                  <th>LISTING</th>
+                  <th>REQ UNITS</th>
+                  <th>FILLED</th>
+                  <th>FILL PRICE</th>
+                  <th>MODELED PRICE</th>
+                  <th>COMMISSION</th>
+                  <th>CASH IMPACT</th>
+                  <th>STATUS</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr *ngFor="let order of orders">
+                  <td>{{ order.sessionDate }}</td>
+                  <td><span [ngClass]="order.seriesType === 'CANDIDATE' ? 'tag-candidate' : 'tag-benchmark'">{{ order.seriesType }}</span></td>
+                  <td><span class="side-badge" [ngClass]="'side-' + order.side.toLowerCase()">{{ order.side }}</span></td>
+                  <td>{{ order.listingId }}</td>
+                  <td>{{ order.requestedUnits }}</td>
+                  <td>{{ order.filledUnits }}</td>
+                  <td>{{ order.unadjustedFillPrice }}</td>
+                  <td>{{ order.modeledFillPrice }}</td>
+                  <td>{{ order.commission }}</td>
+                  <td>{{ order.totalCashImpact }}</td>
+                  <td><span class="order-status-filled">{{ order.orderStatus }}</span></td>
+                </tr>
+                <tr *ngIf="orders.length === 0">
+                  <td colspan="11" class="text-center text-muted">No orders executed in this simulation.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Tab 3: Audit Events -->
+        <div *ngIf="activeTab === 'events'" class="tab-pane">
+          <div class="table-scroll-box">
+            <table class="data-table font-mono">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>DATE</th>
+                  <th>SERIES</th>
+                  <th>EVENT TYPE</th>
+                  <th>OCCURRED AT</th>
+                  <th>PAYLOAD</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr *ngFor="let event of events">
+                  <td>{{ event.eventId }}</td>
+                  <td>{{ event.sessionDate }}</td>
+                  <td><span [ngClass]="event.seriesType === 'CANDIDATE' ? 'tag-candidate' : 'tag-benchmark'">{{ event.seriesType }}</span></td>
+                  <td><span class="event-type-badge">{{ event.eventType }}</span></td>
+                  <td>{{ event.occurredAt }}</td>
+                  <td class="payload-cell">{{ event.eventPayloadJson }}</td>
+                </tr>
+                <tr *ngIf="events.length === 0">
+                  <td colspan="6" class="text-center text-muted">No audit events recorded.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Tab 4: Config & Assumptions -->
+        <div *ngIf="activeTab === 'config'" class="tab-pane config-pane">
+          <div class="config-grid font-mono">
+            <div class="config-item">
+              <span class="config-key">CANONICAL HASH</span>
+              <span class="config-val">{{ selectedRun.canonicalHash }}</span>
+            </div>
+            <div class="config-item">
+              <span class="config-key">STRATEGY</span>
+              <span class="config-val">{{ selectedRun.strategyId }} (v{{ selectedRun.strategyVersion }})</span>
+            </div>
+            <div class="config-item">
+              <span class="config-key">DATASET ID</span>
+              <span class="config-val">{{ selectedRun.datasetId }}</span>
+            </div>
+            <div class="config-item">
+              <span class="config-key">EVALUATION CUTOFF</span>
+              <span class="config-val">{{ selectedRun.evaluationCutoff }}</span>
+            </div>
+            <div class="config-item">
+              <span class="config-key">STARTING CASH</span>
+              <span class="config-val">{{ selectedRun.initialCash }} {{ selectedRun.currency }}</span>
+            </div>
+            <div class="config-item">
+              <span class="config-key">COMMISSION PER FILL</span>
+              <span class="config-val">{{ selectedRun.commissionPerFill }} {{ selectedRun.currency }}</span>
+            </div>
+            <div class="config-item">
+              <span class="config-key">SPREAD MODEL</span>
+              <span class="config-val">{{ selectedRun.spreadBps }} bps</span>
+            </div>
+            <div class="config-item">
+              <span class="config-key">SLIPPAGE MODEL</span>
+              <span class="config-val">{{ selectedRun.slippageBps }} bps</span>
+            </div>
+            <div class="config-item">
+              <span class="config-key">CREATED AT</span>
+              <span class="config-val">{{ selectedRun.createdAt }}</span>
+            </div>
+            <div class="config-item">
+              <span class="config-key">COMPLETED AT</span>
+              <span class="config-val">{{ selectedRun.completedAt || 'N/A' }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Run List View (When no run is selected or below detail) -->
+  <div *ngIf="!selectedRun" class="runs-list-card">
+    <div class="card-header-bar">
+      <h2 class="section-title">Backtest History</h2>
+      <span class="count-badge font-mono">{{ runs.length }} RUNS</span>
+    </div>
+
+    <div class="table-scroll-box">
+      <table class="data-table font-mono" id="backtests-table">
+        <thead>
+          <tr>
+            <th>RUN ID / CREATED</th>
+            <th>STRATEGY</th>
+            <th>DATASET / LISTING</th>
+            <th>DATE RANGE</th>
+            <th>INITIAL CASH</th>
+            <th>STATUS</th>
+            <th>CUMULATIVE RETURN</th>
+            <th>MAX DRAWDOWN</th>
+            <th>ACTIONS</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr *ngFor="let run of runs" class="run-row" (click)="selectRun(run.id)">
+            <td>
+              <div class="run-cell-id">
+                <span class="run-id-link">{{ run.id }}</span>
+                <span class="text-muted text-xs">{{ run.createdAt }}</span>
+              </div>
+            </td>
+            <td>{{ run.strategyId }}</td>
+            <td>
+              <div class="dataset-cell">
+                <span>{{ run.candidateListingId }}</span>
+                <span class="text-muted text-xs">{{ run.datasetId }}</span>
+              </div>
+            </td>
+            <td>{{ run.requestedStartDate }} → {{ run.requestedEndDate }}</td>
+            <td>{{ run.initialCash }} {{ run.currency }}</td>
+            <td>
+              <span class="badge" [ngClass]="'badge-' + run.status.toLowerCase()">
+                {{ run.status }}
+              </span>
+            </td>
+            <td [ngClass]="(run.candidateSummary?.cumulativeReturn ?? 0) >= 0 ? 'text-green' : 'text-red'">
+              {{ run.candidateSummary ? formatPct(run.candidateSummary.cumulativeReturn) : '—' }}
+            </td>
+            <td class="text-red">
+              {{ run.candidateSummary ? formatPct(run.candidateSummary.maxDrawdown) : '—' }}
+            </td>
+            <td (click)="$event.stopPropagation()">
+              <div class="row-actions">
+                <button class="btn btn-outline btn-xs" (click)="selectRun(run.id)">
+                  VIEW
+                </button>
+                <a
+                  *ngIf="run.status === 'COMPLETED'"
+                  class="btn btn-secondary btn-xs"
+                  [href]="getExportUrl(run.id)"
+                  download
+                >
+                  ZIP
+                </a>
+              </div>
+            </td>
+          </tr>
+          <tr *ngIf="runs.length === 0">
+            <td colspan="9" class="empty-state">
+              <p>No historical backtests found.</p>
+              <button class="btn btn-primary btn-sm" (click)="openNewModal()">Run Your First Backtest</button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- New Backtest Modal Dialog -->
+  <div *ngIf="showCreateModal" class="modal-backdrop" (click)="closeNewModal()">
+    <div class="modal-dialog font-mono" (click)="$event.stopPropagation()" role="dialog" aria-labelledby="modal-title">
+      <div class="modal-header">
+        <h2 id="modal-title" class="modal-title">NEW STRATEGY BACKTEST</h2>
+        <button class="btn-close" (click)="closeNewModal()" aria-label="Close">×</button>
+      </div>
+
+      <div class="modal-body">
+        <div *ngIf="createError" class="modal-error font-mono">
+          ⚠ {{ createError }}
+        </div>
+
+        <div class="form-row">
+          <label class="form-label" for="dataset-select">DATASET</label>
+          <select
+            id="dataset-select"
+            class="form-control"
+            [ngModel]="newRun.datasetId"
+            (ngModelChange)="onDatasetSelect($event)"
+          >
+            <option value="" disabled>Select validated dataset...</option>
+            <option *ngFor="let ds of availableDatasets" [value]="ds.id">
+              {{ ds.name }} ({{ ds.id }}) [{{ ds.coverageStart }} → {{ ds.coverageEnd }}]
+            </option>
+          </select>
+        </div>
+
+        <div class="form-row form-grid-2">
+          <div>
+            <label class="form-label" for="candidate-select">CANDIDATE LISTING</label>
+            <select
+              id="candidate-select"
+              class="form-control"
+              [(ngModel)]="newRun.candidateListingId"
+            >
+              <option *ngFor="let l of availableListings" [value]="l.listingId">
+                {{ l.symbol }} ({{ l.listingId }})
+              </option>
+            </select>
+          </div>
+          <div>
+            <label class="form-label" for="benchmark-select">BENCHMARK LISTING</label>
+            <select
+              id="benchmark-select"
+              class="form-control"
+              [(ngModel)]="newRun.benchmarkListingId"
+            >
+              <option *ngFor="let l of availableListings" [value]="l.listingId">
+                {{ l.symbol }} ({{ l.listingId }})
+              </option>
+            </select>
+          </div>
+        </div>
+
+        <div class="form-row form-grid-2">
+          <div>
+            <label class="form-label" for="start-date-input">START DATE</label>
+            <input
+              id="start-date-input"
+              type="date"
+              class="form-control"
+              [(ngModel)]="newRun.requestedStartDate"
+            />
+          </div>
+          <div>
+            <label class="form-label" for="end-date-input">END DATE</label>
+            <input
+              id="end-date-input"
+              type="date"
+              class="form-control"
+              [(ngModel)]="newRun.requestedEndDate"
+            />
+          </div>
+        </div>
+
+        <div class="form-row">
+          <label class="form-label" for="cutoff-input">EVALUATION CUTOFF (AS-OF)</label>
+          <input
+            id="cutoff-input"
+            type="text"
+            class="form-control"
+            [(ngModel)]="newRun.evaluationCutoff"
+            placeholder="YYYY-MM-DDTHH:MM:SSZ"
+          />
+        </div>
+
+        <div class="form-row form-grid-2">
+          <div>
+            <label class="form-label" for="cash-input">INITIAL CASH</label>
+            <input
+              id="cash-input"
+              type="text"
+              class="form-control"
+              [(ngModel)]="newRun.initialCash"
+            />
+          </div>
+          <div>
+            <label class="form-label" for="currency-input">CURRENCY</label>
+            <input
+              id="currency-input"
+              type="text"
+              class="form-control"
+              [(ngModel)]="newRun.currency"
+            />
+          </div>
+        </div>
+
+        <div class="form-row form-grid-3">
+          <div>
+            <label class="form-label" for="commission-input">COMMISSION / FILL</label>
+            <input
+              id="commission-input"
+              type="text"
+              class="form-control"
+              [(ngModel)]="newRun.commissionPerFill"
+            />
+          </div>
+          <div>
+            <label class="form-label" for="spread-input">SPREAD (BPS)</label>
+            <input
+              id="spread-input"
+              type="text"
+              class="form-control"
+              [(ngModel)]="newRun.spreadBps"
+            />
+          </div>
+          <div>
+            <label class="form-label" for="slippage-input">SLIPPAGE (BPS)</label>
+            <input
+              id="slippage-input"
+              type="text"
+              class="form-control"
+              [(ngModel)]="newRun.slippageBps"
+            />
+          </div>
+        </div>
+
+        <div class="form-row">
+          <label class="form-label">STRATEGY</label>
+          <div class="form-static font-mono">
+            {{ newRun.strategyId }} (v{{ newRun.strategyVersion }}) — Fixed Day 1 Market Buy & Hold
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn btn-outline" (click)="closeNewModal()">CANCEL</button>
+        <button
+          class="btn btn-primary"
+          id="btn-submit-backtest"
+          [disabled]="isSubmitting || !newRun.datasetId || !newRun.candidateListingId"
+          (click)="submitNewRun()"
+        >
+          {{ isSubmitting ? 'LAUNCHING...' : 'RUN SIMULATION' }}
+        </button>
+      </div>
+    </div>
+  </div>
+</div>

@@ -39,8 +39,8 @@ public class MigrationRunner {
     @Value("${spring.datasource.url}")
     private String datasourceUrl;
 
-    public static final String CODE_VERSION = "2.0.0-M2";
-    public static final int CURRENT_SCHEMA_VERSION = 3;
+    public static final String CODE_VERSION = "2.0.0-M3";
+    public static final int CURRENT_SCHEMA_VERSION = 4;
 
     public static final List<String> DEFAULT_TICKERS = List.of(
             "AAPL", "GOOGL", "MSFT", "AMZN", "TSLA",
@@ -135,18 +135,21 @@ public class MigrationRunner {
     }
 
     private void applyFreshInstall() {
-        log.info("Applying fresh M2 installation schema (Versions 1-3)...");
+        log.info("Applying fresh M3 installation schema (Versions 1-4)...");
         String v1Sql = loadResource("db/migration/V1__init_m1b_schema.sql");
         String v2Sql = loadResource("db/migration/V2__m1b_review_fixes.sql");
         String v3Sql = loadResource("db/migration/V3__historical_datasets_and_import.sql");
+        String v4Sql = loadResource("db/migration/V4__backtest_engine.sql");
         String v1Checksum = computeV1MigrationChecksum(v1Sql);
         String v2Checksum = computeSqlChecksum(v2Sql);
         String v3Checksum = computeSqlChecksum(v3Sql);
+        String v4Checksum = computeSqlChecksum(v4Sql);
 
         transactionTemplate.executeWithoutResult(status -> {
             executeSqlScript(v1Sql);
             executeSqlScript(v2Sql);
             executeSqlScript(v3Sql);
+            executeSqlScript(v4Sql);
 
             // Record migrations
             String now = Instant.now().toString();
@@ -162,13 +165,17 @@ public class MigrationRunner {
                     "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (3, 'M2 historical datasets and import', ?, ?, ?)",
                     v3Checksum, now, CODE_VERSION
             );
+            jdbcTemplate.update(
+                    "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (4, 'M3 backtest engine and baseline', ?, ?, ?)",
+                    v4Checksum, now, CODE_VERSION
+            );
 
             // Seed default user legacy demo portfolio and initial cash
             seedFreshDefaults(now);
         });
         validateCurrentSchema();
 
-        log.info("Fresh M2 installation completed successfully.");
+        log.info("Fresh M3 installation completed successfully.");
     }
 
     private void applyLegacyMigration() {
@@ -182,9 +189,11 @@ public class MigrationRunner {
         String v1Sql = loadResource("db/migration/V1__init_m1b_schema.sql");
         String v2Sql = loadResource("db/migration/V2__m1b_review_fixes.sql");
         String v3Sql = loadResource("db/migration/V3__historical_datasets_and_import.sql");
+        String v4Sql = loadResource("db/migration/V4__backtest_engine.sql");
         String v1Checksum = computeV1MigrationChecksum(v1Sql);
         String v2Checksum = computeSqlChecksum(v2Sql);
         String v3Checksum = computeSqlChecksum(v3Sql);
+        String v4Checksum = computeSqlChecksum(v4Sql);
 
         transactionTemplate.executeWithoutResult(status -> {
             log.info("Renaming legacy tables to raw archive tables...");
@@ -200,6 +209,7 @@ public class MigrationRunner {
 
             executeSqlScript(v2Sql);
             executeSqlScript(v3Sql);
+            executeSqlScript(v4Sql);
 
             // Sync legacy tables for backwards compatibility
             syncLegacyCompatibilityTables();
@@ -218,6 +228,10 @@ public class MigrationRunner {
                     "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (3, 'M2 historical datasets and import', ?, ?, ?)",
                     v3Checksum, now, CODE_VERSION
             );
+            jdbcTemplate.update(
+                    "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (4, 'M3 backtest engine and baseline', ?, ?, ?)",
+                    v4Checksum, now, CODE_VERSION
+            );
         });
         validateCurrentSchema();
 
@@ -228,10 +242,12 @@ public class MigrationRunner {
         String v1Sql = loadResource("db/migration/V1__init_m1b_schema.sql");
         String v2Sql = loadResource("db/migration/V2__m1b_review_fixes.sql");
         String v3Sql = loadResource("db/migration/V3__historical_datasets_and_import.sql");
+        String v4Sql = loadResource("db/migration/V4__backtest_engine.sql");
         String expectedV1Checksum = computeV1MigrationChecksum(v1Sql);
         String candidateV1Checksum = computeCandidateV1MigrationChecksum(v1Sql);
         String expectedV2Checksum = computeSqlChecksum(v2Sql);
         String expectedV3Checksum = computeSqlChecksum(v3Sql);
+        String expectedV4Checksum = computeSqlChecksum(v4Sql);
 
         List<Map<String, Object>> migrations = jdbcTemplate.queryForList(
                 "SELECT version, checksum, description, applied_at FROM schema_migrations ORDER BY version ASC"
@@ -260,6 +276,10 @@ public class MigrationRunner {
             } else if (version == 3) {
                 if (!expectedV3Checksum.equals(recordedChecksum)) {
                     throw new IllegalStateException("Migration version 3 checksum mismatch! Recorded: " + recordedChecksum);
+                }
+            } else if (version == 4) {
+                if (!expectedV4Checksum.equals(recordedChecksum)) {
+                    throw new IllegalStateException("Migration version 4 checksum mismatch! Recorded: " + recordedChecksum);
                 }
             } else {
                 throw new IllegalStateException("Unknown migration version found in database: " + version);
@@ -290,6 +310,17 @@ public class MigrationRunner {
                 );
             });
             versions.add(3);
+        }
+
+        if (!versions.contains(4)) {
+            transactionTemplate.executeWithoutResult(status -> {
+                executeSqlScript(v4Sql);
+                jdbcTemplate.update(
+                        "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (4, 'M3 backtest engine and baseline', ?, ?, ?)",
+                        expectedV4Checksum, Instant.now().toString(), CODE_VERSION
+                );
+            });
+            versions.add(4);
         }
 
         validateCurrentSchema();
@@ -396,7 +427,8 @@ public class MigrationRunner {
                 "ledger_entries", "executions", "valuations", "legacy_watchlist", "chat_requests",
                 "chat_actions", "migration_reconciliations", "users_profile", "watchlist", "trades",
                 "portfolio_snapshots", "chat_messages",
-                "datasets", "dataset_listings", "dataset_sessions", "historical_bars", "historical_actions", "import_jobs"
+                "datasets", "dataset_listings", "dataset_sessions", "historical_bars", "historical_actions", "import_jobs",
+                "backtest_runs", "backtest_daily_equity", "backtest_orders", "backtest_events", "backtest_holdings"
         );
         Set<String> missing = new HashSet<>(requiredTables);
         missing.removeAll(getExistingTables());
@@ -434,6 +466,29 @@ public class MigrationRunner {
         ));
         requireColumns("import_jobs", Set.of(
                 "id", "request_key", "input_checksum", "status", "dataset_id", "progress_pct", "message", "error_detail", "created_at", "updated_at"
+        ));
+        requireColumns("backtest_runs", Set.of(
+                "id", "owner_id", "idempotency_key", "canonical_hash", "strategy_id", "strategy_version",
+                "dataset_id", "candidate_listing_id", "benchmark_listing_id", "initial_cash", "currency",
+                "evaluation_cutoff", "requested_start_date", "requested_end_date", "commission_per_fill",
+                "spread_bps", "slippage_bps", "status", "progress_pct", "config_json", "created_at", "updated_at"
+        ));
+        requireColumns("backtest_daily_equity", Set.of(
+                "run_id", "series_type", "session_date", "cash", "holdings_value", "receivables",
+                "total_equity", "drawdown", "peak_equity", "units", "cost_basis", "raw_close"
+        ));
+        requireColumns("backtest_orders", Set.of(
+                "id", "run_id", "series_type", "order_type", "listing_id", "session_date",
+                "requested_quantity", "executed_quantity", "raw_open", "fill_price", "commission",
+                "spread_cost", "slippage_cost", "status", "created_at"
+        ));
+        requireColumns("backtest_events", Set.of(
+                "id", "run_id", "series_type", "event_seq", "event_type", "event_date", "event_time",
+                "description", "cash_delta", "units_delta", "basis_delta", "receivable_delta", "created_at"
+        ));
+        requireColumns("backtest_holdings", Set.of(
+                "run_id", "series_type", "listing_id", "units", "total_cost_basis", "average_cost",
+                "current_price", "market_value", "unrealized_gain", "updated_at"
         ));
 
         Integer immutableTriggers = jdbcTemplate.queryForObject(

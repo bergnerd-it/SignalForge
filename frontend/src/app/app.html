@@ -13,6 +13,9 @@
   <!-- Historical Data Inspection View -->
   <app-research-data *ngIf="currentView === 'research-data'"></app-research-data>
 
+  <!-- Historical Strategy Backtests View -->
+  <app-research-backtests *ngIf="currentView === 'research-backtests'"></app-research-backtests>
+
   <!-- Main Trading Workspace Grid (Demo) -->
   <main class="workspace-grid" *ngIf="currentView === 'demo'">
     <!-- Left Column: Watchlist -->

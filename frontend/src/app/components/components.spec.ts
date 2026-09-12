@@ -9,11 +9,13 @@ import { PositionsTableComponent } from './positions-table/positions-table.compo
 import { ChatPanelComponent } from './chat-panel/chat-panel.component';
 import { ResearchComponent } from './research/research.component';
 import { ResearchDataComponent } from './research-data/research-data.component';
+import { ResearchBacktestsComponent } from './research-backtests/research-backtests.component';
 import { provideHttpClient } from '@angular/common/http';
 import { provideHttpClientTesting } from '@angular/common/http/testing';
 import { of } from 'rxjs';
 import { ResearchService } from '../services/research.service';
 import { HistoricalDataService } from '../services/historical-data.service';
+import { BacktestService } from '../services/backtest.service';
 
 describe('Component Unit Tests', () => {
   it('HeaderComponent should display portfolio value and cash', () => {
@@ -408,5 +410,96 @@ describe('Component Unit Tests', () => {
     expect(el.textContent).toContain('104.00');
     expect(el.textContent).toContain('act-1');
     expect(el.textContent).toContain('2:1');
+  });
+
+  it('ResearchBacktestsComponent should render run history and summary', () => {
+    const mockRun = {
+      id: 'run-test-123',
+      ownerId: 'default',
+      idempotencyKey: 'k-1',
+      canonicalHash: 'h-1',
+      strategyId: 'ETF_BUY_HOLD_V1',
+      strategyVersion: '1.0.0',
+      datasetId: 'dataset-alpha',
+      candidateListingId: 'listing-alpha',
+      benchmarkListingId: 'listing-alpha',
+      initialCash: '1000.00',
+      currency: 'EUR',
+      evaluationCutoff: '2024-02-07T23:59:59Z',
+      requestedStartDate: '2024-01-31',
+      requestedEndDate: '2024-02-07',
+      commissionPerFill: '1.00',
+      spreadBps: '0',
+      slippageBps: '0',
+      status: 'COMPLETED' as const,
+      progressPct: 100,
+      failureReason: null,
+      completedAt: '2026-09-12T00:00:00Z',
+      createdAt: '2026-09-12T00:00:00Z',
+      updatedAt: '2026-09-12T00:00:00Z',
+      candidateSummary: {
+        initialEquity: '1000.00',
+        finalEquity: '1018.00',
+        cumulativeReturn: 0.018,
+        cagr: null,
+        maxDrawdown: -0.001,
+        peakDate: '2024-02-01',
+        troughDate: '2024-02-01',
+        recoveryDate: '2024-02-07',
+        drawdownDurationDays: 6,
+        isRecovered: true,
+        annualizedVolatility: 0.12,
+        turnoverRatio: 0.998,
+        fillCount: 2,
+        totalCommissions: '2.00',
+        endingCash: '18.00',
+        endingHoldingsValue: '1000.00',
+        endingReceivables: '0.00',
+        endingUnits: '20.00000000',
+        endingCostBasis: '1000.00',
+        annualReturns: [],
+        benchmarkDifference: 0.0,
+      },
+      benchmarkSummary: null,
+    };
+
+    const mockBacktestService = {
+      runs$: of([mockRun]),
+      selectedRun$: of(null),
+      dailyEquity$: of([]),
+      orders$: of([]),
+      events$: of([]),
+      refreshRuns: () => {},
+      selectRun: () => {},
+      pollRun: () => of(mockRun),
+      createRun: () => of(mockRun),
+      cancelRun: () => of(mockRun),
+      getExportUrl: (id: string) => `/api/research/backtests/${id}/export`,
+    };
+
+    const mockDataService = {
+      datasets$: of([]),
+      listings$: of([]),
+      refreshDatasets: () => {},
+      selectDataset: () => {},
+    };
+
+    TestBed.resetTestingModule();
+    TestBed.configureTestingModule({
+      providers: [
+        { provide: BacktestService, useValue: mockBacktestService },
+        { provide: HistoricalDataService, useValue: mockDataService },
+      ],
+    });
+
+    const fixture: ComponentFixture<ResearchBacktestsComponent> = TestBed.createComponent(ResearchBacktestsComponent);
+    fixture.detectChanges();
+
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.textContent).toContain('Strategy Backtesting');
+    expect(el.textContent).toContain('run-test-123');
+    expect(el.textContent).toContain('ETF_BUY_HOLD_V1');
+    expect(el.textContent).toContain('COMPLETED');
+    expect(el.textContent).toContain('+1.80%');
   });
 });

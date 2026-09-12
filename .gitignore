@@ -16,6 +16,7 @@ test/fixtures/*.db-wal
 test/fixtures/*.db-shm
 
 # Java & Gradle
+.gradle/
 backend/.gradle/
 backend/build/
 backend/.settings/
