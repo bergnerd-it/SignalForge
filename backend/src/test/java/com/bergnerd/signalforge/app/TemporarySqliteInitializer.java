@@ -11,7 +11,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
-class TemporarySqliteInitializer implements ApplicationContextInitializer<ConfigurableApplicationContext> {
+public class TemporarySqliteInitializer implements ApplicationContextInitializer<ConfigurableApplicationContext> {
 
     static volatile Path databasePath;
 

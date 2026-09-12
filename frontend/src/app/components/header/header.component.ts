@@ -35,6 +35,14 @@ import { ConnectionStatus } from '../../services/price-stream.service';
           >
             RESEARCH PORTFOLIOS
           </button>
+          <button
+            class="nav-tab-btn"
+            [class.active]="currentView === 'research-data'"
+            (click)="selectView('research-data')"
+            id="tab-research-data"
+          >
+            DATA INSPECTION
+          </button>
         </nav>
       </div>
 
@@ -212,10 +220,10 @@ import { ConnectionStatus } from '../../services/price-stream.service';
 export class HeaderComponent {
   @Input() portfolio: Portfolio | null = null;
   @Input() status: ConnectionStatus = 'disconnected';
-  @Input() currentView: 'demo' | 'research' = 'demo';
-  @Output() viewChange = new EventEmitter<'demo' | 'research'>();
+  @Input() currentView: 'demo' | 'research' | 'research-data' = 'demo';
+  @Output() viewChange = new EventEmitter<'demo' | 'research' | 'research-data'>();
 
-  selectView(view: 'demo' | 'research'): void {
+  selectView(view: 'demo' | 'research' | 'research-data'): void {
     this.viewChange.emit(view);
   }
 }

@@ -39,8 +39,8 @@ public class MigrationRunner {
     @Value("${spring.datasource.url}")
     private String datasourceUrl;
 
-    public static final String CODE_VERSION = "1.0.0-M1b-fixes";
-    public static final int CURRENT_SCHEMA_VERSION = 2;
+    public static final String CODE_VERSION = "2.0.0-M2";
+    public static final int CURRENT_SCHEMA_VERSION = 3;
 
     public static final List<String> DEFAULT_TICKERS = List.of(
             "AAPL", "GOOGL", "MSFT", "AMZN", "TSLA",
@@ -135,17 +135,20 @@ public class MigrationRunner {
     }
 
     private void applyFreshInstall() {
-        log.info("Applying fresh M1b installation schema (Version 1)...");
+        log.info("Applying fresh M2 installation schema (Versions 1-3)...");
         String v1Sql = loadResource("db/migration/V1__init_m1b_schema.sql");
         String v2Sql = loadResource("db/migration/V2__m1b_review_fixes.sql");
+        String v3Sql = loadResource("db/migration/V3__historical_datasets_and_import.sql");
         String v1Checksum = computeV1MigrationChecksum(v1Sql);
         String v2Checksum = computeSqlChecksum(v2Sql);
+        String v3Checksum = computeSqlChecksum(v3Sql);
 
         transactionTemplate.executeWithoutResult(status -> {
             executeSqlScript(v1Sql);
             executeSqlScript(v2Sql);
+            executeSqlScript(v3Sql);
 
-            // Record migration 1
+            // Record migrations
             String now = Instant.now().toString();
             jdbcTemplate.update(
                     "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (1, 'M1b initial schema', ?, ?, ?)",
@@ -155,13 +158,17 @@ public class MigrationRunner {
                     "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (2, 'M1b review corrections', ?, ?, ?)",
                     v2Checksum, now, CODE_VERSION
             );
+            jdbcTemplate.update(
+                    "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (3, 'M2 historical datasets and import', ?, ?, ?)",
+                    v3Checksum, now, CODE_VERSION
+            );
 
             // Seed default user legacy demo portfolio and initial cash
             seedFreshDefaults(now);
         });
         validateCurrentSchema();
 
-        log.info("Fresh M1b installation completed successfully.");
+        log.info("Fresh M2 installation completed successfully.");
     }
 
     private void applyLegacyMigration() {
@@ -174,8 +181,10 @@ public class MigrationRunner {
         // 2. Perform legacy conversion atomically
         String v1Sql = loadResource("db/migration/V1__init_m1b_schema.sql");
         String v2Sql = loadResource("db/migration/V2__m1b_review_fixes.sql");
+        String v3Sql = loadResource("db/migration/V3__historical_datasets_and_import.sql");
         String v1Checksum = computeV1MigrationChecksum(v1Sql);
         String v2Checksum = computeSqlChecksum(v2Sql);
+        String v3Checksum = computeSqlChecksum(v3Sql);
 
         transactionTemplate.executeWithoutResult(status -> {
             log.info("Renaming legacy tables to raw archive tables...");
@@ -190,11 +199,12 @@ public class MigrationRunner {
             legacyDataMigrator.migrateLegacyData(jdbcTemplate);
 
             executeSqlScript(v2Sql);
+            executeSqlScript(v3Sql);
 
             // Sync legacy tables for backwards compatibility
             syncLegacyCompatibilityTables();
 
-            // Record migration
+            // Record migrations
             String now = Instant.now().toString();
             jdbcTemplate.update(
                     "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (1, 'M1b legacy migration', ?, ?, ?)",
@@ -203,6 +213,10 @@ public class MigrationRunner {
             jdbcTemplate.update(
                     "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (2, 'M1b review corrections', ?, ?, ?)",
                     v2Checksum, now, CODE_VERSION
+            );
+            jdbcTemplate.update(
+                    "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (3, 'M2 historical datasets and import', ?, ?, ?)",
+                    v3Checksum, now, CODE_VERSION
             );
         });
         validateCurrentSchema();
@@ -213,9 +227,11 @@ public class MigrationRunner {
     private void verifyAndApplyVersionedMigrations() {
         String v1Sql = loadResource("db/migration/V1__init_m1b_schema.sql");
         String v2Sql = loadResource("db/migration/V2__m1b_review_fixes.sql");
+        String v3Sql = loadResource("db/migration/V3__historical_datasets_and_import.sql");
         String expectedV1Checksum = computeV1MigrationChecksum(v1Sql);
         String candidateV1Checksum = computeCandidateV1MigrationChecksum(v1Sql);
         String expectedV2Checksum = computeSqlChecksum(v2Sql);
+        String expectedV3Checksum = computeSqlChecksum(v3Sql);
 
         List<Map<String, Object>> migrations = jdbcTemplate.queryForList(
                 "SELECT version, checksum, description, applied_at FROM schema_migrations ORDER BY version ASC"
@@ -241,6 +257,10 @@ public class MigrationRunner {
                 if (!expectedV2Checksum.equals(recordedChecksum)) {
                     throw new IllegalStateException("Migration version 2 checksum mismatch! Recorded: " + recordedChecksum);
                 }
+            } else if (version == 3) {
+                if (!expectedV3Checksum.equals(recordedChecksum)) {
+                    throw new IllegalStateException("Migration version 3 checksum mismatch! Recorded: " + recordedChecksum);
+                }
             } else {
                 throw new IllegalStateException("Unknown migration version found in database: " + version);
             }
@@ -258,11 +278,23 @@ public class MigrationRunner {
                         expectedV2Checksum, Instant.now().toString(), CODE_VERSION
                 );
             });
+            versions.add(2);
+        }
+
+        if (!versions.contains(3)) {
+            transactionTemplate.executeWithoutResult(status -> {
+                executeSqlScript(v3Sql);
+                jdbcTemplate.update(
+                        "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (3, 'M2 historical datasets and import', ?, ?, ?)",
+                        expectedV3Checksum, Instant.now().toString(), CODE_VERSION
+                );
+            });
+            versions.add(3);
         }
 
         validateCurrentSchema();
 
-        log.info("Database is up-to-date with {} verified migration(s). No actions needed.", migrations.size());
+        log.info("Database is up-to-date with {} verified migration(s). No actions needed.", versions.size());
     }
 
     private void seedFreshDefaults(String now) {
@@ -363,7 +395,8 @@ public class MigrationRunner {
                 "instruments", "listings", "listing_aliases", "positions", "operations",
                 "ledger_entries", "executions", "valuations", "legacy_watchlist", "chat_requests",
                 "chat_actions", "migration_reconciliations", "users_profile", "watchlist", "trades",
-                "portfolio_snapshots", "chat_messages"
+                "portfolio_snapshots", "chat_messages",
+                "datasets", "dataset_listings", "dataset_sessions", "historical_bars", "historical_actions", "import_jobs"
         );
         Set<String> missing = new HashSet<>(requiredTables);
         missing.removeAll(getExistingTables());
@@ -379,6 +412,29 @@ public class MigrationRunner {
                 "id", "chat_message_id", "operation_id", "action_type", "action_payload", "status",
                 "chat_request_id", "action_index", "action_key", "result_json", "error_code", "updated_at"
         ));
+        requireColumns("datasets", Set.of(
+                "id", "name", "source", "classification", "schema_version", "parser_version",
+                "input_checksum", "content_checksum", "manifest_json", "coverage_start", "coverage_end",
+                "validation_status", "validation_findings_json", "quality_label", "imported_at", "created_at"
+        ));
+        requireColumns("dataset_listings", Set.of(
+                "dataset_id", "listing_id", "instrument_id", "symbol", "venue", "quote_currency",
+                "calendar_id", "inception_date", "termination_date", "isin"
+        ));
+        requireColumns("dataset_sessions", Set.of(
+                "dataset_id", "calendar_id", "session_date", "open_time", "close_time", "session_type"
+        ));
+        requireColumns("historical_bars", Set.of(
+                "dataset_id", "listing_id", "session_date", "open", "high", "low", "close", "volume", "available_at"
+        ));
+        requireColumns("historical_actions", Set.of(
+                "dataset_id", "action_id", "listing_id", "action_type", "effective_date", "available_at",
+                "split_ratio_numerator", "split_ratio_denominator", "distribution_amount", "distribution_currency",
+                "payment_date", "payment_instant"
+        ));
+        requireColumns("import_jobs", Set.of(
+                "id", "request_key", "input_checksum", "status", "dataset_id", "progress_pct", "message", "error_detail", "created_at", "updated_at"
+        ));
 
         Integer immutableTriggers = jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name IN ('prevent_ledger_update', 'prevent_ledger_delete')",
@@ -386,6 +442,19 @@ public class MigrationRunner {
         );
         if (immutableTriggers == null || immutableTriggers != 2) {
             throw new IllegalStateException("Versioned schema is missing ledger immutability triggers");
+        }
+
+        Integer historicalImmutabilityTriggers = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name IN (" +
+                        "'prevent_dataset_update', 'prevent_dataset_delete', " +
+                        "'prevent_dataset_listings_update', 'prevent_dataset_listings_delete', " +
+                        "'prevent_dataset_sessions_update', 'prevent_dataset_sessions_delete', " +
+                        "'prevent_historical_bars_update', 'prevent_historical_bars_delete', " +
+                        "'prevent_historical_actions_update', 'prevent_historical_actions_delete')",
+                Integer.class
+        );
+        if (historicalImmutabilityTriggers == null || historicalImmutabilityTriggers != 10) {
+            throw new IllegalStateException("Versioned schema is missing historical dataset immutability triggers: found " + historicalImmutabilityTriggers);
         }
 
         List<Map<String, Object>> ledgerForeignKeys = jdbcTemplate.queryForList("PRAGMA foreign_key_list(ledger_entries)");
@@ -398,9 +467,11 @@ public class MigrationRunner {
         requireUniqueColumns("portfolio_creation_requests", List.of("owner_id", "idempotency_key"));
         requireUniqueColumns("operations", List.of("portfolio_id", "kind", "idempotency_key"));
         requireUniqueColumns("chat_requests", List.of("user_id", "idempotency_key"));
+        requireUniqueColumns("import_jobs", List.of("request_key"));
         requireTrigger("validate_portfolio_state_insert");
         requireTrigger("validate_position_insert");
         requireTrigger("validate_execution_insert");
+        requireTrigger("validate_historical_bars_insert");
     }
 
     private void requireColumns(String table, Set<String> required) {

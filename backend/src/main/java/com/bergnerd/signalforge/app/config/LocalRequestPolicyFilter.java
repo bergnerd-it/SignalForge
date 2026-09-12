@@ -48,7 +48,8 @@ public class LocalRequestPolicyFilter extends OncePerRequestFilter {
             return false;
         }
         return "DELETE".equals(request.getMethod())
-                || hasJsonContentType(request);
+                || hasJsonContentType(request)
+                || hasMultipartContentType(request);
     }
 
     private boolean isSameOrigin(HttpServletRequest request, String origin) {
@@ -81,6 +82,15 @@ public class LocalRequestPolicyFilter extends OncePerRequestFilter {
         try {
             return request.getContentType() != null
                     && MediaType.APPLICATION_JSON.isCompatibleWith(MediaType.parseMediaType(request.getContentType()));
+        } catch (IllegalArgumentException exception) {
+            return false;
+        }
+    }
+
+    private boolean hasMultipartContentType(HttpServletRequest request) {
+        try {
+            return request.getContentType() != null
+                    && MediaType.MULTIPART_FORM_DATA.isCompatibleWith(MediaType.parseMediaType(request.getContentType()));
         } catch (IllegalArgumentException exception) {
             return false;
         }

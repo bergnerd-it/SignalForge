@@ -10,6 +10,9 @@
   <!-- Research Portfolios View -->
   <app-research *ngIf="currentView === 'research'"></app-research>
 
+  <!-- Historical Data Inspection View -->
+  <app-research-data *ngIf="currentView === 'research-data'"></app-research-data>
+
   <!-- Main Trading Workspace Grid (Demo) -->
   <main class="workspace-grid" *ngIf="currentView === 'demo'">
     <!-- Left Column: Watchlist -->

@@ -477,7 +477,13 @@ class MigrationRecoveryIntegrationTest {
                 "SELECT COUNT(*) FROM schema_migrations WHERE version = 2", Integer.class
         ));
         assertEquals(1, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 3", Integer.class
+        ));
+        assertEquals(1, jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'chat_requests'", Integer.class
+        ));
+        assertEquals(1, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'datasets'", Integer.class
         ));
         assertEquals("UNVERIFIED_CANDIDATE", jdbcTemplate.queryForObject(
                 "SELECT identity_status FROM listings WHERE id = 'listing-research-generated'", String.class
@@ -514,7 +520,7 @@ class MigrationRecoveryIntegrationTest {
         ));
 
         assertDoesNotThrow(migrationRunner::runMigration);
-        assertEquals(2, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM schema_migrations", Integer.class));
+        assertEquals(3, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM schema_migrations", Integer.class));
     }
 
     @Test

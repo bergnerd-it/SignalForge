@@ -1,0 +1,286 @@
+<div class="research-data-root font-sans">
+  <!-- Active Import Job Banner -->
+  <div *ngIf="activeJob" class="job-banner font-mono" [ngClass]="{
+    'job-running': activeJob.status === 'RUNNING' || activeJob.status === 'QUEUED',
+    'job-completed': activeJob.status === 'COMPLETED',
+    'job-failed': activeJob.status === 'FAILED' || activeJob.status === 'INTERRUPTED'
+  }">
+    <div class="job-info">
+      <span class="job-status-tag">[{{ activeJob.status }}]</span>
+      <span class="job-message">{{ activeJob.message || 'Processing import...' }}</span>
+      <span *ngIf="activeJob.progressPct > 0" class="job-pct">({{ activeJob.progressPct }}%)</span>
+      <span *ngIf="activeJob.errorDetail" class="job-error">Error: {{ activeJob.errorDetail }}</span>
+    </div>
+    <button class="btn-dismiss" (click)="dismissJobBanner()">✕</button>
+  </div>
+
+  <!-- Header Bar -->
+  <header class="data-header">
+    <div class="header-left">
+      <h2 class="section-title">HISTORICAL DATA INSPECTION</h2>
+      <div class="dataset-picker" *ngIf="datasets.length > 0">
+        <label for="dataset-select" class="font-mono text-muted">DATASET:</label>
+        <select
+          id="dataset-select"
+          class="select-dark font-mono"
+          [ngModel]="selectedDataset?.id"
+          (ngModelChange)="selectDataset($event)"
+        >
+          <option *ngFor="let ds of datasets" [value]="ds.id">
+            {{ ds.name }} ({{ ds.classification }} - {{ ds.qualityLabel }})
+          </option>
+        </select>
+      </div>
+    </div>
+
+    <div class="header-right">
+      <button class="btn-primary font-mono" (click)="openUploadModal()" id="btn-import-bundle">
+        <span class="btn-icon">⬆</span> IMPORT BUNDLE
+      </button>
+    </div>
+  </header>
+
+  <!-- Empty State -->
+  <div *ngIf="!isLoading && datasets.length === 0" class="empty-state">
+    <div class="empty-icon">📁</div>
+    <h3>No Historical Datasets Available</h3>
+    <p class="text-muted">Upload a versioned ZIP bundle containing manifest.json, instruments.csv, sessions.csv, prices.csv, and actions.csv.</p>
+    <button class="btn-primary font-mono" (click)="openUploadModal()">IMPORT FIRST DATASET</button>
+  </div>
+
+  <!-- Main Workspace Grid -->
+  <div *ngIf="selectedDataset" class="data-grid">
+    <!-- Left Column: Listings in Dataset -->
+    <aside class="listings-sidebar">
+      <div class="sidebar-header font-mono">
+        <span>INSTRUMENTS & LISTINGS ({{ listings.length }})</span>
+      </div>
+      <div class="listings-list">
+        <div
+          *ngFor="let l of listings"
+          class="listing-card"
+          [class.active]="l.listingId === selectedListingId"
+          (click)="selectListing(l.listingId)"
+        >
+          <div class="listing-top">
+            <span class="listing-symbol font-mono">{{ l.symbol }}</span>
+            <span class="listing-venue font-mono text-muted">{{ l.venue || 'XETRA' }}</span>
+          </div>
+          <div class="listing-meta font-mono text-muted">
+            <span>{{ l.quoteCurrency }}</span> • <span>{{ l.barCount }} bars</span>
+          </div>
+          <div class="listing-dates font-mono text-muted" *ngIf="l.firstDate && l.lastDate">
+            {{ l.firstDate }} → {{ l.lastDate }}
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Center Column: Metadata, Filters & Data Tables -->
+    <section class="data-content">
+      <!-- Provenance & Quality Card -->
+      <div class="provenance-card">
+        <div class="provenance-header">
+          <div class="badges-row">
+            <span class="badge" [ngClass]="selectedDataset.classification === 'SYNTHETIC' ? 'badge-yellow' : 'badge-cyan'">
+              {{ selectedDataset.classification }}
+            </span>
+            <span class="badge" [ngClass]="{
+              'badge-green': selectedDataset.qualityLabel === 'VERIFIED',
+              'badge-yellow': selectedDataset.qualityLabel === 'REVISED_HISTORY',
+              'badge-purple': selectedDataset.qualityLabel === 'SYNTHETIC'
+            }">
+              {{ selectedDataset.qualityLabel }}
+            </span>
+            <span class="badge font-mono" [ngClass]="selectedDataset.validationStatus === 'VALID' ? 'badge-green' : 'badge-yellow'">
+              STATUS: {{ selectedDataset.validationStatus }}
+            </span>
+          </div>
+          <span class="imported-date font-mono text-muted">Imported: {{ selectedDataset.importedAt | date:'short' }}</span>
+        </div>
+
+        <div class="provenance-body font-mono">
+          <div class="meta-item"><span class="meta-label">SOURCE:</span> {{ selectedDataset.source }}</div>
+          <div class="meta-item"><span class="meta-label">COVERAGE:</span> {{ selectedDataset.coverageStart }} → {{ selectedDataset.coverageEnd }}</div>
+          <div class="meta-item" *ngIf="selectedDataset.manifest?.license_note">
+            <span class="meta-label">LICENSE:</span> {{ selectedDataset.manifest?.license_note }}
+          </div>
+          <div class="meta-item" *ngIf="selectedDataset.manifest?.known_limitations">
+            <span class="meta-label">LIMITATIONS:</span> {{ selectedDataset.manifest?.known_limitations }}
+          </div>
+        </div>
+
+        <!-- Validation Findings Summary -->
+        <div *ngIf="selectedDataset.validationFindings && selectedDataset.validationFindings.length > 0" class="findings-box">
+          <div class="findings-header font-mono">
+            <span>VALIDATION FINDINGS ({{ selectedDataset.validationFindings.length }})</span>
+          </div>
+          <div class="findings-list">
+            <div *ngFor="let f of selectedDataset.validationFindings" class="finding-row font-mono" [class.finding-error]="f.severity === 'ERROR'">
+              <span class="finding-severity">[{{ f.severity }}]</span>
+              <span class="finding-code">{{ f.code }}</span>:
+              <span class="finding-detail">{{ f.detail }}</span>
+              <span *ngIf="f.sessionDate" class="finding-date">({{ f.sessionDate }})</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Filter Controls -->
+      <div class="filter-bar font-mono">
+        <div class="filter-group">
+          <label>FROM:</label>
+          <input type="date" class="input-dark" [(ngModel)]="filterStart" />
+        </div>
+        <div class="filter-group">
+          <label>TO:</label>
+          <input type="date" class="input-dark" [(ngModel)]="filterEnd" />
+        </div>
+        <div class="filter-group">
+          <label>AS-OF CUTOFF:</label>
+          <input type="text" class="input-dark" [(ngModel)]="filterAsOf" placeholder="YYYY-MM-DDTHH:MM:SSZ" />
+        </div>
+        <button class="btn-filter" (click)="applyHistoryFilter()">APPLY FILTER</button>
+      </div>
+
+      <!-- Coverage Notes Warning -->
+      <div *ngIf="selectedHistory?.coverageNotes" class="coverage-alert font-mono">
+        ℹ {{ selectedHistory?.coverageNotes }}
+      </div>
+
+      <!-- History Daily Bars Table -->
+      <div class="table-box">
+        <div class="table-header font-mono">
+          <span>RAW DAILY OHLCV BARS ({{ selectedHistory?.bars?.length ?? 0 }})</span>
+        </div>
+        <div class="table-scroll">
+          <table class="data-table font-mono">
+            <thead>
+              <tr>
+                <th>SESSION DATE</th>
+                <th>OPEN</th>
+                <th>HIGH</th>
+                <th>LOW</th>
+                <th>CLOSE</th>
+                <th>VOLUME</th>
+                <th>AVAILABLE AT (KNOWLEDGE TIME)</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr *ngFor="let b of selectedHistory?.bars">
+                <td class="text-accent">{{ b.sessionDate }}</td>
+                <td>{{ b.open }}</td>
+                <td class="text-green">{{ b.high }}</td>
+                <td class="text-red">{{ b.low }}</td>
+                <td class="text-bold">{{ b.close }}</td>
+                <td class="text-muted">{{ b.volume || '—' }}</td>
+                <td class="text-muted">{{ b.availableAt }}</td>
+              </tr>
+              <tr *ngIf="!selectedHistory?.bars || selectedHistory?.bars?.length === 0">
+                <td colspan="7" class="text-center text-muted">No price bars match the selected date/as-of range.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Corporate Actions Table -->
+      <div class="table-box">
+        <div class="table-header font-mono">
+          <span>CORPORATE ACTIONS ({{ selectedHistory?.actions?.length ?? 0 }})</span>
+        </div>
+        <div class="table-scroll">
+          <table class="data-table font-mono">
+            <thead>
+              <tr>
+                <th>ACTION ID</th>
+                <th>TYPE</th>
+                <th>EFFECTIVE DATE</th>
+                <th>DETAILS</th>
+                <th>PAYMENT DATE</th>
+                <th>AVAILABLE AT</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr *ngFor="let a of selectedHistory?.actions">
+                <td class="text-accent">{{ a.actionId }}</td>
+                <td>
+                  <span class="badge" [ngClass]="a.actionType === 'SPLIT' ? 'badge-purple' : 'badge-cyan'">
+                    {{ a.actionType }}
+                  </span>
+                </td>
+                <td>{{ a.effectiveDate }}</td>
+                <td>
+                  <span *ngIf="a.actionType === 'SPLIT'">Split {{ a.splitRatio }}</span>
+                  <span *ngIf="a.actionType === 'CASH_DISTRIBUTION'">{{ a.distributionAmount }} {{ a.distributionCurrency }} / unit</span>
+                </td>
+                <td>{{ a.paymentDate || '—' }}</td>
+                <td class="text-muted">{{ a.availableAt }}</td>
+              </tr>
+              <tr *ngIf="!selectedHistory?.actions || selectedHistory?.actions?.length === 0">
+                <td colspan="6" class="text-center text-muted">No corporate actions in the selected date range.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- Upload Modal -->
+  <div *ngIf="showUploadModal" class="modal-backdrop">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 class="modal-title font-mono">IMPORT HISTORICAL DATA BUNDLE</h3>
+        <button class="btn-close" (click)="closeUploadModal()">✕</button>
+      </div>
+
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label font-mono">ZIP BUNDLE FILE (*.zip)</label>
+          <input
+            type="file"
+            accept=".zip"
+            class="input-file font-mono"
+            (change)="onFileSelected($event)"
+            id="bundle-file-input"
+          />
+          <span class="form-hint font-mono text-muted">
+            Must contain manifest.json, instruments.csv, sessions.csv, prices.csv, actions.csv. Max 20MB compressed, 100MB uncompressed.
+          </span>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label font-mono">IDEMPOTENCY KEY</label>
+          <input
+            type="text"
+            class="input-dark font-mono"
+            [(ngModel)]="uploadKey"
+            placeholder="Unique request identifier"
+          />
+          <span class="form-hint font-mono text-muted">
+            Identical keys and bytes replay safely. Conflicting keys reject with 409.
+          </span>
+        </div>
+
+        <div *ngIf="uploadError" class="modal-error font-mono">
+          ⚠ {{ uploadError }}
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn-secondary font-mono" (click)="closeUploadModal()" [disabled]="isUploading">
+          CANCEL
+        </button>
+        <button
+          class="btn-primary font-mono"
+          (click)="submitUpload()"
+          [disabled]="!selectedFile || isUploading"
+          id="btn-submit-upload"
+        >
+          {{ isUploading ? 'UPLOADING...' : 'START IMPORT' }}
+        </button>
+      </div>
+    </div>
+  </div>
+</div>

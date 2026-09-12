@@ -27,6 +27,7 @@ import {
 } from './models/market.model';
 
 import { ResearchComponent } from './components/research/research.component';
+import { ResearchDataComponent } from './components/research-data/research-data.component';
 
 @Component({
   selector: 'app-root',
@@ -42,12 +43,13 @@ import { ResearchComponent } from './components/research/research.component';
     TradeBarComponent,
     ChatPanelComponent,
     ResearchComponent,
+    ResearchDataComponent,
   ],
   templateUrl: './app.html',
   styleUrl: './app.css',
 })
 export class App implements OnInit, OnDestroy {
-  public currentView: 'demo' | 'research' = 'demo';
+  public currentView: 'demo' | 'research' | 'research-data' = 'demo';
   public portfolio: Portfolio | null = null;
   public snapshots: PortfolioSnapshot[] = [];
   public watchlist: WatchlistEntry[] = [];
@@ -74,8 +76,12 @@ export class App implements OnInit, OnDestroy {
   ) {}
 
   ngOnInit(): void {
-    if (typeof window !== 'undefined' && window.location.pathname.startsWith('/research')) {
-      this.currentView = 'research';
+    if (typeof window !== 'undefined') {
+      if (window.location.pathname.startsWith('/research/data')) {
+        this.currentView = 'research-data';
+      } else if (window.location.pathname.startsWith('/research')) {
+        this.currentView = 'research';
+      }
     }
 
     // 1. Subscribe to Live Price Stream
@@ -278,10 +284,10 @@ export class App implements OnInit, OnDestroy {
     }, 4000);
   }
 
-  public onViewChange(view: 'demo' | 'research'): void {
+  public onViewChange(view: 'demo' | 'research' | 'research-data'): void {
     this.currentView = view;
     if (typeof window !== 'undefined' && window.history) {
-      const targetPath = view === 'research' ? '/research' : '/demo';
+      const targetPath = view === 'research-data' ? '/research/data' : (view === 'research' ? '/research' : '/demo');
       window.history.pushState({}, '', targetPath);
     }
     this.cdr.markForCheck();

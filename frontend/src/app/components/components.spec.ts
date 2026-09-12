@@ -8,10 +8,12 @@ import { TradeBarComponent } from './trade-bar/trade-bar.component';
 import { PositionsTableComponent } from './positions-table/positions-table.component';
 import { ChatPanelComponent } from './chat-panel/chat-panel.component';
 import { ResearchComponent } from './research/research.component';
+import { ResearchDataComponent } from './research-data/research-data.component';
 import { provideHttpClient } from '@angular/common/http';
 import { provideHttpClientTesting } from '@angular/common/http/testing';
 import { of } from 'rxjs';
 import { ResearchService } from '../services/research.service';
+import { HistoricalDataService } from '../services/historical-data.service';
 
 describe('Component Unit Tests', () => {
   it('HeaderComponent should display portfolio value and cash', () => {
@@ -277,5 +279,134 @@ describe('Component Unit Tests', () => {
     expect(el.textContent).toContain('UNAVAILABLE');
     expect(el.textContent).toContain('UNSTARTED');
     expect(el.textContent).toContain('VWCE');
+  });
+
+  it('ResearchDataComponent should render historical datasets, provenance and bars table', () => {
+    const mockDatasets = [
+      {
+        id: 'ds-1',
+        name: 'Synthetic Alpha Dataset',
+        source: 'synthetic-v1',
+        classification: 'SYNTHETIC' as const,
+        qualityLabel: 'SYNTHETIC' as const,
+        coverageStart: '2024-01-01',
+        coverageEnd: '2024-01-10',
+        validationStatus: 'VALID' as const,
+        importedAt: '2026-09-12T12:00:00Z',
+        listingCount: 1,
+        barCount: 7,
+        actionCount: 1,
+      },
+    ];
+
+    const mockDetail = {
+      ...mockDatasets[0],
+      schemaVersion: '1.0',
+      parserVersion: '2.0.0-rfc4180',
+      inputChecksum: 'sha-input',
+      contentChecksum: 'sha-content',
+      manifest: {
+        schema_version: '1.0',
+        source: 'synthetic-v1',
+        retrieved_at: '2026-09-12T10:00:00Z',
+        coverage: { start_date: '2024-01-01', end_date: '2024-01-10' },
+        license_note: 'Synthetic license',
+        classification: 'SYNTHETIC' as const,
+        price_convention: 'RAW' as const,
+        calendar_completeness: 'Full',
+        action_completeness: 'Full',
+        known_limitations: 'Test fixture only',
+        availability_assumptions: 'End of day',
+      },
+      validationFindings: [],
+    };
+
+    const mockListings = [
+      {
+        listingId: 'listing-1',
+        instrumentId: 'inst-1',
+        symbol: 'SYNA',
+        venue: 'XETRA',
+        quoteCurrency: 'EUR',
+        calendarId: 'cal-1',
+        inceptionDate: '2023-01-01',
+        terminationDate: null,
+        isin: 'IE000SYN0001',
+        barCount: 7,
+        firstDate: '2024-01-02',
+        lastDate: '2024-01-10',
+      },
+    ];
+
+    const mockHistory = {
+      datasetId: 'ds-1',
+      listingId: 'listing-1',
+      symbol: 'SYNA',
+      requestedStart: '2024-01-01',
+      requestedEnd: '2024-01-10',
+      availableStart: '2024-01-02',
+      availableEnd: '2024-01-10',
+      asOfCutoff: null,
+      qualityLabel: 'SYNTHETIC',
+      bars: [
+        {
+          sessionDate: '2024-01-02',
+          open: '100.00',
+          high: '105.00',
+          low: '98.50',
+          close: '104.00',
+          volume: '15000',
+          availableAt: '2024-01-02T18:00:00Z',
+        },
+      ],
+      actions: [
+        {
+          actionId: 'act-1',
+          listingId: 'listing-1',
+          actionType: 'SPLIT' as const,
+          effectiveDate: '2024-01-05',
+          availableAt: '2024-01-04T18:00:00Z',
+          splitRatio: '2:1',
+          distributionAmount: null,
+          distributionCurrency: null,
+          paymentDate: null,
+          paymentInstant: null,
+        },
+      ],
+      coverageNotes: null,
+    };
+
+    const mockDataService = {
+      datasets$: of(mockDatasets),
+      selectedDataset$: of(mockDetail),
+      listings$: of(mockListings),
+      selectedHistory$: of(mockHistory),
+      activeJob$: of(null),
+      loading$: of(false),
+      error$: of(null),
+      selectDataset: () => {},
+      loadListingHistory: () => {},
+      uploadBundle: () => of({}),
+      clearActiveJob: () => {},
+    };
+
+    TestBed.resetTestingModule();
+    TestBed.configureTestingModule({
+      providers: [
+        { provide: HistoricalDataService, useValue: mockDataService },
+      ],
+    });
+
+    const fixture: ComponentFixture<ResearchDataComponent> = TestBed.createComponent(ResearchDataComponent);
+    fixture.detectChanges();
+
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.textContent).toContain('HISTORICAL DATA INSPECTION');
+    expect(el.textContent).toContain('Synthetic Alpha Dataset');
+    expect(el.textContent).toContain('SYNTHETIC');
+    expect(el.textContent).toContain('SYNA');
+    expect(el.textContent).toContain('104.00');
+    expect(el.textContent).toContain('act-1');
+    expect(el.textContent).toContain('2:1');
   });
 });
