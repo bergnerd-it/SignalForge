@@ -16,7 +16,8 @@ import java.util.zip.ZipInputStream;
 @Component
 public class HistoricalBundleParser {
 
-    public static final String PARSER_VERSION = "2.0.0-rfc4180";
+    public static final String SCHEMA_VERSION = "1.0";
+    public static final String PARSER_VERSION = "1.0.0-M2";
     public static final long MAX_COMPRESSED_BYTES = 20 * 1024 * 1024; // 20 MB
     public static final long MAX_UNCOMPRESSED_BYTES = 100 * 1024 * 1024; // 100 MB
     public static final int MAX_FILE_COUNT = 10;
@@ -30,7 +31,16 @@ public class HistoricalBundleParser {
             "actions.csv"
     );
 
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper;
+
+    public HistoricalBundleParser() {
+        this(new ObjectMapper());
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public HistoricalBundleParser(ObjectMapper objectMapper) {
+        this.objectMapper = objectMapper != null ? objectMapper : new ObjectMapper();
+    }
 
     public static class BundleParseException extends RuntimeException {
         public BundleParseException(String message) {
@@ -131,6 +141,10 @@ public class HistoricalBundleParser {
 
                 if (name.contains("/") || name.contains("\\")) {
                     throw new BundleParseException("Archive entries must be at root; nested paths forbidden: " + name);
+                }
+
+                if (isSymlinkEntry(entry)) {
+                    throw new BundleParseException("Archive entry is a forbidden symbolic link: " + name);
                 }
 
                 if (!ALLOWED_FILES.contains(name)) {
@@ -311,5 +325,24 @@ public class HistoricalBundleParser {
             return null;
         }
         return val.trim();
+    }
+
+    private boolean isSymlinkEntry(ZipEntry entry) {
+        byte[] extra = entry.getExtra();
+        if (extra != null && extra.length >= 4) {
+            for (int i = 0; i <= extra.length - 4; ) {
+                int tag = ((extra[i + 1] & 0xFF) << 8) | (extra[i] & 0xFF);
+                int len = ((extra[i + 3] & 0xFF) << 8) | (extra[i + 2] & 0xFF);
+                if (i + 4 + len > extra.length) break;
+                if (tag == 0x5855 && len >= 8) { // Info-ZIP Unix 1st gen
+                    int mode = ((extra[i + 5] & 0xFF) << 8) | (extra[i + 4] & 0xFF);
+                    if ((mode & 0170000) == 0120000) {
+                        return true;
+                    }
+                }
+                i += 4 + len;
+            }
+        }
+        return false;
     }
 }

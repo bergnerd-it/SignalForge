@@ -19,16 +19,31 @@ import java.util.Map;
 public class HistoricalHistoryService {
 
     private final JdbcTemplate jdbcTemplate;
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper;
 
-    public List<HistoricalDtos.DatasetSummary> listDatasets() {
-        return jdbcTemplate.query(
+    private int clampLimit(int limit, int defaultLimit, int maxLimit) {
+        if (limit <= 0) return defaultLimit;
+        return Math.min(limit, maxLimit);
+    }
+
+    private int clampOffset(int offset) {
+        return Math.max(offset, 0);
+    }
+
+    public HistoricalDtos.PagedResponse<HistoricalDtos.DatasetSummary> listDatasets(int rawLimit, int rawOffset) {
+        int limit = clampLimit(rawLimit, 50, 200);
+        int offset = clampOffset(rawOffset);
+
+        Integer totalCount = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM datasets", Integer.class);
+        int total = totalCount != null ? totalCount : 0;
+
+        List<HistoricalDtos.DatasetSummary> items = jdbcTemplate.query(
                 "SELECT d.id, d.name, d.source, d.classification, d.quality_label, d.coverage_start, d.coverage_end, " +
                         "d.validation_status, d.imported_at, " +
                         "(SELECT COUNT(*) FROM dataset_listings dl WHERE dl.dataset_id = d.id) AS listing_count, " +
                         "(SELECT COUNT(*) FROM historical_bars hb WHERE hb.dataset_id = d.id) AS bar_count, " +
                         "(SELECT COUNT(*) FROM historical_actions ha WHERE ha.dataset_id = d.id) AS action_count " +
-                        "FROM datasets d ORDER BY d.imported_at DESC",
+                        "FROM datasets d ORDER BY d.imported_at DESC, d.id ASC LIMIT ? OFFSET ?",
                 (rs, rowNum) -> new HistoricalDtos.DatasetSummary(
                         rs.getString("id"),
                         rs.getString("name"),
@@ -42,8 +57,15 @@ public class HistoricalHistoryService {
                         rs.getInt("listing_count"),
                         rs.getInt("bar_count"),
                         rs.getInt("action_count")
-                )
+                ),
+                limit, offset
         );
+
+        return new HistoricalDtos.PagedResponse<>(items, total, limit, offset, offset + items.size() < total);
+    }
+
+    public List<HistoricalDtos.DatasetSummary> listDatasets() {
+        return listDatasets(50, 0).items();
     }
 
     public HistoricalDtos.DatasetDetail getDatasetDetail(String datasetId) {
@@ -102,10 +124,18 @@ public class HistoricalHistoryService {
         );
     }
 
-    public List<HistoricalDtos.DatasetListingDto> getDatasetListings(String datasetId) {
+    public HistoricalDtos.PagedResponse<HistoricalDtos.DatasetListingDto> getDatasetListings(String datasetId, int rawLimit, int rawOffset) {
         ensureDatasetExists(datasetId);
+        int limit = clampLimit(rawLimit, 100, 500);
+        int offset = clampOffset(rawOffset);
 
-        return jdbcTemplate.query(
+        Integer totalCount = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM dataset_listings WHERE dataset_id = ?",
+                Integer.class, datasetId
+        );
+        int total = totalCount != null ? totalCount : 0;
+
+        List<HistoricalDtos.DatasetListingDto> items = jdbcTemplate.query(
                 "SELECT dl.listing_id, dl.instrument_id, dl.symbol, dl.venue, dl.quote_currency, dl.calendar_id, " +
                         "dl.inception_date, dl.termination_date, dl.isin, " +
                         "COUNT(hb.session_date) AS bar_count, " +
@@ -114,7 +144,7 @@ public class HistoricalHistoryService {
                         "FROM dataset_listings dl " +
                         "LEFT JOIN historical_bars hb ON hb.dataset_id = dl.dataset_id AND hb.listing_id = dl.listing_id " +
                         "WHERE dl.dataset_id = ? " +
-                        "GROUP BY dl.listing_id ORDER BY dl.symbol ASC",
+                        "GROUP BY dl.listing_id ORDER BY dl.symbol ASC, dl.listing_id ASC LIMIT ? OFFSET ?",
                 (rs, rowNum) -> new HistoricalDtos.DatasetListingDto(
                         rs.getString("listing_id"),
                         rs.getString("instrument_id"),
@@ -129,16 +159,47 @@ public class HistoricalHistoryService {
                         rs.getString("first_date"),
                         rs.getString("last_date")
                 ),
-                datasetId
+                datasetId, limit, offset
         );
+
+        return new HistoricalDtos.PagedResponse<>(items, total, limit, offset, offset + items.size() < total);
     }
 
-    public List<HistoricalDtos.DatasetSessionDto> getDatasetSessions(String datasetId) {
-        ensureDatasetExists(datasetId);
+    public List<HistoricalDtos.DatasetListingDto> getDatasetListings(String datasetId) {
+        return getDatasetListings(datasetId, 100, 0).items();
+    }
 
-        return jdbcTemplate.query(
+    public HistoricalDtos.PagedResponse<HistoricalDtos.DatasetSessionDto> getDatasetSessions(String datasetId, String calendarId, int rawLimit, int rawOffset) {
+        ensureDatasetExists(datasetId);
+        int limit = clampLimit(rawLimit, 500, 2000);
+        int offset = clampOffset(rawOffset);
+
+        StringBuilder countSql = new StringBuilder("SELECT COUNT(*) FROM dataset_sessions WHERE dataset_id = ? ");
+        StringBuilder querySql = new StringBuilder(
                 "SELECT calendar_id, session_date, open_time, close_time, session_type " +
-                        "FROM dataset_sessions WHERE dataset_id = ? ORDER BY session_date ASC",
+                        "FROM dataset_sessions WHERE dataset_id = ? "
+        );
+        List<Object> countParams = new ArrayList<>();
+        List<Object> queryParams = new ArrayList<>();
+        countParams.add(datasetId);
+        queryParams.add(datasetId);
+
+        if (calendarId != null && !calendarId.isBlank()) {
+            countSql.append("AND calendar_id = ? ");
+            querySql.append("AND calendar_id = ? ");
+            countParams.add(calendarId.trim());
+            queryParams.add(calendarId.trim());
+        }
+
+        querySql.append("ORDER BY session_date ASC, calendar_id ASC LIMIT ? OFFSET ?");
+        queryParams.add(limit);
+        queryParams.add(offset);
+
+        Integer totalCount = jdbcTemplate.queryForObject(countSql.toString(), Integer.class, countParams.toArray());
+        int total = totalCount != null ? totalCount : 0;
+
+        List<HistoricalDtos.DatasetSessionDto> items = jdbcTemplate.query(
+                querySql.toString(),
                 (rs, rowNum) -> new HistoricalDtos.DatasetSessionDto(
                         rs.getString("calendar_id"),
                         rs.getString("session_date"),
@@ -146,20 +207,57 @@ public class HistoricalHistoryService {
                         rs.getString("close_time"),
                         rs.getString("session_type")
                 ),
-                datasetId
+                queryParams.toArray()
         );
+
+        return new HistoricalDtos.PagedResponse<>(items, total, limit, offset, offset + items.size() < total);
+    }
+
+    public List<HistoricalDtos.DatasetSessionDto> getDatasetSessions(String datasetId) {
+        return getDatasetSessions(datasetId, null, 500, 0).items();
+    }
+
+    public HistoricalDtos.PagedResponse<HistoricalDtos.HistoricalActionDto> getDatasetActions(String datasetId, String listingId, int rawLimit, int rawOffset) {
+        ensureDatasetExists(datasetId);
+        int limit = clampLimit(rawLimit, 100, 500);
+        int offset = clampOffset(rawOffset);
+
+        StringBuilder countSql = new StringBuilder("SELECT COUNT(*) FROM historical_actions WHERE dataset_id = ? ");
+        StringBuilder querySql = new StringBuilder(
+                "SELECT action_id, listing_id, action_type, effective_date, available_at, " +
+                        "split_ratio_numerator, split_ratio_denominator, distribution_amount, distribution_currency, " +
+                        "payment_date, payment_instant FROM historical_actions WHERE dataset_id = ? "
+        );
+        List<Object> countParams = new ArrayList<>();
+        List<Object> queryParams = new ArrayList<>();
+        countParams.add(datasetId);
+        queryParams.add(datasetId);
+
+        if (listingId != null && !listingId.isBlank()) {
+            countSql.append("AND listing_id = ? ");
+            querySql.append("AND listing_id = ? ");
+            countParams.add(listingId.trim());
+            queryParams.add(listingId.trim());
+        }
+
+        querySql.append("ORDER BY effective_date ASC, action_id ASC LIMIT ? OFFSET ?");
+        queryParams.add(limit);
+        queryParams.add(offset);
+
+        Integer totalCount = jdbcTemplate.queryForObject(countSql.toString(), Integer.class, countParams.toArray());
+        int total = totalCount != null ? totalCount : 0;
+
+        List<HistoricalDtos.HistoricalActionDto> items = jdbcTemplate.query(
+                querySql.toString(),
+                (rs, rowNum) -> mapActionRow(rs),
+                queryParams.toArray()
+        );
+
+        return new HistoricalDtos.PagedResponse<>(items, total, limit, offset, offset + items.size() < total);
     }
 
     public List<HistoricalDtos.HistoricalActionDto> getDatasetActions(String datasetId) {
-        ensureDatasetExists(datasetId);
-
-        return jdbcTemplate.query(
-                "SELECT action_id, listing_id, action_type, effective_date, available_at, " +
-                        "split_ratio_numerator, split_ratio_denominator, distribution_amount, distribution_currency, " +
-                        "payment_date, payment_instant FROM historical_actions WHERE dataset_id = ? ORDER BY effective_date ASC",
-                (rs, rowNum) -> mapActionRow(rs),
-                datasetId
-        );
+        return getDatasetActions(datasetId, null, 100, 0).items();
     }
 
     public HistoricalDtos.ListingHistoryResponse getListingHistory(
@@ -167,9 +265,13 @@ public class HistoricalHistoryService {
             String listingId,
             String start,
             String end,
-            String asOfCutoff
+            String asOfCutoff,
+            int rawLimit,
+            int rawOffset
     ) {
         HistoricalDtos.DatasetDetail dataset = getDatasetDetail(datasetId);
+        int limit = clampLimit(rawLimit, 1000, 5000);
+        int offset = clampOffset(rawOffset);
 
         List<Map<String, Object>> listingRows = jdbcTemplate.queryForList(
                 "SELECT symbol, quote_currency FROM dataset_listings WHERE dataset_id = ? AND listing_id = ?",
@@ -189,28 +291,49 @@ public class HistoricalHistoryService {
         String availableStart = (String) bounds.get("min_date");
         String availableEnd = (String) bounds.get("max_date");
 
-        // Query bars
+        // Count total matching bars
+        StringBuilder countSql = new StringBuilder(
+                "SELECT COUNT(*) FROM historical_bars WHERE dataset_id = ? AND listing_id = ? "
+        );
+        List<Object> filterParams = new ArrayList<>();
+        filterParams.add(datasetId);
+        filterParams.add(listingId);
+
+        if (start != null && !start.isBlank()) {
+            countSql.append("AND session_date >= ? ");
+            filterParams.add(start.trim());
+        }
+        if (end != null && !end.isBlank()) {
+            countSql.append("AND session_date <= ? ");
+            filterParams.add(end.trim());
+        }
+        if (asOfCutoff != null && !asOfCutoff.isBlank()) {
+            countSql.append("AND available_at <= ? ");
+            filterParams.add(asOfCutoff.trim());
+        }
+
+        Integer totalBarsCount = jdbcTemplate.queryForObject(countSql.toString(), Integer.class, filterParams.toArray());
+        int totalBars = totalBarsCount != null ? totalBarsCount : 0;
+
+        // Query bars page
         StringBuilder barSql = new StringBuilder(
                 "SELECT session_date, open, high, low, close, volume, available_at FROM historical_bars " +
                         "WHERE dataset_id = ? AND listing_id = ? "
         );
-        List<Object> barParams = new ArrayList<>();
-        barParams.add(datasetId);
-        barParams.add(listingId);
+        List<Object> barParams = new ArrayList<>(filterParams);
 
         if (start != null && !start.isBlank()) {
             barSql.append("AND session_date >= ? ");
-            barParams.add(start.trim());
         }
         if (end != null && !end.isBlank()) {
             barSql.append("AND session_date <= ? ");
-            barParams.add(end.trim());
         }
         if (asOfCutoff != null && !asOfCutoff.isBlank()) {
             barSql.append("AND available_at <= ? ");
-            barParams.add(asOfCutoff.trim());
         }
-        barSql.append("ORDER BY session_date ASC");
+        barSql.append("ORDER BY session_date ASC LIMIT ? OFFSET ?");
+        barParams.add(limit);
+        barParams.add(offset);
 
         List<HistoricalDtos.HistoricalBarDto> bars = jdbcTemplate.query(
                 barSql.toString(),
@@ -249,13 +372,15 @@ public class HistoricalHistoryService {
             actSql.append("AND available_at <= ? ");
             actParams.add(asOfCutoff.trim());
         }
-        actSql.append("ORDER BY effective_date ASC");
+        actSql.append("ORDER BY effective_date ASC, action_id ASC");
 
         List<HistoricalDtos.HistoricalActionDto> actions = jdbcTemplate.query(
                 actSql.toString(),
                 (rs, rowNum) -> mapActionRow(rs),
                 actParams.toArray()
         );
+
+        boolean isTruncated = totalBars > (offset + bars.size());
 
         String notes = null;
         if (start != null && availableStart != null && start.compareTo(availableStart) < 0) {
@@ -264,6 +389,10 @@ public class HistoricalHistoryService {
         if (end != null && availableEnd != null && end.compareTo(availableEnd) > 0) {
             String endNote = "Requested end date (" + end + ") is after available dataset end (" + availableEnd + ")";
             notes = notes == null ? endNote : notes + "; " + endNote;
+        }
+        if (isTruncated) {
+            String truncNote = "Response truncated: showing " + bars.size() + " of " + totalBars + " bars (limit=" + limit + ", offset=" + offset + ")";
+            notes = notes == null ? truncNote : notes + "; " + truncNote;
         }
 
         return new HistoricalDtos.ListingHistoryResponse(
@@ -278,8 +407,23 @@ public class HistoricalHistoryService {
                 dataset.qualityLabel(),
                 bars,
                 actions,
-                notes
+                notes,
+                totalBars,
+                bars.size(),
+                limit,
+                offset,
+                isTruncated
         );
+    }
+
+    public HistoricalDtos.ListingHistoryResponse getListingHistory(
+            String datasetId,
+            String listingId,
+            String start,
+            String end,
+            String asOfCutoff
+    ) {
+        return getListingHistory(datasetId, listingId, start, end, asOfCutoff, 1000, 0);
     }
 
     private void ensureDatasetExists(String datasetId) {

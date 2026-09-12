@@ -8,6 +8,7 @@ import {
   DatasetSummary,
   ImportJobResponse,
   ListingHistoryResponse,
+  PagedResponse,
 } from '../models/historical-data.model';
 
 @Injectable({
@@ -43,13 +44,14 @@ export class HistoricalDataService implements OnDestroy {
 
   public refreshDatasets(): void {
     this.loadingSubject.next(true);
-    this.http.get<DatasetSummary[]>('/api/research/datasets').pipe(
+    this.http.get<PagedResponse<DatasetSummary> | DatasetSummary[]>('/api/research/datasets').pipe(
       catchError((err: unknown) => {
         console.error('Failed to load datasets:', err);
         this.errorSubject.next('Failed to load historical datasets');
-        return of([]);
+        return of([] as DatasetSummary[]);
       })
-    ).subscribe((list) => {
+    ).subscribe((res: any) => {
+      const list = Array.isArray(res) ? res : (res && res.items ? res.items : []);
       this.datasetsSubject.next(list);
       this.loadingSubject.next(false);
     });
@@ -63,13 +65,14 @@ export class HistoricalDataService implements OnDestroy {
 
     this.http.get<DatasetDetail>(`/api/research/datasets/${datasetId}`).pipe(
       tap((detail) => this.selectedDatasetSubject.next(detail)),
-      switchMap(() => this.http.get<DatasetListing[]>(`/api/research/datasets/${datasetId}/listings`)),
+      switchMap(() => this.http.get<PagedResponse<DatasetListing> | DatasetListing[]>(`/api/research/datasets/${datasetId}/listings`)),
       catchError((err: unknown) => {
         console.error(`Failed to load dataset ${datasetId}:`, err);
         this.errorSubject.next('Failed to load dataset details');
         return of([] as DatasetListing[]);
       })
-    ).subscribe((listings) => {
+    ).subscribe((res: any) => {
+      const listings = Array.isArray(res) ? res : (res && res.items ? res.items : []);
       this.listingsSubject.next(listings);
       this.loadingSubject.next(false);
     });
@@ -80,12 +83,16 @@ export class HistoricalDataService implements OnDestroy {
     listingId: string,
     start?: string,
     end?: string,
-    asOf?: string
+    asOf?: string,
+    limit?: number,
+    offset?: number
   ): void {
     let params = new HttpParams();
     if (start) params = params.set('start', start);
     if (end) params = params.set('end', end);
     if (asOf) params = params.set('asOf', asOf);
+    if (limit !== undefined) params = params.set('limit', limit.toString());
+    if (offset !== undefined) params = params.set('offset', offset.toString());
 
     this.http.get<ListingHistoryResponse>(`/api/research/datasets/${datasetId}/history/${listingId}`, { params }).pipe(
       catchError((err: unknown) => {

@@ -20,18 +20,40 @@ import java.util.concurrent.*;
 
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class HistoricalImportJobService {
 
     private final JdbcTemplate jdbcTemplate;
     private final TransactionTemplate transactionTemplate;
     private final HistoricalBundleParser bundleParser;
     private final HistoricalDataValidator dataValidator;
-
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper;
 
     private final BlockingQueue<Runnable> workQueue = new LinkedBlockingQueue<>(10);
     private ThreadPoolExecutor executor;
+
+    public HistoricalImportJobService(
+            JdbcTemplate jdbcTemplate,
+            TransactionTemplate transactionTemplate,
+            HistoricalBundleParser bundleParser,
+            HistoricalDataValidator dataValidator
+    ) {
+        this(jdbcTemplate, transactionTemplate, bundleParser, dataValidator, new ObjectMapper());
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public HistoricalImportJobService(
+            JdbcTemplate jdbcTemplate,
+            TransactionTemplate transactionTemplate,
+            HistoricalBundleParser bundleParser,
+            HistoricalDataValidator dataValidator,
+            ObjectMapper objectMapper
+    ) {
+        this.jdbcTemplate = jdbcTemplate;
+        this.transactionTemplate = transactionTemplate;
+        this.bundleParser = bundleParser;
+        this.dataValidator = dataValidator;
+        this.objectMapper = objectMapper != null ? objectMapper : new ObjectMapper();
+    }
 
     @PostConstruct
     public void init() {
@@ -107,25 +129,39 @@ public class HistoricalImportJobService {
             String datasetId = (String) existingDataset.get(0).get("id");
             String jobId = "job-" + UUID.randomUUID();
             String now = Instant.now().toString();
-            jdbcTemplate.update(
-                    "INSERT INTO import_jobs (id, request_key, input_checksum, status, dataset_id, progress_pct, message, error_detail, created_at, updated_at) " +
-                            "VALUES (?, ?, ?, 'COMPLETED', ?, 100, 'Reused existing identical dataset', NULL, ?, ?)",
-                    jobId, cleanKey, inputChecksum, datasetId, now, now
-            );
-            return new HistoricalDtos.ImportJobResponse(
-                    jobId, cleanKey, inputChecksum, "COMPLETED", 100, datasetId, "Reused existing identical dataset", null, now, now
-            );
+            try {
+                jdbcTemplate.update(
+                        "INSERT INTO import_jobs (id, request_key, input_checksum, status, dataset_id, progress_pct, message, error_detail, created_at, updated_at) " +
+                                "VALUES (?, ?, ?, 'COMPLETED', ?, 100, 'Reused existing identical dataset', NULL, ?, ?)",
+                        jobId, cleanKey, inputChecksum, datasetId, now, now
+                );
+                return new HistoricalDtos.ImportJobResponse(
+                        jobId, cleanKey, inputChecksum, "COMPLETED", 100, datasetId, "Reused existing identical dataset", null, now, now
+                );
+            } catch (org.springframework.dao.DataAccessException e) {
+                if (e.getMessage() != null && e.getMessage().contains("UNIQUE constraint failed: import_jobs.request_key")) {
+                    return submitImport(cleanKey, zipBytes);
+                }
+                throw e;
+            }
         }
 
         // 3. Queue new import job
         String jobId = "job-" + UUID.randomUUID();
         String now = Instant.now().toString();
 
-        jdbcTemplate.update(
-                "INSERT INTO import_jobs (id, request_key, input_checksum, status, dataset_id, progress_pct, message, error_detail, created_at, updated_at) " +
-                        "VALUES (?, ?, ?, 'QUEUED', NULL, 0, 'Import queued', NULL, ?, ?)",
-                jobId, cleanKey, inputChecksum, now, now
-        );
+        try {
+            jdbcTemplate.update(
+                    "INSERT INTO import_jobs (id, request_key, input_checksum, status, dataset_id, progress_pct, message, error_detail, created_at, updated_at) " +
+                            "VALUES (?, ?, ?, 'QUEUED', NULL, 0, 'Import queued', NULL, ?, ?)",
+                    jobId, cleanKey, inputChecksum, now, now
+            );
+        } catch (org.springframework.dao.DataAccessException e) {
+            if (e.getMessage() != null && e.getMessage().contains("UNIQUE constraint failed: import_jobs.request_key")) {
+                return submitImport(cleanKey, zipBytes);
+            }
+            throw e;
+        }
 
         try {
             executor.submit(() -> processJob(jobId, cleanKey, zipBytes, inputChecksum));

@@ -34,6 +34,9 @@ public class HistoricalDataValidator {
         // 6. Check Coverage (Trading sessions vs Bars)
         checkCoverage(bundle.manifest(), bundle.prices(), listingMap, calendarSessions, findings);
 
+        // 7. Check Split/Price Discontinuities Diagnostic
+        checkSplitPriceDiscontinuities(bundle.actions(), bundle.prices(), findings);
+
         // Determine Status & Quality Label
         boolean hasError = findings.stream().anyMatch(f -> "ERROR".equals(f.severity()));
         boolean hasWarning = findings.stream().anyMatch(f -> "WARNING".equals(f.severity()));
@@ -393,6 +396,83 @@ public class HistoricalDataValidator {
                             ));
                         }
                     }
+            }
+        }
+    }
+}
+
+    private void checkSplitPriceDiscontinuities(
+            List<HistoricalDtos.ParsedActionRecord> actions,
+            List<HistoricalDtos.ParsedPriceRecord> prices,
+            List<HistoricalDtos.ValidationFinding> findings
+    ) {
+        if (actions == null || actions.isEmpty() || prices == null || prices.isEmpty()) {
+            return;
+        }
+
+        Map<String, List<HistoricalDtos.ParsedPriceRecord>> pricesByListing = new HashMap<>();
+        for (HistoricalDtos.ParsedPriceRecord p : prices) {
+            pricesByListing.computeIfAbsent(p.listingId(), k -> new ArrayList<>()).add(p);
+        }
+        for (List<HistoricalDtos.ParsedPriceRecord> list : pricesByListing.values()) {
+            list.sort(Comparator.comparing(HistoricalDtos.ParsedPriceRecord::sessionDate));
+        }
+
+        for (HistoricalDtos.ParsedActionRecord a : actions) {
+            if (!"SPLIT".equalsIgnoreCase(a.actionType())) {
+                continue;
+            }
+            if (a.splitRatioNumerator() == null || a.splitRatioDenominator() == null
+                    || a.splitRatioNumerator() <= 0 || a.splitRatioDenominator() <= 0) {
+                continue;
+            }
+
+            List<HistoricalDtos.ParsedPriceRecord> listingPrices = pricesByListing.get(a.listingId());
+            if (listingPrices == null || listingPrices.isEmpty()) {
+                continue;
+            }
+
+            HistoricalDtos.ParsedPriceRecord priorBar = null;
+            HistoricalDtos.ParsedPriceRecord splitBar = null;
+
+            for (HistoricalDtos.ParsedPriceRecord p : listingPrices) {
+                if (p.sessionDate().compareTo(a.effectiveDate()) < 0) {
+                    priorBar = p;
+                } else if (p.sessionDate().equals(a.effectiveDate())) {
+                    splitBar = p;
+                    break;
+                }
+            }
+
+            if (priorBar != null && splitBar != null) {
+                try {
+                    BigDecimal priorClose = new BigDecimal(priorBar.close());
+                    BigDecimal splitOpen = new BigDecimal(splitBar.open());
+
+                    if (priorClose.compareTo(BigDecimal.ZERO) > 0 && splitOpen.compareTo(BigDecimal.ZERO) > 0) {
+                        double nominalRatio = (double) a.splitRatioNumerator() / (double) a.splitRatioDenominator();
+                        double observedRatio = priorClose.doubleValue() / splitOpen.doubleValue();
+                        double relDiff = Math.abs(observedRatio - nominalRatio) / nominalRatio;
+
+                        String message = String.format(
+                                Locale.US,
+                                "Split %d:%d on %s: prior close %s -> split day open %s (observed ratio %.2f vs nominal %.2f)",
+                                a.splitRatioNumerator(), a.splitRatioDenominator(), a.effectiveDate(),
+                                priorBar.close(), splitBar.open(), observedRatio, nominalRatio
+                        );
+
+                        String severity = relDiff > 0.25 ? "WARNING" : "INFO";
+                        findings.add(new HistoricalDtos.ValidationFinding(
+                                "SPLIT_PRICE_DISCONTINUITY_DIAGNOSTIC",
+                                severity,
+                                "actions.csv",
+                                null,
+                                a.listingId(),
+                                a.effectiveDate(),
+                                message
+                        ));
+                    }
+                } catch (NumberFormatException ignored) {
                 }
             }
         }

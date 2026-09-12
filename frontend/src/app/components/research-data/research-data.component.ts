@@ -31,10 +31,12 @@ export class ResearchDataComponent implements OnInit {
   public isLoading: boolean = false;
   public errorMessage: string | null = null;
 
-  // Filter params
+  // Filter & Pagination params
   public filterStart: string = '';
   public filterEnd: string = '';
   public filterAsOf: string = '';
+  public barsLimit: number = 1000;
+  public barsOffset: number = 0;
 
   // Upload modal/state
   public showUploadModal: boolean = false;
@@ -78,6 +80,10 @@ export class ResearchDataComponent implements OnInit {
 
     this.dataService.selectedHistory$.pipe(takeUntilDestroyed(this.destroyRef)).subscribe((history) => {
       this.selectedHistory = history;
+      if (history) {
+        this.barsOffset = history.offset;
+        this.barsLimit = history.limit;
+      }
       this.changeDetector.markForCheck();
     });
 
@@ -98,23 +104,53 @@ export class ResearchDataComponent implements OnInit {
   }
 
   public selectDataset(id: string): void {
+    this.barsOffset = 0;
     this.dataService.selectDataset(id);
   }
 
   public selectListing(listingId: string): void {
     this.selectedListingId = listingId;
+    this.barsOffset = 0;
     this.applyHistoryFilter();
   }
 
-  public applyHistoryFilter(): void {
+  public applyHistoryFilter(resetOffset: boolean = true): void {
     if (!this.selectedDataset || !this.selectedListingId) return;
+    if (resetOffset) {
+      this.barsOffset = 0;
+    }
     this.dataService.loadListingHistory(
       this.selectedDataset.id,
       this.selectedListingId,
       this.filterStart || undefined,
       this.filterEnd || undefined,
-      this.filterAsOf || undefined
+      this.filterAsOf || undefined,
+      this.barsLimit,
+      this.barsOffset
     );
+  }
+
+  public nextBarsPage(): void {
+    if (this.selectedHistory && this.selectedHistory.isTruncated) {
+      this.barsOffset += this.barsLimit;
+      this.applyHistoryFilter(false);
+    }
+  }
+
+  public prevBarsPage(): void {
+    if (this.barsOffset >= this.barsLimit) {
+      this.barsOffset = Math.max(0, this.barsOffset - this.barsLimit);
+      this.applyHistoryFilter(false);
+    }
+  }
+
+  public get currentPage(): number {
+    return Math.floor(this.barsOffset / this.barsLimit) + 1;
+  }
+
+  public get totalPages(): number {
+    if (!this.selectedHistory || this.selectedHistory.totalBars === 0) return 1;
+    return Math.ceil(this.selectedHistory.totalBars / this.barsLimit);
   }
 
   public openUploadModal(): void {

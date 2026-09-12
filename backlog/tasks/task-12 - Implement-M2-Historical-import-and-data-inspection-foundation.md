@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@antigravity'
 created_date: '2026-09-12 10:37'
-updated_date: '2026-09-12 11:11'
+updated_date: '2026-09-12 13:40'
 labels: []
 dependencies:
   - TASK-11
@@ -59,10 +59,19 @@ Implemented full M2 historical import and data inspection foundation:
 - API: Full /api/research REST endpoints for imports, jobs, datasets, listings, history, actions, and sessions.
 - Frontend: Angular /research/data view with DATA INSPECTION header tab, upload modal, real-time job status polling, canvas candlestick charts, and tabular bar/actions inspection.
 - Tests & Docs: 119 backend tests (100% pass), 29 frontend tests (100% pass), production build pass, test/fixtures/historical/ synthetic bundles, planning/docs/historical-import.md, and planning/reports/research-M2.md.
+
+M2 Fixes and Closeout:
+- Implemented bounded/paginated responses across all list and history endpoints with deterministic sorting and explicit continuation metadata.
+- Updated UI with truncation warning alert banner and pagination controls.
+- Implemented split/price discontinuity diagnostic as SPLIT_PRICE_DISCONTINUITY_DIAGNOSTIC.
+- Enforced upload size check before reading bytes into memory and symlink rejection.
+- Added focused integration tests for simultaneous submissions, corrected bytes immutable versions, injected publication failure rollback, restart recovery retry, and exact decimal/corporate action precision.
+- Verified native browser walkthrough at /research/data and fixed popstate history navigation.
+- Replaced M2-completion-report.md with comprehensive research-M2.md report; 126 backend tests and 29 frontend tests passing.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-Milestone 2 fully implemented and verified. All 6 acceptance criteria verified with 119 backend unit/integration tests and 29 Angular tests. Historical import, RFC-4180 parsing, archive safety, validation engine, asynchronous idempotent job pipeline, point-in-time history queries, Angular data inspection UI, documentation guide, and completion report delivered.
+Milestone 2 fully completed and closed out. All 6 acceptance criteria verified with 126 backend tests (100% pass) and 29 frontend tests (100% pass). Production build verified. Native browser walkthrough completed. Comprehensive report delivered in planning/reports/research-M2.md superseding M2-completion-report.md.
 <!-- SECTION:FINAL_SUMMARY:END -->

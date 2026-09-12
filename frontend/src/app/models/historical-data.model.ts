@@ -114,6 +114,14 @@ export interface HistoricalAction {
   paymentInstant: string | null;
 }
 
+export interface PagedResponse<T> {
+  items: T[];
+  totalCount: number;
+  limit: number;
+  offset: number;
+  hasMore: boolean;
+}
+
 export interface ListingHistoryResponse {
   datasetId: string;
   listingId: string;
@@ -127,4 +135,9 @@ export interface ListingHistoryResponse {
   bars: HistoricalBar[];
   actions: HistoricalAction[];
   coverageNotes: string | null;
+  totalBars: number;
+  returnedBars: number;
+  limit: number;
+  offset: number;
+  isTruncated: boolean;
 }

@@ -199,6 +199,14 @@ public class HistoricalDtos {
             String paymentInstant
     ) {}
 
+    public record PagedResponse<T>(
+            List<T> items,
+            int totalCount,
+            int limit,
+            int offset,
+            boolean hasMore
+    ) {}
+
     public record ListingHistoryResponse(
             String datasetId,
             String listingId,
@@ -211,6 +219,11 @@ public class HistoricalDtos {
             String qualityLabel,
             List<HistoricalBarDto> bars,
             List<HistoricalActionDto> actions,
-            String coverageNotes
+            String coverageNotes,
+            int totalBars,
+            int returnedBars,
+            int limit,
+            int offset,
+            boolean isTruncated
     ) {}
 }

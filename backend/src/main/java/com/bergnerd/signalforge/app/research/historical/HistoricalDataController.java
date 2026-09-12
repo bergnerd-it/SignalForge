@@ -39,6 +39,13 @@ public class HistoricalDataController {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Upload file is empty or missing");
         }
 
+        if (file.getSize() > HistoricalBundleParser.MAX_COMPRESSED_BYTES) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, String.format(
+                    "Compressed size %d bytes exceeds maximum allowed limit of %d bytes",
+                    file.getSize(), HistoricalBundleParser.MAX_COMPRESSED_BYTES
+            ));
+        }
+
         byte[] bytes;
         try {
             bytes = file.getBytes();
@@ -60,8 +67,11 @@ public class HistoricalDataController {
     }
 
     @GetMapping("/datasets")
-    public ResponseEntity<List<HistoricalDtos.DatasetSummary>> listDatasets() {
-        return ResponseEntity.ok(historyService.listDatasets());
+    public ResponseEntity<HistoricalDtos.PagedResponse<HistoricalDtos.DatasetSummary>> listDatasets(
+            @RequestParam(value = "limit", required = false, defaultValue = "50") int limit,
+            @RequestParam(value = "offset", required = false, defaultValue = "0") int offset
+    ) {
+        return ResponseEntity.ok(historyService.listDatasets(limit, offset));
     }
 
     @GetMapping("/datasets/{id}")
@@ -70,18 +80,32 @@ public class HistoricalDataController {
     }
 
     @GetMapping("/datasets/{id}/listings")
-    public ResponseEntity<List<HistoricalDtos.DatasetListingDto>> getDatasetListings(@PathVariable("id") String id) {
-        return ResponseEntity.ok(historyService.getDatasetListings(id));
+    public ResponseEntity<HistoricalDtos.PagedResponse<HistoricalDtos.DatasetListingDto>> getDatasetListings(
+            @PathVariable("id") String id,
+            @RequestParam(value = "limit", required = false, defaultValue = "100") int limit,
+            @RequestParam(value = "offset", required = false, defaultValue = "0") int offset
+    ) {
+        return ResponseEntity.ok(historyService.getDatasetListings(id, limit, offset));
     }
 
     @GetMapping("/datasets/{id}/sessions")
-    public ResponseEntity<List<HistoricalDtos.DatasetSessionDto>> getDatasetSessions(@PathVariable("id") String id) {
-        return ResponseEntity.ok(historyService.getDatasetSessions(id));
+    public ResponseEntity<HistoricalDtos.PagedResponse<HistoricalDtos.DatasetSessionDto>> getDatasetSessions(
+            @PathVariable("id") String id,
+            @RequestParam(value = "calendarId", required = false) String calendarId,
+            @RequestParam(value = "limit", required = false, defaultValue = "500") int limit,
+            @RequestParam(value = "offset", required = false, defaultValue = "0") int offset
+    ) {
+        return ResponseEntity.ok(historyService.getDatasetSessions(id, calendarId, limit, offset));
     }
 
     @GetMapping("/datasets/{id}/actions")
-    public ResponseEntity<List<HistoricalDtos.HistoricalActionDto>> getDatasetActions(@PathVariable("id") String id) {
-        return ResponseEntity.ok(historyService.getDatasetActions(id));
+    public ResponseEntity<HistoricalDtos.PagedResponse<HistoricalDtos.HistoricalActionDto>> getDatasetActions(
+            @PathVariable("id") String id,
+            @RequestParam(value = "listingId", required = false) String listingId,
+            @RequestParam(value = "limit", required = false, defaultValue = "100") int limit,
+            @RequestParam(value = "offset", required = false, defaultValue = "0") int offset
+    ) {
+        return ResponseEntity.ok(historyService.getDatasetActions(id, listingId, limit, offset));
     }
 
     @GetMapping("/datasets/{id}/history/{listingId}")
@@ -90,8 +114,10 @@ public class HistoricalDataController {
             @PathVariable("listingId") String listingId,
             @RequestParam(value = "start", required = false) String start,
             @RequestParam(value = "end", required = false) String end,
-            @RequestParam(value = "asOf", required = false) String asOf
+            @RequestParam(value = "asOf", required = false) String asOf,
+            @RequestParam(value = "limit", required = false, defaultValue = "1000") int limit,
+            @RequestParam(value = "offset", required = false, defaultValue = "0") int offset
     ) {
-        return ResponseEntity.ok(historyService.getListingHistory(datasetId, listingId, start, end, asOf));
+        return ResponseEntity.ok(historyService.getListingHistory(datasetId, listingId, start, end, asOf, limit, offset));
     }
 }

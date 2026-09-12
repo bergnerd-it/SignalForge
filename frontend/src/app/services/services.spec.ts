@@ -501,6 +501,11 @@ describe('HistoricalDataService', () => {
       ],
       actions: [],
       coverageNotes: null,
+      totalBars: 1,
+      returnedBars: 1,
+      limit: 1000,
+      offset: 0,
+      isTruncated: false,
     };
 
     service.loadListingHistory('dataset-1', 'listing-1', '2024-01-01', '2024-01-10', '2024-01-04T18:00:00Z');

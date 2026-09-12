@@ -148,10 +148,26 @@
         ℹ {{ selectedHistory?.coverageNotes }}
       </div>
 
+      <!-- Truncation / Continuation Warning -->
+      <div *ngIf="selectedHistory?.isTruncated" class="truncation-alert font-mono">
+        ⚠️ Partial data displayed: showing {{ selectedHistory?.returnedBars }} of {{ selectedHistory?.totalBars }} total bars (limit: {{ selectedHistory?.limit }}). Use pagination controls below or refine your date filters to view all records.
+      </div>
+
       <!-- History Daily Bars Table -->
       <div class="table-box">
-        <div class="table-header font-mono">
-          <span>RAW DAILY OHLCV BARS ({{ selectedHistory?.bars?.length ?? 0 }})</span>
+        <div class="table-header font-mono flex-between">
+          <div class="table-title-group">
+            <span>RAW DAILY OHLCV BARS</span>
+            <span *ngIf="selectedHistory" class="text-muted">
+              (showing {{ selectedHistory.returnedBars }} of {{ selectedHistory.totalBars }})
+            </span>
+            <span *ngIf="selectedHistory?.isTruncated" class="badge badge-yellow font-mono">PARTIAL (PAGE {{ currentPage }}/{{ totalPages }})</span>
+          </div>
+          <div class="pagination-controls" *ngIf="selectedHistory && selectedHistory.totalBars > barsLimit">
+            <button class="btn-page font-mono" [disabled]="barsOffset === 0" (click)="prevBarsPage()">◀ PREV</button>
+            <span class="page-indicator font-mono">Page {{ currentPage }} of {{ totalPages }}</span>
+            <button class="btn-page font-mono" [disabled]="!selectedHistory?.isTruncated" (click)="nextBarsPage()">NEXT ▶</button>
+          </div>
         </div>
         <div class="table-scroll">
           <table class="data-table font-mono">

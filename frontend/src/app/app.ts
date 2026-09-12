@@ -81,7 +81,10 @@ export class App implements OnInit, OnDestroy {
         this.currentView = 'research-data';
       } else if (window.location.pathname.startsWith('/research')) {
         this.currentView = 'research';
+      } else {
+        this.currentView = 'demo';
       }
+      window.addEventListener('popstate', this.handlePopState);
     }
 
     // 1. Subscribe to Live Price Stream
@@ -293,7 +296,23 @@ export class App implements OnInit, OnDestroy {
     this.cdr.markForCheck();
   }
 
+  private handlePopState = (): void => {
+    if (typeof window !== 'undefined') {
+      if (window.location.pathname.startsWith('/research/data')) {
+        this.currentView = 'research-data';
+      } else if (window.location.pathname.startsWith('/research')) {
+        this.currentView = 'research';
+      } else {
+        this.currentView = 'demo';
+      }
+      this.cdr.markForCheck();
+    }
+  };
+
   ngOnDestroy(): void {
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('popstate', this.handlePopState);
+    }
     this.subscriptions.unsubscribe();
     if (this.toastTimeout) {
       clearTimeout(this.toastTimeout);

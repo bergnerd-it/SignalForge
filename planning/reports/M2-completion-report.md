@@ -1,8 +1,12 @@
 # SignalForge M2 Completion Report: Historical Import and Data Inspection Foundation
 
+> [!CAUTION]
+> **SUPERSEDED:** This report is retained as historical working evidence only and has been superseded and corrected by the authoritative closeout report: [`research-M2.md`](research-M2.md).
+> Please refer to `research-M2.md` for accurate schema column definitions, exact trigger counts, bounded pagination contracts, and final test results.
+
 **Date:** 2026-09-12  
 **Milestone:** M2 — Historical Import & Data Inspection Only  
-**Status:** COMPLETE (Backend tests PASS 119/119, Frontend tests PASS 29/29, Production build PASS; Docker/container deployment remains NOT VERIFIED per agreed registry deferral)
+**Status:** SUPERSEDED (See `research-M2.md`)
 
 ---
 
