@@ -22,6 +22,9 @@ spring:
     driver-class-name: org.sqlite.JDBC
     hikari:
       connection-init-sql: PRAGMA foreign_keys=ON
+      data-source-properties:
+        busy_timeout: 5000
+        foreign_keys: true
 
 signalforge:
   llm:

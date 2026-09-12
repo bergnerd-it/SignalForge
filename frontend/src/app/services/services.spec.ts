@@ -50,6 +50,27 @@ describe('PortfolioService', () => {
 
     httpTesting.expectOne('/api/portfolio').flush(mockPortfolio);
   });
+
+  it('sends the manual trade contract with one stable idempotency key', () => {
+    httpTesting.expectOne('/api/portfolio').flush({});
+    const trade = { ticker: 'AAPL', quantity: 1, side: 'buy' as const };
+
+    service.executeTrade(trade).subscribe();
+
+    const request = httpTesting.expectOne('/api/portfolio/trade');
+    expect(request.request.body).toEqual(trade);
+    expect(request.request.headers.get('Idempotency-Key')).toMatch(/^trade-/);
+    request.flush({
+      tradeId: 'trade-1',
+      ticker: 'AAPL',
+      side: 'buy',
+      quantity: 1,
+      price: 100,
+      totalCost: 100,
+      executedAt: '2026-09-12T00:00:00Z',
+      updatedPortfolio: null,
+    });
+  });
 });
 
 describe('WatchlistService', () => {
@@ -147,6 +168,7 @@ describe('ChatService', () => {
     const chatReq = httpTesting.expectOne('/api/chat');
     expect(chatReq.request.method).toBe('POST');
     expect(chatReq.request.body).toEqual({ message: 'Buy 5 AAPL' });
+    expect(chatReq.request.headers.get('Idempotency-Key')).toMatch(/^chat-/);
     chatReq.flush(mockResponse);
 
     // Actions executed -> refreshes portfolio & watchlist
@@ -172,5 +194,107 @@ describe('ChatService', () => {
     expect(messages.length).toBe(1);
     expect(messages[0].role).toBe('assistant');
     expect(messages[0].content).toContain('SignalForge');
+  });
+});
+
+import { ResearchService } from './research.service';
+import { ResearchPortfolioSummary, ResearchPortfolioDetail } from '../models/research.model';
+
+describe('ResearchService', () => {
+  let service: ResearchService;
+  let httpTesting: HttpTestingController;
+
+  beforeEach(() => {
+    TestBed.resetTestingModule();
+    TestBed.configureTestingModule({
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        ResearchService,
+      ],
+    });
+
+    service = TestBed.inject(ResearchService);
+    httpTesting = TestBed.inject(HttpTestingController);
+  });
+
+  afterEach(() => {
+    httpTesting.verify();
+  });
+
+  it('should list research portfolios and select detail', () => {
+    const mockList: ResearchPortfolioSummary[] = [
+      {
+        id: 'port-1',
+        ownerId: 'default',
+        name: 'EUR Paper Alpha',
+        mode: 'PAPER',
+        baseCurrency: 'EUR',
+        cashBalance: '10000.00',
+        revision: 1,
+        createdAt: '2026-09-12T00:00:00Z',
+        paperStartedAt: null,
+        strategyTracking: 'UNSTARTED',
+        positionCount: 0,
+      },
+    ];
+
+    // Constructor refresh
+    httpTesting.expectOne('/api/research/portfolios').flush(mockList);
+
+    let currentList: ResearchPortfolioSummary[] = [];
+    service.portfolios$.subscribe((list) => (currentList = list));
+    expect(currentList.length).toBe(1);
+    expect(currentList[0].baseCurrency).toBe('EUR');
+
+    // Select portfolio
+    const mockDetail: ResearchPortfolioDetail = {
+      ...mockList[0],
+      valuationStatus: 'UNAVAILABLE',
+      marketValue: null,
+      unrealizedPnl: null,
+      positions: [],
+    };
+
+    service.selectPortfolio('port-1');
+    const req = httpTesting.expectOne('/api/research/portfolios/port-1');
+    expect(req.request.method).toBe('GET');
+    req.flush(mockDetail);
+
+    const receivedDetails: ResearchPortfolioDetail[] = [];
+    service.selectedPortfolio$.subscribe((detail) => {
+      if (detail) {
+        receivedDetails.push(detail);
+      }
+    });
+    expect(receivedDetails.at(-1)?.name).toBe('EUR Paper Alpha');
+    expect(receivedDetails.at(-1)?.valuationStatus).toBe('UNAVAILABLE');
+  });
+
+  it('cancels an obsolete portfolio selection', () => {
+    httpTesting.expectOne('/api/research/portfolios').flush([]);
+    service.selectPortfolio('port-a');
+    const requestA = httpTesting.expectOne('/api/research/portfolios/port-a');
+
+    service.selectPortfolio('port-b');
+    const requestB = httpTesting.expectOne('/api/research/portfolios/port-b');
+    expect(requestA.cancelled).toBe(true);
+
+    requestB.flush({
+      id: 'port-b',
+      ownerId: 'default',
+      name: 'Portfolio B',
+      mode: 'PAPER',
+      baseCurrency: 'EUR',
+      cashBalance: '100.00',
+      revision: 1,
+      createdAt: '2026-09-12T00:00:00Z',
+      paperStartedAt: null,
+      strategyTracking: 'UNSTARTED',
+      valuationStatus: 'UNAVAILABLE',
+      marketValue: null,
+      unrealizedPnl: null,
+      positions: [],
+    } satisfies ResearchPortfolioDetail);
   });
 });

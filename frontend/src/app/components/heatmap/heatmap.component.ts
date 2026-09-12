@@ -176,7 +176,7 @@ interface TreemapItem {
 })
 export class HeatmapComponent implements OnChanges {
   @Input() positions: Position[] = [];
-  @Input() totalPositionValue: number = 0;
+  @Input() totalPositionValue: number | null = null;
   @Input() livePrices: Record<string, PriceTick> = {};
 
   @Output() readonly selectTicker = new EventEmitter<string>();
@@ -200,23 +200,26 @@ export class HeatmapComponent implements OnChanges {
       return;
     }
 
-    const enriched = this.positions.map((pos) => {
+    const enriched = this.positions.flatMap((pos) => {
       const price = this.livePrices[pos.ticker]?.price ?? pos.currentPrice;
+      if (price === null) {
+        return [];
+      }
       const totalValue = pos.quantity * price;
       const costBasis = pos.quantity * pos.avgCost;
       const unrealizedPnl = totalValue - costBasis;
       const unrealizedPnlPercent = costBasis > 0 ? (unrealizedPnl / costBasis) * 100 : 0;
-      return {
+      return [{
         ticker: pos.ticker,
         quantity: pos.quantity,
         totalValue,
         unrealizedPnl,
         unrealizedPnlPercent,
-      };
+      }];
     });
 
     const calculatedTotal = enriched.reduce((acc, p) => acc + p.totalValue, 0);
-    const effectiveTotal = calculatedTotal > 0 ? calculatedTotal : this.totalPositionValue;
+    const effectiveTotal = calculatedTotal > 0 ? calculatedTotal : (this.totalPositionValue ?? 0);
 
     if (effectiveTotal <= 0) {
       this.items = [];

@@ -18,6 +18,7 @@ import java.time.Instant;
 import java.util.List;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -60,9 +61,10 @@ class PortfolioControllerTest {
                 "trade-123", "AAPL", "buy", 5.0, 190.0, 950.0, Instant.now().toString(), updatedPortfolio
         );
 
-        when(portfolioService.executeTrade(eq("default"), any(TradeRequest.class))).thenReturn(mockResponse);
+        when(portfolioService.executeTrade(eq("default"), any(TradeRequest.class), anyString())).thenReturn(mockResponse);
 
         mockMvc.perform(post("/api/portfolio/trade")
+                        .header("Idempotency-Key", "manual-1")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isOk())
@@ -81,7 +83,7 @@ class PortfolioControllerTest {
                 "trade-tsla", "TSLA", "buy", 15.0, 230.25, 3453.75, Instant.now().toString(), updatedPortfolio
         );
 
-        when(portfolioService.executeTrade(eq("default"), any(TradeRequest.class))).thenReturn(mockResponse);
+        when(portfolioService.executeTrade(eq("default"), any(TradeRequest.class), anyString())).thenReturn(mockResponse);
 
         String payloadWithPrice = """
                 {
@@ -93,6 +95,7 @@ class PortfolioControllerTest {
                 """;
 
         mockMvc.perform(post("/api/portfolio/trade")
+                        .header("Idempotency-Key", "manual-2")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(payloadWithPrice))
                 .andExpect(status().isOk())
@@ -111,6 +114,7 @@ class PortfolioControllerTest {
                 """;
 
         mockMvc.perform(post("/api/portfolio/trade")
+                        .header("Idempotency-Key", "manual-invalid")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(invalidPayload))
                 .andExpect(status().isBadRequest())
@@ -119,7 +123,7 @@ class PortfolioControllerTest {
 
     @Test
     void shouldReturnBadRequestWithClearMessageOnInsufficientFunds() throws Exception {
-        when(portfolioService.executeTrade(eq("default"), any(TradeRequest.class)))
+        when(portfolioService.executeTrade(eq("default"), any(TradeRequest.class), anyString()))
                 .thenThrow(new TradeExceptions.InsufficientFundsException(
                         "Insufficient funds: required $6512.60, available $5292.85"
                 ));
@@ -134,6 +138,7 @@ class PortfolioControllerTest {
                 """;
 
         mockMvc.perform(post("/api/portfolio/trade")
+                        .header("Idempotency-Key", "manual-funds")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(payload))
                 .andExpect(status().isBadRequest())
@@ -142,7 +147,7 @@ class PortfolioControllerTest {
 
     @Test
     void shouldReturnBadRequestWithClearMessageOnInsufficientShares() throws Exception {
-        when(portfolioService.executeTrade(eq("default"), any(TradeRequest.class)))
+        when(portfolioService.executeTrade(eq("default"), any(TradeRequest.class), anyString()))
                 .thenThrow(new TradeExceptions.InsufficientSharesException(
                         "Insufficient shares: attempted to sell 10.00 NFLX, owned 2.00"
                 ));
@@ -156,6 +161,7 @@ class PortfolioControllerTest {
                 """;
 
         mockMvc.perform(post("/api/portfolio/trade")
+                        .header("Idempotency-Key", "manual-shares")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(payload))
                 .andExpect(status().isBadRequest())

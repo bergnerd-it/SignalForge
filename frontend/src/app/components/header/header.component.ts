@@ -1,4 +1,4 @@
-import { Component, Input } from '@angular/core';
+import { Component, Input, Output, EventEmitter } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { Portfolio } from '../../models/market.model';
 import { ConnectionStatus } from '../../services/price-stream.service';
@@ -17,12 +17,31 @@ import { ConnectionStatus } from '../../services/price-stream.service';
             <span class="subtitle">AI Trading Workstation</span>
           </div>
         </div>
+
+        <nav class="nav-tabs font-mono" aria-label="Workstation Navigation">
+          <button
+            class="nav-tab-btn"
+            [class.active]="currentView === 'demo'"
+            (click)="selectView('demo')"
+            id="tab-demo"
+          >
+            DEMO WORKSTATION
+          </button>
+          <button
+            class="nav-tab-btn"
+            [class.active]="currentView === 'research'"
+            (click)="selectView('research')"
+            id="tab-research"
+          >
+            RESEARCH PORTFOLIOS
+          </button>
+        </nav>
       </div>
 
-      <div class="metrics-section" *ngIf="portfolio">
+      <div class="metrics-section" *ngIf="portfolio && currentView === 'demo'">
         <div class="metric-card">
           <span class="metric-label">PORTFOLIO VALUE</span>
-          <span class="metric-value font-mono">{{ portfolio.totalPortfolioValue | currency:'USD':'symbol':'1.2-2' }}</span>
+          <span class="metric-value font-mono">{{ portfolio.totalPortfolioValue === null ? 'UNAVAILABLE' : (portfolio.totalPortfolioValue | currency:'USD':'symbol':'1.2-2') }}</span>
         </div>
 
         <div class="metric-card">
@@ -32,9 +51,12 @@ import { ConnectionStatus } from '../../services/price-stream.service';
 
         <div class="metric-card">
           <span class="metric-label">UNREALIZED P&L</span>
-          <span class="metric-value font-mono" [ngClass]="portfolio.unrealizedPnl >= 0 ? 'text-green' : 'text-red'">
-            {{ portfolio.unrealizedPnl >= 0 ? '+' : '' }}{{ portfolio.unrealizedPnl | currency:'USD':'symbol':'1.2-2' }}
-            <span class="pnl-percent">({{ portfolio.unrealizedPnlPercent >= 0 ? '+' : '' }}{{ portfolio.unrealizedPnlPercent | number:'1.2-2' }}%)</span>
+          <span class="metric-value font-mono" [ngClass]="(portfolio.unrealizedPnl ?? 0) >= 0 ? 'text-green' : 'text-red'">
+            <ng-container *ngIf="portfolio.unrealizedPnl !== null; else unavailablePnl">
+              {{ (portfolio.unrealizedPnl ?? 0) >= 0 ? '+' : '' }}{{ portfolio.unrealizedPnl | currency:'USD':'symbol':'1.2-2' }}
+              <span class="pnl-percent">({{ (portfolio.unrealizedPnlPercent ?? 0) >= 0 ? '+' : '' }}{{ portfolio.unrealizedPnlPercent | number:'1.2-2' }}%)</span>
+            </ng-container>
+            <ng-template #unavailablePnl>UNAVAILABLE</ng-template>
           </span>
         </div>
       </div>
@@ -65,6 +87,7 @@ import { ConnectionStatus } from '../../services/price-stream.service';
     .brand-section {
       display: flex;
       align-items: center;
+      gap: 32px;
     }
 
     .logo-box {
@@ -96,6 +119,37 @@ import { ConnectionStatus } from '../../services/price-stream.service';
       text-transform: uppercase;
       font-weight: 600;
       letter-spacing: 0.5px;
+    }
+
+    .nav-tabs {
+      display: flex;
+      gap: 8px;
+      background: var(--bg-main);
+      padding: 3px;
+      border-radius: 6px;
+      border: 1px solid var(--border-color);
+    }
+
+    .nav-tab-btn {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      font-size: 11px;
+      font-weight: 700;
+      padding: 6px 14px;
+      border-radius: 4px;
+      cursor: pointer;
+      letter-spacing: 0.5px;
+      transition: all 0.2s;
+    }
+
+    .nav-tab-btn:hover {
+      color: var(--text-main);
+    }
+
+    .nav-tab-btn.active {
+      background: #0284c7;
+      color: #ffffff;
     }
 
     .metrics-section {
@@ -158,4 +212,10 @@ import { ConnectionStatus } from '../../services/price-stream.service';
 export class HeaderComponent {
   @Input() portfolio: Portfolio | null = null;
   @Input() status: ConnectionStatus = 'disconnected';
+  @Input() currentView: 'demo' | 'research' = 'demo';
+  @Output() viewChange = new EventEmitter<'demo' | 'research'>();
+
+  selectView(view: 'demo' | 'research'): void {
+    this.viewChange.emit(view);
+  }
 }

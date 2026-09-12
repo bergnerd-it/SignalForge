@@ -1,0 +1,193 @@
+<div class="research-container font-mono">
+  <!-- Sub-Header / Action Bar -->
+  <div class="research-header">
+    <div>
+      <h2 class="research-title">RESEARCH PORTFOLIOS</h2>
+      <p class="research-subtitle">Exact Decimal Accounting • EUR Paper Mode • Isolated Ledger Projections</p>
+    </div>
+    <button class="btn-create-portfolio" (click)="openCreateModal()" id="btn-new-portfolio">
+      + New Paper Portfolio
+    </button>
+  </div>
+
+  <!-- Error Alert -->
+  <div *ngIf="errorMessage" class="error-banner">
+    <span>⚠ {{ errorMessage }}</span>
+  </div>
+
+  <div class="research-layout">
+    <!-- Left Column: Portfolio Selector -->
+    <div class="portfolio-list-panel">
+      <div class="panel-header">
+        <span>PORTFOLIOS ({{ portfolios.length }})</span>
+      </div>
+
+      <div *ngIf="portfolios.length === 0 && !isLoading" class="empty-list-state">
+        <p>No research portfolios found.</p>
+        <button class="btn-secondary" (click)="openCreateModal()">Create One</button>
+      </div>
+
+      <div class="portfolio-cards">
+        <div
+          *ngFor="let p of portfolios"
+          class="portfolio-card"
+          [class.active]="selectedPortfolio?.id === p.id"
+          (click)="selectPortfolio(p.id)"
+          [id]="'portfolio-item-' + p.id"
+        >
+          <div class="card-top">
+            <span class="card-name">{{ p.name }}</span>
+            <span class="badge-mode">{{ p.mode }}</span>
+          </div>
+          <div class="card-bottom">
+            <span class="card-cash">€{{ p.cashBalance }}</span>
+            <span class="card-currency">{{ p.baseCurrency }}</span>
+          </div>
+          <div class="card-meta">
+            <span>{{ p.positionCount }} positions</span>
+            <span>Rev #{{ p.revision }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right Column: Portfolio Detail View -->
+    <div class="portfolio-detail-panel">
+      <div *ngIf="isLoading" class="loading-state">
+        <div class="spinner"></div>
+        <p>Loading portfolio state...</p>
+      </div>
+
+      <div *ngIf="selectedPortfolio && !isLoading" class="detail-content">
+        <!-- Metrics Header Grid -->
+        <div class="metrics-grid">
+          <div class="metric-box">
+            <div class="metric-label">CASH BALANCE</div>
+            <div class="metric-value cash-value">€{{ selectedPortfolio.cashBalance }}</div>
+            <div class="metric-sub">{{ selectedPortfolio.baseCurrency }} • Exact Decimal</div>
+          </div>
+
+          <div class="metric-box">
+            <div class="metric-label">MARKET VALUATION</div>
+            <div class="metric-value valuation-unavailable">UNAVAILABLE</div>
+            <div class="metric-sub">Historical market series absent</div>
+          </div>
+
+          <div class="metric-box">
+            <div class="metric-label">STRATEGY TRACKING</div>
+            <div class="metric-value status-unstarted">{{ selectedPortfolio.strategyTracking }}</div>
+            <div class="metric-sub">Prospective execution engine (M3/M5)</div>
+          </div>
+
+          <div class="metric-box">
+            <div class="metric-label">LEDGER REVISION</div>
+            <div class="metric-value">#{{ selectedPortfolio.revision }}</div>
+            <div class="metric-sub">Append-Only Immutability</div>
+          </div>
+        </div>
+
+        <!-- Portfolio Metadata Banner -->
+        <div class="meta-banner">
+          <span><strong>Portfolio ID:</strong> {{ selectedPortfolio.id }}</span>
+          <span><strong>Owner:</strong> {{ selectedPortfolio.ownerId }}</span>
+          <span><strong>Created:</strong> {{ selectedPortfolio.createdAt }}</span>
+        </div>
+
+        <!-- Holdings / Positions Table -->
+        <div class="positions-section">
+          <div class="section-title">
+            <span>HOLDINGS &amp; POSITIONS ({{ selectedPortfolio.positions.length }})</span>
+          </div>
+
+          <table *ngIf="selectedPortfolio.positions.length > 0" class="research-table">
+            <thead>
+              <tr>
+                <th>SYMBOL</th>
+                <th class="num-col">QUANTITY</th>
+                <th class="num-col">TOTAL COST BASIS</th>
+                <th class="num-col">AVERAGE UNIT COST</th>
+                <th>LAST UPDATED</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr *ngFor="let pos of selectedPortfolio.positions">
+                <td class="symbol-cell">{{ pos.ticker }}</td>
+                <td class="num-col font-bold">{{ pos.quantity }}</td>
+                <td class="num-col">€{{ pos.totalAcquisitionCost }}</td>
+                <td class="num-col">€{{ pos.averageCost }}</td>
+                <td class="meta-cell">{{ pos.updatedAt }}</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <div *ngIf="selectedPortfolio.positions.length === 0" class="empty-positions">
+            <p>No open positions. Account funded and ready for strategy research.</p>
+          </div>
+        </div>
+      </div>
+
+      <div *ngIf="!selectedPortfolio && !isLoading" class="no-selection-state">
+        <p>Select a portfolio from the left or create a new one.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Create Portfolio Modal -->
+  <div *ngIf="showCreateModal" class="modal-backdrop">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3>Create New Research Portfolio</h3>
+        <button class="btn-close" (click)="closeCreateModal()">×</button>
+      </div>
+      <div class="modal-body">
+        <div *ngIf="createError" class="modal-error">
+          {{ createError }}
+        </div>
+
+        <div class="form-group">
+          <label>Portfolio Name</label>
+          <input
+            type="text"
+            [(ngModel)]="newPortfolioName"
+            class="form-input"
+            placeholder="e.g. Core European ETF Fund"
+            id="input-portfolio-name"
+          />
+        </div>
+
+        <div class="form-row">
+          <div class="form-group flex-1">
+            <label>Mode</label>
+            <input type="text" value="PAPER" disabled class="form-input disabled" />
+          </div>
+          <div class="form-group flex-1">
+            <label>Base Currency</label>
+            <input type="text" value="EUR" disabled class="form-input disabled" />
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label>Initial Cash (EUR)</label>
+          <input
+            type="text"
+            [(ngModel)]="newInitialCash"
+            class="form-input font-mono"
+            placeholder="10000.00"
+            id="input-initial-cash"
+          />
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-cancel" (click)="closeCreateModal()">Cancel</button>
+        <button
+          class="btn-submit"
+          (click)="submitCreatePortfolio()"
+          [disabled]="isCreating"
+          id="btn-submit-portfolio"
+        >
+          {{ isCreating ? 'Creating...' : 'Create Portfolio' }}
+        </button>
+      </div>
+    </div>
+  </div>
+</div>

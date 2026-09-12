@@ -1,13 +1,9 @@
 package com.bergnerd.signalforge.app;
 
-import com.bergnerd.signalforge.app.chat.ChatActionExecution;
-import com.bergnerd.signalforge.app.chat.ChatMessageRecord;
-import com.bergnerd.signalforge.app.chat.ChatResponse;
-import com.bergnerd.signalforge.app.chat.ChatService;
-import com.bergnerd.signalforge.app.chat.LlmClient;
-import com.bergnerd.signalforge.app.chat.LlmStructuredResponse;
-import com.bergnerd.signalforge.app.chat.TradeInstruction;
-import com.bergnerd.signalforge.app.chat.WatchlistChange;
+import com.bergnerd.signalforge.app.chat.*;
+import com.bergnerd.signalforge.app.db.migration.LegacyDataMigrator;
+import com.bergnerd.signalforge.app.db.migration.MigrationBackupService;
+import com.bergnerd.signalforge.app.db.migration.MigrationRunner;
 import com.bergnerd.signalforge.app.portfolio.PortfolioResponse;
 import com.bergnerd.signalforge.app.portfolio.PortfolioService;
 import com.bergnerd.signalforge.app.portfolio.TradeRequest;
@@ -19,7 +15,10 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.jdbc.datasource.SingleConnectionDataSource;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.time.Instant;
 import java.util.List;
@@ -49,9 +48,13 @@ class ChatServiceTest {
         dataSource.setSuppressClose(true);
 
         jdbcTemplate = new JdbcTemplate(dataSource);
-        jdbcTemplate.execute("CREATE TABLE chat_messages (id TEXT PRIMARY KEY, user_id TEXT, role TEXT, content TEXT, actions TEXT, created_at TEXT);");
-
-        chatService = new ChatService(jdbcTemplate, portfolioService, watchlistService, llmClient);
+        TransactionTemplate transactionTemplate = new TransactionTemplate(new DataSourceTransactionManager(dataSource));
+        MigrationRunner runner = new MigrationRunner(
+                jdbcTemplate, dataSource, transactionTemplate, new MigrationBackupService(), new LegacyDataMigrator()
+        );
+        ReflectionTestUtils.setField(runner, "datasourceUrl", "jdbc:sqlite::memory:");
+        runner.runMigration();
+        chatService = new ChatService(jdbcTemplate, portfolioService, watchlistService, llmClient, transactionTemplate);
     }
 
     @Test
@@ -68,9 +71,17 @@ class ChatServiceTest {
         when(llmClient.generateResponse(anyString(), anyList(), eq("Buy 5 AAPL"))).thenReturn(llmResponse);
 
         TradeResponse tradeResponse = new TradeResponse("t-1", "AAPL", "buy", 5.0, 190.0, 950.0, Instant.now().toString(), mockPortfolio);
-        when(portfolioService.executeTrade(eq("default"), any(TradeRequest.class))).thenReturn(tradeResponse);
+        when(portfolioService.executeTrade(eq("default"), any(TradeRequest.class), anyString())).thenAnswer(invocation -> {
+            String key = invocation.getArgument(2);
+            jdbcTemplate.update(
+                    "INSERT INTO operations (id, portfolio_id, kind, idempotency_key, payload_hash, result_json, business_at, created_at) " +
+                            "VALUES ('op-chat-test', 'portfolio-legacy-demo-default', 'TRADE', ?, 'hash', '{}', ?, ?)",
+                    key, Instant.now().toString(), Instant.now().toString()
+            );
+            return tradeResponse;
+        });
 
-        ChatResponse response = chatService.processUserMessage("default", "Buy 5 AAPL");
+        ChatResponse response = chatService.processUserMessage("default", "Buy 5 AAPL", "chat-buy-1");
         assertNotNull(response);
         assertEquals("I have executed a market buy for 5 shares of AAPL.", response.message());
         assertEquals(1, response.actions().size());
@@ -99,7 +110,7 @@ class ChatServiceTest {
         );
         when(llmClient.generateResponse(anyString(), anyList(), eq("Track NVDA"))).thenReturn(llmResponse);
 
-        ChatResponse response = chatService.processUserMessage("default", "Track NVDA");
+        ChatResponse response = chatService.processUserMessage("default", "Track NVDA", "chat-watch-1");
         assertNotNull(response);
         assertEquals(1, response.actions().size());
         assertEquals("watchlist", response.actions().get(0).type());

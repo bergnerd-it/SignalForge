@@ -1,7 +1,7 @@
 import { Injectable } from '@angular/core';
-import { HttpClient } from '@angular/common/http';
+import { HttpClient, HttpHeaders } from '@angular/common/http';
 import { BehaviorSubject, Observable, tap } from 'rxjs';
-import { ChatMessage, ChatResponse } from '../models/market.model';
+import { ChatAction, ChatMessage, ChatResponse } from '../models/market.model';
 import { PortfolioService } from './portfolio.service';
 import { WatchlistService } from './watchlist.service';
 
@@ -23,14 +23,17 @@ export class ChatService {
   }
 
   public loadHistory(): void {
-    this.http.get<any[]>('/api/chat/history').subscribe({
+    this.http.get<ChatHistoryRow[]>('/api/chat/history').subscribe({
       next: (rows) => {
         const msgs: ChatMessage[] = rows.map((r) => {
-          let parsedActions;
+          let parsedActions: ChatAction[] | undefined;
           if (r.actions) {
             if (typeof r.actions === 'string') {
               try {
-                parsedActions = JSON.parse(r.actions);
+                const value: unknown = JSON.parse(r.actions);
+                parsedActions = Array.isArray(value)
+                  ? value.filter(isChatAction)
+                  : undefined;
               } catch {
                 parsedActions = undefined;
               }
@@ -80,6 +83,7 @@ export class ChatService {
   }
 
   public sendMessage(userMessage: string): Observable<ChatResponse> {
+    const idempotencyKey = createIdempotencyKey();
     const currentMsgs = this.messagesSubject.value;
     const now = new Date().toISOString();
     const userMsgObj: ChatMessage = {
@@ -91,7 +95,8 @@ export class ChatService {
     this.messagesSubject.next([...currentMsgs, userMsgObj]);
     this.isThinkingSubject.next(true);
 
-    return this.http.post<ChatResponse>('/api/chat', { message: userMessage }).pipe(
+    const headers = new HttpHeaders({ 'Idempotency-Key': idempotencyKey });
+    return this.http.post<ChatResponse>('/api/chat', { message: userMessage }, { headers }).pipe(
       tap({
         next: (res) => {
           this.isThinkingSubject.next(false);
@@ -127,4 +132,28 @@ export class ChatService {
       })
     );
   }
+}
+
+interface ChatHistoryRow {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  actions?: string | ChatAction[] | null;
+  createdAt: string;
+}
+
+function isChatAction(value: unknown): value is ChatAction {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+  const candidate = value as Record<string, unknown>;
+  return typeof candidate['type'] === 'string'
+    && typeof candidate['ticker'] === 'string'
+    && typeof candidate['details'] === 'string'
+    && typeof candidate['success'] === 'boolean';
+}
+
+function createIdempotencyKey(): string {
+  const unique = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `chat-${unique}`;
 }

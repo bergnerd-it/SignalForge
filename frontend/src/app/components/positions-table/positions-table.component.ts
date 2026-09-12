@@ -39,15 +39,18 @@ import { Position, PriceTick } from '../../models/market.model';
               </td>
               <td class="text-right font-bold">{{ pos.quantity | number:'1.2-4' }}</td>
               <td class="text-right text-muted">{{ pos.avgCost | currency:'USD':'symbol':'1.2-2' }}</td>
-              <td class="text-right font-bold">{{ getPrice(pos) | currency:'USD':'symbol':'1.2-2' }}</td>
-              <td class="text-right font-bold">{{ getTotalValue(pos) | currency:'USD':'symbol':'1.2-2' }}</td>
+              <td class="text-right font-bold">{{ getPrice(pos) === null ? 'UNAVAILABLE' : (getPrice(pos) | currency:'USD':'symbol':'1.2-2') }}</td>
+              <td class="text-right font-bold">{{ getTotalValue(pos) === null ? 'UNAVAILABLE' : (getTotalValue(pos) | currency:'USD':'symbol':'1.2-2') }}</td>
               <td class="text-right">
                 <span
                   class="badge"
-                  [ngClass]="getUnrealizedPnl(pos) >= 0 ? 'badge-green' : 'badge-red'"
+                  [ngClass]="(getUnrealizedPnl(pos) ?? 0) >= 0 ? 'badge-green' : 'badge-red'"
                 >
-                  {{ getUnrealizedPnl(pos) >= 0 ? '+' : '' }}{{ getUnrealizedPnl(pos) | currency:'USD':'symbol':'1.2-2' }}
-                  ({{ getUnrealizedPnlPercent(pos) >= 0 ? '+' : '' }}{{ getUnrealizedPnlPercent(pos) | number:'1.2-2' }}%)
+                  <ng-container *ngIf="getUnrealizedPnl(pos) !== null; else unavailablePnl">
+                    {{ (getUnrealizedPnl(pos) ?? 0) >= 0 ? '+' : '' }}{{ getUnrealizedPnl(pos) | currency:'USD':'symbol':'1.2-2' }}
+                    ({{ (getUnrealizedPnlPercent(pos) ?? 0) >= 0 ? '+' : '' }}{{ getUnrealizedPnlPercent(pos) | number:'1.2-2' }}%)
+                  </ng-container>
+                  <ng-template #unavailablePnl>UNAVAILABLE</ng-template>
                 </span>
               </td>
               <td class="text-center" (click)="$event.stopPropagation()">
@@ -203,21 +206,24 @@ export class PositionsTableComponent {
   @Output() readonly selectTicker = new EventEmitter<string>();
   @Output() readonly quickSell = new EventEmitter<Position>();
 
-  public getPrice(pos: Position): number {
+  public getPrice(pos: Position): number | null {
     return this.livePrices[pos.ticker]?.price ?? pos.currentPrice;
   }
 
-  public getTotalValue(pos: Position): number {
-    return pos.quantity * this.getPrice(pos);
+  public getTotalValue(pos: Position): number | null {
+    const price = this.getPrice(pos);
+    return price === null ? null : pos.quantity * price;
   }
 
-  public getUnrealizedPnl(pos: Position): number {
-    return this.getTotalValue(pos) - (pos.quantity * pos.avgCost);
+  public getUnrealizedPnl(pos: Position): number | null {
+    const totalValue = this.getTotalValue(pos);
+    return totalValue === null ? null : totalValue - (pos.quantity * pos.avgCost);
   }
 
-  public getUnrealizedPnlPercent(pos: Position): number {
+  public getUnrealizedPnlPercent(pos: Position): number | null {
     const cost = pos.quantity * pos.avgCost;
-    return cost > 0 ? (this.getUnrealizedPnl(pos) / cost) * 100 : 0;
+    const pnl = this.getUnrealizedPnl(pos);
+    return pnl === null ? null : cost > 0 ? (pnl / cost) * 100 : 0;
   }
 
   public onSelect(ticker: string): void {

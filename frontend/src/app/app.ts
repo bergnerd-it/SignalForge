@@ -26,6 +26,8 @@ import {
   ChatMessage,
 } from './models/market.model';
 
+import { ResearchComponent } from './components/research/research.component';
+
 @Component({
   selector: 'app-root',
   standalone: true,
@@ -39,11 +41,13 @@ import {
     PositionsTableComponent,
     TradeBarComponent,
     ChatPanelComponent,
+    ResearchComponent,
   ],
   templateUrl: './app.html',
   styleUrl: './app.css',
 })
 export class App implements OnInit, OnDestroy {
+  public currentView: 'demo' | 'research' = 'demo';
   public portfolio: Portfolio | null = null;
   public snapshots: PortfolioSnapshot[] = [];
   public watchlist: WatchlistEntry[] = [];
@@ -70,6 +74,10 @@ export class App implements OnInit, OnDestroy {
   ) {}
 
   ngOnInit(): void {
+    if (typeof window !== 'undefined' && window.location.pathname.startsWith('/research')) {
+      this.currentView = 'research';
+    }
+
     // 1. Subscribe to Live Price Stream
     this.subscriptions.add(
       this.priceStreamService.prices$.subscribe((prices) => {
@@ -142,17 +150,7 @@ export class App implements OnInit, OnDestroy {
 
   public get currentSelectedTick(): PriceTick | null {
     if (!this.selectedTicker) return null;
-    return (
-      this.livePrices[this.selectedTicker] || {
-        ticker: this.selectedTicker,
-        price: 100,
-        previousPrice: 100,
-        change: 0,
-        changePercent: 0,
-        timestamp: new Date().toISOString(),
-        direction: 'flat',
-      }
-    );
+    return this.livePrices[this.selectedTicker] ?? null;
   }
 
   public get currentSelectedHistory(): number[] {
@@ -278,6 +276,15 @@ export class App implements OnInit, OnDestroy {
       this.toastMessage = null;
       this.cdr.markForCheck();
     }, 4000);
+  }
+
+  public onViewChange(view: 'demo' | 'research'): void {
+    this.currentView = view;
+    if (typeof window !== 'undefined' && window.history) {
+      const targetPath = view === 'research' ? '/research' : '/demo';
+      window.history.pushState({}, '', targetPath);
+    }
+    this.cdr.markForCheck();
   }
 
   ngOnDestroy(): void {

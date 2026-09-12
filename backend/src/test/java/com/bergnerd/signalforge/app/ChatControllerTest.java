@@ -47,9 +47,10 @@ class ChatControllerTest {
                 Instant.now().toString()
         );
 
-        when(chatService.processUserMessage(eq("default"), eq("Buy 10 AAPL"))).thenReturn(res);
+        when(chatService.processUserMessage(eq("default"), eq("Buy 10 AAPL"), eq("chat-request-1"))).thenReturn(res);
 
         mockMvc.perform(post("/api/chat")
+                        .header("Idempotency-Key", "chat-request-1")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(req)))
                 .andExpect(status().isOk())

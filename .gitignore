@@ -11,6 +11,9 @@ db/*.db
 db/*.sqlite
 db/*.sqlite3
 !db/.gitkeep
+test/fixtures/*.db
+test/fixtures/*.db-wal
+test/fixtures/*.db-shm
 
 # Java & Gradle
 backend/.gradle/
@@ -34,4 +37,7 @@ Thumbs.db
 *.iml
 /backend/build/
 .class
+
+# Task-owned pre-migration checkpoint
+.checkpoint/
 

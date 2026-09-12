@@ -1,0 +1,30 @@
+{
+  "fixture_file": "legacy_multi_owner.db",
+  "untouched_file": "legacy_multi_owner_untouched.db",
+  "sha256": "fdaaf9512def1195bb0724fc85791b1a50d5565030f64b377e21ee89863325b5",
+  "untouched_sha256": "fdaaf9512def1195bb0724fc85791b1a50d5565030f64b377e21ee89863325b5",
+  "tables": {
+    "users_profile": 3,
+    "watchlist": 13,
+    "positions": 3,
+    "trades": 4,
+    "portfolio_snapshots": 5,
+    "chat_messages": 2
+  },
+  "owners": [
+    {
+      "id": "alice",
+      "cash_balance": 4200.0
+    },
+    {
+      "id": "bob",
+      "cash_balance": 10000.0
+    },
+    {
+      "id": "default",
+      "cash_balance": 7500.25
+    }
+  ],
+  "created_at": "2026-09-12T08:52:00Z",
+  "notes": "Representative legacy multi-owner SQLite fixture including fractional holdings, snapshots, chat, and empty watchlist"
+}

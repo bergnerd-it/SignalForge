@@ -13,20 +13,20 @@ export interface Position {
   ticker: string;
   quantity: number;
   avgCost: number;
-  currentPrice: number;
-  totalValue: number;
-  unrealizedPnl: number;
-  unrealizedPnlPercent: number;
+  currentPrice: number | null;
+  totalValue: number | null;
+  unrealizedPnl: number | null;
+  unrealizedPnlPercent: number | null;
   updatedAt: string;
 }
 
 export interface Portfolio {
   userId: string;
   cashBalance: number;
-  totalPositionValue: number;
-  totalPortfolioValue: number;
-  unrealizedPnl: number;
-  unrealizedPnlPercent: number;
+  totalPositionValue: number | null;
+  totalPortfolioValue: number | null;
+  unrealizedPnl: number | null;
+  unrealizedPnlPercent: number | null;
   positions: Position[];
 }
 
@@ -45,7 +45,7 @@ export interface TradeResponse {
   price: number;
   totalCost: number;
   executedAt: string;
-  updatedPortfolio: Portfolio;
+  updatedPortfolio: Portfolio | null;
 }
 
 export interface PortfolioSnapshot {

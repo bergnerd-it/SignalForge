@@ -10,17 +10,18 @@ import { PortfolioSnapshot } from '../../models/market.model';
     <div class="pnl-card">
       <div class="card-header">
         <span class="card-title">PORTFOLIO PERFORMANCE (P&L)</span>
-        <span class="stat-badge font-mono" [ngClass]="currentValue >= 10000 ? 'badge-green' : 'badge-red'">
-          {{ currentValue >= 10000 ? '+' : '' }}{{ (currentValue - 10000) | currency:'USD':'symbol':'1.2-2' }}
+        <span *ngIf="changeValue !== null" class="stat-badge font-mono" [ngClass]="changeValue >= 0 ? 'badge-green' : 'badge-red'">
+          {{ changeValue >= 0 ? '+' : '' }}{{ changeValue | currency:'USD':'symbol':'1.2-2' }}
         </span>
+        <span *ngIf="changeValue === null" class="stat-badge font-mono">UNAVAILABLE</span>
       </div>
 
       <div class="chart-body">
         <svg class="pnl-svg" viewBox="0 0 500 130" preserveAspectRatio="none">
           <defs>
             <linearGradient id="pnlGradient" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" [attr.stop-color]="currentValue >= 10000 ? '#10b981' : '#ef4444'" stop-opacity="0.3"/>
-              <stop offset="100%" [attr.stop-color]="currentValue >= 10000 ? '#10b981' : '#ef4444'" stop-opacity="0.0"/>
+              <stop offset="0%" [attr.stop-color]="(changeValue ?? 0) >= 0 ? '#10b981' : '#ef4444'" stop-opacity="0.3"/>
+              <stop offset="100%" [attr.stop-color]="(changeValue ?? 0) >= 0 ? '#10b981' : '#ef4444'" stop-opacity="0.0"/>
             </linearGradient>
           </defs>
 
@@ -47,7 +48,7 @@ import { PortfolioSnapshot } from '../../models/market.model';
             *ngIf="polylinePoints"
             [attr.points]="polylinePoints"
             fill="none"
-            [attr.stroke]="currentValue >= 10000 ? '#10b981' : '#ef4444'"
+            [attr.stroke]="(changeValue ?? 0) >= 0 ? '#10b981' : '#ef4444'"
             stroke-width="2"
             stroke-linecap="round"
             stroke-linejoin="round"
@@ -59,12 +60,12 @@ import { PortfolioSnapshot } from '../../models/market.model';
             [attr.cx]="lastPointX"
             [attr.cy]="lastPointY"
             r="3.5"
-            [attr.fill]="currentValue >= 10000 ? '#10b981' : '#ef4444'"
+            [attr.fill]="(changeValue ?? 0) >= 0 ? '#10b981' : '#ef4444'"
           />
 
           <!-- Labels -->
           <text x="438" y="19" fill="#6e7681" font-size="9" font-family="monospace">{{ maxVal | currency:'USD':'symbol':'1.0-0' }}</text>
-          <text *ngIf="baselineY !== null" x="438" [attr.y]="baselineY + 3" fill="rgba(236, 173, 10, 0.8)" font-size="9" font-family="monospace">$10,000</text>
+          <text *ngIf="baselineY !== null" x="438" [attr.y]="baselineY + 3" fill="rgba(236, 173, 10, 0.8)" font-size="9" font-family="monospace">START</text>
           <text x="438" y="109" fill="#6e7681" font-size="9" font-family="monospace">{{ minVal | currency:'USD':'symbol':'1.0-0' }}</text>
         </svg>
       </div>
@@ -121,7 +122,8 @@ import { PortfolioSnapshot } from '../../models/market.model';
 })
 export class PnlChartComponent implements OnChanges {
   @Input() snapshots: PortfolioSnapshot[] = [];
-  @Input() currentValue: number = 10000;
+  @Input() currentValue: number | null = null;
+  public changeValue: number | null = null;
 
   public minVal: number = 9500;
   public maxVal: number = 10500;
@@ -140,22 +142,31 @@ export class PnlChartComponent implements OnChanges {
     if (this.snapshots && this.snapshots.length > 0) {
       vals = this.snapshots.map(s => s.totalValue);
     }
-    if (vals.length === 0) {
-      vals = [10000, this.currentValue];
-    } else {
+    if (this.currentValue !== null) {
       vals.push(this.currentValue);
     }
+    if (vals.length === 0) {
+      this.changeValue = null;
+      this.polylinePoints = '';
+      this.areaPoints = '';
+      this.lastPointX = null;
+      this.lastPointY = null;
+      this.baselineY = null;
+      return;
+    }
 
-    this.minVal = Math.min(9800, ...vals);
-    this.maxVal = Math.max(10200, ...vals);
+    const baseline = vals[0];
+    this.changeValue = vals.at(-1)! - baseline;
+
+    this.minVal = Math.min(...vals);
+    this.maxVal = Math.max(...vals);
 
     const width = 430;
     const height = 120;
     const topPad = 15;
     const range = this.maxVal - this.minVal || 1;
 
-    // Baseline 10000 Y coord
-    const baselineNorm = (10000 - this.minVal) / range;
+    const baselineNorm = (baseline - this.minVal) / range;
     this.baselineY = height - (baselineNorm * (height - topPad * 2)) - topPad;
 
     const coords = vals.map((val, idx) => {

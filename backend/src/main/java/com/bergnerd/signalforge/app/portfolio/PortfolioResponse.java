@@ -5,9 +5,9 @@ import java.util.List;
 public record PortfolioResponse(
         String userId,
         double cashBalance,
-        double totalPositionValue,
-        double totalPortfolioValue,
-        double unrealizedPnl,
-        double unrealizedPnlPercent,
+        Double totalPositionValue,
+        Double totalPortfolioValue,
+        Double unrealizedPnl,
+        Double unrealizedPnlPercent,
         List<PositionDto> positions
 ) {}

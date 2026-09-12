@@ -1,0 +1,21 @@
+SignalForge legacy conversion policy v1
+
+This immutable artifact is part of migration V1's checksum.
+
+cash:
+- reject null and non-finite REAL values
+- convert through BigDecimal.valueOf(double)
+- book at scale 2 with HALF_EVEN
+
+positions:
+- reject null, non-finite, and negative quantity or average cost
+- convert quantity through BigDecimal.valueOf(double) and strip trailing zeroes
+- convert average cost to scale 2 with HALF_EVEN
+- total acquisition cost is quantity multiplied by converted average cost, scale 2 HALF_EVEN
+
+reconciliation difference sign:
+- converted minus original
+- audit differences retain sufficient precision and are not rounded to cash scale
+
+identity:
+- legacy listings remain unresolved, without invented venue, ISIN, or instrument type

@@ -13,5 +13,17 @@ public record TradeRequest(
         double quantity,
 
         @NotBlank(message = "Side is required (buy or sell)")
-        String side
-) {}
+        String side,
+
+        String idempotencyKey,
+
+        String portfolioScope
+) {
+    public TradeRequest(String ticker, double quantity, String side) {
+        this(ticker, quantity, side, null, null);
+    }
+
+    public TradeRequest(String ticker, double quantity, String side, String idempotencyKey) {
+        this(ticker, quantity, side, idempotencyKey, null);
+    }
+}

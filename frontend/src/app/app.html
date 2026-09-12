@@ -3,10 +3,15 @@
   <app-header
     [portfolio]="portfolio"
     [status]="connectionStatus"
+    [currentView]="currentView"
+    (viewChange)="onViewChange($event)"
   ></app-header>
 
-  <!-- Main Trading Workspace Grid -->
-  <main class="workspace-grid">
+  <!-- Research Portfolios View -->
+  <app-research *ngIf="currentView === 'research'"></app-research>
+
+  <!-- Main Trading Workspace Grid (Demo) -->
+  <main class="workspace-grid" *ngIf="currentView === 'demo'">
     <!-- Left Column: Watchlist -->
     <aside class="grid-col watchlist-col" aria-label="Watchlist">
       <app-watchlist
@@ -34,7 +39,7 @@
         <div class="trade-bar-wrapper">
           <app-trade-bar
             [ticker]="selectedTicker"
-            [currentPrice]="currentSelectedTick?.price ?? 100"
+            [currentPrice]="currentSelectedTick?.price ?? null"
             [isSubmitting]="isTrading"
             (selectTicker)="onSelectTicker($event)"
             (executeTrade)="onExecuteTrade($event)"
@@ -47,7 +52,7 @@
         <div class="heatmap-wrapper">
           <app-heatmap
             [positions]="portfolio?.positions ?? []"
-            [totalPositionValue]="portfolio?.totalPositionValue ?? 0"
+            [totalPositionValue]="portfolio?.totalPositionValue ?? null"
             [livePrices]="livePrices"
             (selectTicker)="onSelectTicker($event)"
           ></app-heatmap>
@@ -55,7 +60,7 @@
         <div class="pnl-wrapper">
           <app-pnl-chart
             [snapshots]="snapshots"
-            [currentValue]="portfolio?.totalPortfolioValue ?? 10000"
+            [currentValue]="portfolio?.totalPortfolioValue ?? null"
           ></app-pnl-chart>
         </div>
       </div>

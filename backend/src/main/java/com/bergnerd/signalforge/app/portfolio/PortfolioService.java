@@ -1,23 +1,22 @@
 package com.bergnerd.signalforge.app.portfolio;
 
+import com.bergnerd.signalforge.app.accounting.AccountingCore;
 import com.bergnerd.signalforge.app.market.MarketDataSource;
+import com.bergnerd.signalforge.app.market.MarketExceptions;
 import com.bergnerd.signalforge.app.market.PriceTick;
+import com.bergnerd.signalforge.app.operation.IdempotencyExceptions;
+import com.bergnerd.signalforge.app.operation.OperationService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Instant;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.*;
 
 @Slf4j
 @Service
@@ -26,170 +25,145 @@ public class PortfolioService {
 
     private final JdbcTemplate jdbcTemplate;
     private final MarketDataSource marketDataSource;
-    private final ConcurrentHashMap<String, Object> userLocks = new ConcurrentHashMap<>();
+    private final OperationService operationService;
 
     public PortfolioResponse getPortfolio(String userId) {
         String uid = (userId == null || userId.isBlank()) ? "default" : userId;
+        String portfolioId = resolveLegacyPortfolioId(uid);
 
-        Double cashBalance = getCashBalance(uid);
-
-        List<Map<String, Object>> rows = jdbcTemplate.queryForList(
-                "SELECT id, ticker, quantity, avg_cost, updated_at FROM positions WHERE user_id = ? ORDER BY ticker ASC",
-                uid
-        );
+        OperationService.PortfolioView view = operationService.getPortfolioView(portfolioId);
+        double cashBalance = new BigDecimal(view.cashBalance()).doubleValue();
 
         List<PositionDto> positions = new ArrayList<>();
         double totalPositionValue = 0.0;
         double totalCostBasis = 0.0;
+        boolean valuationComplete = true;
 
-        for (Map<String, Object> row : rows) {
-            String id = (String) row.get("id");
-            String ticker = (String) row.get("ticker");
-            double quantity = ((Number) row.get("quantity")).doubleValue();
-            double avgCost = ((Number) row.get("avg_cost")).doubleValue();
-            String updatedAt = (String) row.get("updated_at");
+        for (OperationService.PositionView pos : view.positions()) {
+            String ticker = pos.ticker();
+            double quantity = new BigDecimal(pos.quantity()).doubleValue();
+            double avgCost = new BigDecimal(pos.averageCost()).doubleValue();
+            double costBasis = round(new BigDecimal(pos.totalAcquisitionCost()).doubleValue());
 
             PriceTick priceTick = marketDataSource.getPrice(ticker);
-            double currentPrice = priceTick.price();
-            double totalValue = round(quantity * currentPrice);
-            double costBasis = round(quantity * avgCost);
-            double unrealizedPnl = round(totalValue - costBasis);
-            double unrealizedPnlPercent = costBasis > 0 ? round((unrealizedPnl / costBasis) * 100.0) : 0.0;
+            Double currentPrice = priceTick != null ? priceTick.price() : null;
+            Double totalValue = currentPrice == null ? null : round(quantity * currentPrice);
+            Double unrealizedPnl = totalValue == null ? null : round(totalValue - costBasis);
+            Double unrealizedPnlPercent = unrealizedPnl == null
+                    ? null
+                    : costBasis > 0 ? round((unrealizedPnl / costBasis) * 100.0) : 0.0;
 
             positions.add(new PositionDto(
-                    id, ticker, quantity, avgCost, currentPrice,
-                    totalValue, unrealizedPnl, unrealizedPnlPercent, updatedAt
+                    pos.listingId(), ticker, quantity, avgCost, currentPrice,
+                    totalValue, unrealizedPnl, unrealizedPnlPercent, pos.updatedAt()
             ));
 
-            totalPositionValue += totalValue;
+            if (totalValue == null) {
+                valuationComplete = false;
+            } else {
+                totalPositionValue += totalValue;
+            }
             totalCostBasis += costBasis;
         }
 
         totalPositionValue = round(totalPositionValue);
-        double totalPortfolioValue = round(cashBalance + totalPositionValue);
-        double unrealizedPnl = round(totalPositionValue - totalCostBasis);
-        double unrealizedPnlPercent = totalCostBasis > 0 ? round((unrealizedPnl / totalCostBasis) * 100.0) : 0.0;
+        Double completePositionValue = valuationComplete ? totalPositionValue : null;
+        Double totalPortfolioValue = valuationComplete ? round(cashBalance + totalPositionValue) : null;
+        Double unrealizedPnl = valuationComplete ? round(totalPositionValue - totalCostBasis) : null;
+        Double unrealizedPnlPercent = valuationComplete
+                ? totalCostBasis > 0 ? round((unrealizedPnl / totalCostBasis) * 100.0) : 0.0
+                : null;
 
         return new PortfolioResponse(
-                uid, cashBalance, totalPositionValue, totalPortfolioValue,
+                uid, cashBalance, completePositionValue, totalPortfolioValue,
                 unrealizedPnl, unrealizedPnlPercent, positions
         );
     }
 
-    @Transactional
     public TradeResponse executeTrade(String userId, TradeRequest request) {
+        return executeTrade(userId, request, request.idempotencyKey());
+    }
+
+    public TradeResponse executeTrade(String userId, TradeRequest request, String effectiveKey) {
         String uid = (userId == null || userId.isBlank()) ? "default" : userId;
-        synchronized (userLocks.computeIfAbsent(uid, k -> new Object())) {
-            String ticker = request.ticker().trim().toUpperCase();
-            String side = request.side().trim().toLowerCase();
-            double quantity = request.quantity();
 
-            if (quantity <= 0) {
-                throw new TradeExceptions.InvalidTradeException("Quantity must be greater than zero");
+        // 1. Enforce explicit scope boundary: reject legacy requests targeting research/PAPER
+        if (request.portfolioScope() != null && !request.portfolioScope().isBlank()) {
+            String scope = request.portfolioScope().trim().toUpperCase();
+            if ("PAPER".equals(scope) || "BACKTEST".equals(scope) || request.portfolioScope().startsWith("portfolio-")) {
+                throw new TradeExceptions.InvalidTradeException(
+                        "Explicit research or PAPER scope is forbidden on the legacy trading endpoint: " + request.portfolioScope()
+                );
             }
-            if (!"buy".equals(side) && !"sell".equals(side)) {
-                throw new TradeExceptions.InvalidTradeException("Invalid trade side: " + side + " (must be 'buy' or 'sell')");
-            }
+        }
 
-            PriceTick priceTick = marketDataSource.getPrice(ticker);
-            double currentPrice = priceTick.price();
-            double cashBalance = getCashBalance(uid);
-            String now = Instant.now().toString();
-            String tradeId = UUID.randomUUID().toString();
-            double totalCost;
-
-            if ("buy".equals(side)) {
-                totalCost = round(quantity * currentPrice);
-                if (cashBalance < totalCost) {
-                    throw new TradeExceptions.InsufficientFundsException(
-                            String.format("Insufficient funds: required $%.2f, available $%.2f", totalCost, cashBalance)
-                    );
-                }
-
-                double newCash = round(cashBalance - totalCost);
-                jdbcTemplate.update("UPDATE users_profile SET cash_balance = ? WHERE id = ?", newCash, uid);
-
-                try {
-                    Map<String, Object> existing = jdbcTemplate.queryForMap(
-                            "SELECT id, quantity, avg_cost FROM positions WHERE user_id = ? AND ticker = ?",
-                            uid, ticker
-                    );
-                    String posId = (String) existing.get("id");
-                    double oldQty = ((Number) existing.get("quantity")).doubleValue();
-                    double oldAvgCost = ((Number) existing.get("avg_cost")).doubleValue();
-
-                    double newQty = round(oldQty + quantity);
-                    double newAvgCost = round(((oldQty * oldAvgCost) + totalCost) / newQty);
-
-                    jdbcTemplate.update(
-                            "UPDATE positions SET quantity = ?, avg_cost = ?, updated_at = ? WHERE id = ?",
-                            newQty, newAvgCost, now, posId
-                    );
-                } catch (EmptyResultDataAccessException e) {
-                    jdbcTemplate.update(
-                            "INSERT INTO positions (id, user_id, ticker, quantity, avg_cost, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-                            UUID.randomUUID().toString(), uid, ticker, quantity, currentPrice, now
-                    );
-                }
-            } else {
-                // Sell
-                Map<String, Object> existing;
-                try {
-                    existing = jdbcTemplate.queryForMap(
-                            "SELECT id, quantity, avg_cost FROM positions WHERE user_id = ? AND ticker = ?",
-                            uid, ticker
-                    );
-                } catch (EmptyResultDataAccessException e) {
-                    throw new TradeExceptions.InsufficientSharesException(
-                            String.format("No open position in %s to sell", ticker)
-                    );
-                }
-
-                String posId = (String) existing.get("id");
-                double oldQty = ((Number) existing.get("quantity")).doubleValue();
-                if (oldQty < quantity) {
-                    throw new TradeExceptions.InsufficientSharesException(
-                            String.format("Insufficient shares: attempted to sell %.2f %s, owned %.2f", quantity, ticker, oldQty)
-                    );
-                }
-
-                totalCost = round(quantity * currentPrice);
-                double newCash = round(cashBalance + totalCost);
-                jdbcTemplate.update("UPDATE users_profile SET cash_balance = ? WHERE id = ?", newCash, uid);
-
-                double newQty = round(oldQty - quantity);
-                if (newQty <= 0.00001) {
-                    jdbcTemplate.update("DELETE FROM positions WHERE id = ?", posId);
-                } else {
-                    jdbcTemplate.update(
-                            "UPDATE positions SET quantity = ?, updated_at = ? WHERE id = ?",
-                            newQty, now, posId
-                    );
-                }
-            }
-
-            // Record trade in append-only log
-            jdbcTemplate.update(
-                    "INSERT INTO trades (id, user_id, ticker, side, quantity, price, executed_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    tradeId, uid, ticker, side, quantity, currentPrice, now
-            );
-
-            // Record immediate snapshot after trade
-            PortfolioResponse updatedPortfolio = getPortfolio(uid);
-            recordSnapshotForUser(uid, updatedPortfolio.totalPortfolioValue());
-
-            log.info("Trade executed: user={} ticker={} side={} qty={} price=${}", uid, ticker, side, quantity, currentPrice);
-
-            return new TradeResponse(
-                    tradeId, ticker, side, quantity, currentPrice, totalCost, now, updatedPortfolio
+        // 2. Validate idempotency key
+        if (effectiveKey == null || effectiveKey.isBlank()) {
+            throw new IdempotencyExceptions.MissingIdempotencyKeyException(
+                    "Idempotency key is required for trade execution"
             );
         }
+
+        String ticker = request.ticker().trim().toUpperCase();
+        String side = request.side().trim().toLowerCase();
+        double quantity = request.quantity();
+
+        if (quantity <= 0) {
+            throw new TradeExceptions.InvalidTradeException("Quantity must be greater than zero");
+        }
+        if (!"buy".equals(side) && !"sell".equals(side)) {
+            throw new TradeExceptions.InvalidTradeException("Invalid trade side: " + side + " (must be 'buy' or 'sell')");
+        }
+
+        BigDecimal exactQuantity = AccountingCore.normalizeQuantity(BigDecimal.valueOf(quantity));
+        String portfolioId = resolveLegacyPortfolioId(uid);
+
+        Optional<OperationService.TradeExecutionResult> completed = operationService.findCompletedTrade(
+                portfolioId, ticker, side, exactQuantity, effectiveKey
+        );
+        if (completed.isPresent()) {
+            return toTradeResponse(uid, completed.get(), false);
+        }
+
+        PriceTick priceTick = marketDataSource.getPrice(ticker);
+        if (priceTick == null || !priceTick.isExecutable()) {
+            throw new MarketExceptions.QuoteUnavailableException("Executable quote unavailable for ticker: " + ticker);
+        }
+        BigDecimal currentPrice = AccountingCore.normalizePrice(BigDecimal.valueOf(priceTick.price()));
+
+        // 5. Execute through pure OperationService boundary
+        OperationService.TradeExecutionResult opResult;
+        try {
+            opResult = operationService.executeTrade(
+                    portfolioId,
+                    ticker,
+                    side,
+                    exactQuantity,
+                    currentPrice,
+                    BigDecimal.ZERO,
+                    effectiveKey,
+                    "LEGACY_DEMO_FILL"
+            );
+        } catch (AccountingCore.InsufficientFundsException e) {
+            throw new TradeExceptions.InsufficientFundsException(e.getMessage());
+        } catch (AccountingCore.InsufficientSharesException e) {
+            throw new TradeExceptions.InsufficientSharesException(e.getMessage());
+        }
+
+        log.info("Trade executed via OperationService: user={} ticker={} side={} qty={} price=${} key={}",
+                uid, ticker, side, quantity, currentPrice, effectiveKey);
+        TradeResponse response = toTradeResponse(uid, opResult, true);
+        if (response.updatedPortfolio() != null && response.updatedPortfolio().totalPortfolioValue() != null) {
+            recordSnapshotForUser(uid, response.updatedPortfolio().totalPortfolioValue());
+        }
+        return response;
     }
 
     public List<PortfolioSnapshotDto> getHistory(String userId) {
         String uid = (userId == null || userId.isBlank()) ? "default" : userId;
+        // Bounded query for performance and stability
         return jdbcTemplate.query(
-                "SELECT id, total_value, recorded_at FROM portfolio_snapshots WHERE user_id = ? ORDER BY recorded_at ASC",
+                "SELECT id, total_value, recorded_at FROM portfolio_snapshots WHERE user_id = ? ORDER BY recorded_at ASC LIMIT 1000",
                 (rs, rowNum) -> new PortfolioSnapshotDto(
                         rs.getString("id"),
                         rs.getDouble("total_value"),
@@ -203,8 +177,10 @@ public class PortfolioService {
     public void recordPeriodicSnapshot() {
         try {
             PortfolioResponse portfolio = getPortfolio("default");
-            recordSnapshotForUser("default", portfolio.totalPortfolioValue());
-            log.debug("Recorded 30-sec portfolio snapshot: totalValue=${}", portfolio.totalPortfolioValue());
+            if (portfolio.totalPortfolioValue() != null) {
+                recordSnapshotForUser("default", portfolio.totalPortfolioValue());
+                log.debug("Recorded 30-sec portfolio snapshot: totalValue=${}", portfolio.totalPortfolioValue());
+            }
         } catch (Exception e) {
             log.warn("Failed to record periodic snapshot: {}", e.getMessage());
         }
@@ -212,28 +188,61 @@ public class PortfolioService {
 
     public void recordSnapshotForUser(String userId, double totalValue) {
         String now = Instant.now().toString();
+        String id = UUID.randomUUID().toString();
         jdbcTemplate.update(
                 "INSERT INTO portfolio_snapshots (id, user_id, total_value, recorded_at) VALUES (?, ?, ?, ?)",
-                UUID.randomUUID().toString(), userId, totalValue, now
+                id, userId, totalValue, now
+        );
+
+        String portfolioId = resolveLegacyPortfolioId(userId);
+        jdbcTemplate.update(
+                "INSERT OR IGNORE INTO valuations (id, portfolio_id, business_at, valuation_sequence, cash, positions_value, receivables_value, equity, source_quality) " +
+                        "VALUES (?, ?, ?, 1, '0.00', '0.00', '0.00', ?, 'DEMO_VALUATION')",
+                id, portfolioId, now, BigDecimal.valueOf(totalValue).setScale(2, RoundingMode.HALF_EVEN).toPlainString()
         );
     }
 
-    private double getCashBalance(String userId) {
-        try {
-            Double balance = jdbcTemplate.queryForObject(
-                    "SELECT cash_balance FROM users_profile WHERE id = ?",
-                    Double.class,
-                    userId
-            );
-            return balance != null ? round(balance) : 10000.0;
-        } catch (EmptyResultDataAccessException e) {
+    private String resolveLegacyPortfolioId(String userId) {
+        String portfolioId = "portfolio-legacy-demo-" + userId;
+        Integer exists = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM portfolios WHERE id = ?",
+                Integer.class,
+                portfolioId
+        );
+        if (exists == null || exists == 0) {
             String now = Instant.now().toString();
             jdbcTemplate.update(
-                    "INSERT INTO users_profile (id, cash_balance, created_at) VALUES (?, ?, ?)",
-                    userId, 10000.0, now
+                    "INSERT OR IGNORE INTO portfolios (id, owner_id, name, mode, base_currency, initial_cash, created_at, paper_started_at, rounding_policy_version) " +
+                            "VALUES (?, ?, ?, 'LEGACY_DEMO', 'USD', '10000.00', ?, NULL, ?)",
+                    portfolioId, userId, "Legacy Demo (" + userId + ")", now, AccountingCore.POLICY_VERSION
             );
-            return 10000.0;
+            jdbcTemplate.update(
+                    "INSERT OR IGNORE INTO portfolio_state (portfolio_id, cash_amount, revision) VALUES (?, '10000.00', 1)",
+                    portfolioId
+            );
         }
+        return portfolioId;
+    }
+
+    private TradeResponse toTradeResponse(
+            String userId,
+            OperationService.TradeExecutionResult result,
+            boolean includeLivePortfolio
+    ) {
+        double resultQuantity = new BigDecimal(result.units()).doubleValue();
+        double resultPrice = new BigDecimal(result.fillPrice()).doubleValue();
+        PortfolioResponse portfolio = null;
+        if (includeLivePortfolio) {
+            try {
+                portfolio = getPortfolio(userId);
+            } catch (MarketExceptions.QuoteUnavailableException exception) {
+                log.info("Returning trade result without a live portfolio valuation: {}", exception.getMessage());
+            }
+        }
+        return new TradeResponse(
+                result.executionId(), result.ticker(), result.side(), resultQuantity, resultPrice,
+                round(resultQuantity * resultPrice), result.executedAt(), portfolio
+        );
     }
 
     private double round(double val) {

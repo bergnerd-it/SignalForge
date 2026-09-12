@@ -20,7 +20,15 @@ public class PortfolioController {
     }
 
     @PostMapping("/trade")
-    public ResponseEntity<TradeResponse> executeTrade(@Valid @RequestBody TradeRequest request) {
+    public ResponseEntity<TradeResponse> executeTrade(
+            @RequestHeader(value = "Idempotency-Key", required = false) String headerKey,
+            @Valid @RequestBody TradeRequest request) {
+        String effectiveKey = (headerKey != null && !headerKey.isBlank())
+                ? headerKey.trim()
+                : (request.idempotencyKey() != null && !request.idempotencyKey().isBlank() ? request.idempotencyKey().trim() : null);
+        if (effectiveKey != null) {
+            return ResponseEntity.ok(portfolioService.executeTrade("default", request, effectiveKey));
+        }
         return ResponseEntity.ok(portfolioService.executeTrade("default", request));
     }
 

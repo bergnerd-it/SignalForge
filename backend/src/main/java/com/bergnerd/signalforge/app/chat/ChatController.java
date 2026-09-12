@@ -15,8 +15,18 @@ public class ChatController {
     private final ChatService chatService;
 
     @PostMapping
-    public ResponseEntity<ChatResponse> sendMessage(@Valid @RequestBody ChatRequest request) {
-        return ResponseEntity.ok(chatService.processUserMessage("default", request.message()));
+    public ResponseEntity<ChatResponse> sendMessage(
+            @RequestHeader(value = "Idempotency-Key", required = false) String headerKey,
+            @Valid @RequestBody ChatRequest request) {
+        String effectiveKey = (headerKey != null && !headerKey.isBlank())
+                ? headerKey.trim()
+                : (request.idempotencyKey() != null && !request.idempotencyKey().isBlank() ? request.idempotencyKey().trim() : null);
+        if (effectiveKey == null) {
+            throw new com.bergnerd.signalforge.app.operation.IdempotencyExceptions.MissingIdempotencyKeyException(
+                    "Idempotency-Key is required for chat requests"
+            );
+        }
+        return ResponseEntity.ok(chatService.processUserMessage("default", request.message(), effectiveKey));
     }
 
     @GetMapping("/history")

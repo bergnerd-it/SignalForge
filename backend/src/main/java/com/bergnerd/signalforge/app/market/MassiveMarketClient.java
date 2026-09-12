@@ -40,9 +40,7 @@ public class MassiveMarketClient implements MarketDataSource {
         registerTicker(symbol);
         PriceTick tick = priceCache.get(symbol);
         if (tick == null) {
-            String now = Instant.now().toString();
-            tick = new PriceTick(symbol, 100.0, 100.0, 0.0, 0.0, now, "flat");
-            priceCache.put(symbol, tick);
+            throw new MarketExceptions.QuoteUnavailableException("Market quote unavailable for ticker: " + symbol);
         }
         return tick;
     }
@@ -104,7 +102,10 @@ public class MassiveMarketClient implements MarketDataSource {
                                 double changePercent = roundedPrev > 0 ? round(((roundedCurrent - roundedPrev) / roundedPrev) * 100.0) : 0.0;
                                 String direction = roundedCurrent > roundedPrev ? "up" : (roundedCurrent < roundedPrev ? "down" : "flat");
 
-                                PriceTick tick = new PriceTick(symbol, roundedCurrent, roundedPrev, change, changePercent, now, direction);
+                                PriceTick tick = new PriceTick(
+                                        symbol, roundedCurrent, roundedPrev, change, changePercent, now, direction,
+                                        "POLYGON_PROVIDER", now, true
+                                );
                                 priceCache.put(symbol, tick);
                             }
                         }

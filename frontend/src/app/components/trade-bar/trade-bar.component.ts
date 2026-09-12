@@ -24,7 +24,7 @@ import { TradeRequest } from '../../models/market.model';
 
         <div class="price-display">
           <span class="label">PRICE</span>
-          <span class="price-val">{{ currentPrice | currency:'USD':'symbol':'1.2-2' }}</span>
+          <span class="price-val">{{ currentPrice === null ? 'UNAVAILABLE' : (currentPrice | currency:'USD':'symbol':'1.2-2') }}</span>
         </div>
 
         <div class="qty-section">
@@ -48,7 +48,7 @@ import { TradeRequest } from '../../models/market.model';
 
         <div class="total-cost-display">
           <span class="label">EST. TOTAL</span>
-          <span class="cost-val">{{ (quantity * currentPrice) | currency:'USD':'symbol':'1.2-2' }}</span>
+          <span class="cost-val">{{ currentPrice === null ? 'UNAVAILABLE' : (quantity * currentPrice | currency:'USD':'symbol':'1.2-2') }}</span>
         </div>
 
         <div class="action-buttons">
@@ -210,7 +210,7 @@ import { TradeRequest } from '../../models/market.model';
 })
 export class TradeBarComponent implements OnChanges {
   @Input() ticker: string = 'AAPL';
-  @Input() currentPrice: number = 190.0;
+  @Input() currentPrice: number | null = null;
   @Input() isSubmitting: boolean = false;
 
   @Output() readonly tickerChange = new EventEmitter<string>();
@@ -240,7 +240,8 @@ export class TradeBarComponent implements OnChanges {
 
   public isValidTrade(): boolean {
     const qty = Number(this.quantity);
-    return !!this.ticker && !!this.ticker.trim() && !isNaN(qty) && qty > 0 && this.currentPrice > 0;
+    return !!this.ticker && !!this.ticker.trim() && !isNaN(qty) && qty > 0
+      && this.currentPrice !== null && this.currentPrice > 0;
   }
 
   public onTrade(side: 'buy' | 'sell'): void {
@@ -249,7 +250,7 @@ export class TradeBarComponent implements OnChanges {
         ticker: this.ticker.trim().toUpperCase(),
         quantity: Number(this.quantity),
         side,
-        price: this.currentPrice,
+        price: this.currentPrice ?? undefined,
       });
     }
   }

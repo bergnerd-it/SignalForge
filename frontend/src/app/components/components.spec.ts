@@ -7,6 +7,11 @@ import { PnlChartComponent } from './pnl-chart/pnl-chart.component';
 import { TradeBarComponent } from './trade-bar/trade-bar.component';
 import { PositionsTableComponent } from './positions-table/positions-table.component';
 import { ChatPanelComponent } from './chat-panel/chat-panel.component';
+import { ResearchComponent } from './research/research.component';
+import { provideHttpClient } from '@angular/common/http';
+import { provideHttpClientTesting } from '@angular/common/http/testing';
+import { of } from 'rxjs';
+import { ResearchService } from '../services/research.service';
 
 describe('Component Unit Tests', () => {
   it('HeaderComponent should display portfolio value and cash', () => {
@@ -202,5 +207,75 @@ describe('Component Unit Tests', () => {
 
     comp.onClear();
     expect(cleared).toBe(true);
+  });
+
+  it('ResearchComponent should render portfolio details and honest unavailable valuation', () => {
+    const mockPortfolios = [
+      {
+        id: 'port-123',
+        ownerId: 'default',
+        name: 'EUR Tech Fund',
+        mode: 'PAPER' as const,
+        baseCurrency: 'EUR',
+        cashBalance: '10000.00',
+        revision: 1,
+        createdAt: '2026-09-12T00:00:00Z',
+        paperStartedAt: null,
+        strategyTracking: 'UNSTARTED' as const,
+        positionCount: 1,
+      },
+    ];
+    const mockDetail = {
+      id: 'port-123',
+      ownerId: 'default',
+      name: 'EUR Tech Fund',
+      mode: 'PAPER' as const,
+      baseCurrency: 'EUR',
+      cashBalance: '10000.00',
+      revision: 1,
+      createdAt: '2026-09-12T00:00:00Z',
+      paperStartedAt: null,
+      strategyTracking: 'UNSTARTED' as const,
+      valuationStatus: 'UNAVAILABLE' as const,
+      marketValue: null,
+      unrealizedPnl: null,
+      positions: [
+        {
+          listingId: 'listing-1',
+          ticker: 'VWCE',
+          quantity: '10',
+          totalAcquisitionCost: '1000.00',
+          averageCost: '100.00000000',
+          updatedAt: '2026-09-12T00:00:00Z',
+        },
+      ],
+    };
+
+    const mockResearchService = {
+      portfolios$: of(mockPortfolios),
+      selectedPortfolio$: of(mockDetail),
+      loading$: of(false),
+      error$: of(null),
+      refreshPortfolios: () => {},
+      selectPortfolio: () => {},
+      createPortfolio: () => of(mockDetail),
+    };
+
+    TestBed.resetTestingModule();
+    TestBed.configureTestingModule({
+      providers: [
+        { provide: ResearchService, useValue: mockResearchService },
+      ],
+    });
+    const fixture: ComponentFixture<ResearchComponent> = TestBed.createComponent(ResearchComponent);
+    fixture.detectChanges();
+
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.textContent).toContain('RESEARCH PORTFOLIOS');
+    expect(el.textContent).toContain('EUR Tech Fund');
+    expect(el.textContent).toContain('€10000.00');
+    expect(el.textContent).toContain('UNAVAILABLE');
+    expect(el.textContent).toContain('UNSTARTED');
+    expect(el.textContent).toContain('VWCE');
   });
 });

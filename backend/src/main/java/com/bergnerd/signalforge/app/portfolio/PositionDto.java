@@ -5,9 +5,9 @@ public record PositionDto(
         String ticker,
         double quantity,
         double avgCost,
-        double currentPrice,
-        double totalValue,
-        double unrealizedPnl,
-        double unrealizedPnlPercent,
+        Double currentPrice,
+        Double totalValue,
+        Double unrealizedPnl,
+        Double unrealizedPnlPercent,
         String updatedAt
 ) {}
