@@ -1,13 +1,16 @@
 # SignalForge Milestone M3 Completion Report
+> [!WARNING]
+> **SUPERSEDED:** This report has been superseded by [research-M3-fixes.md](file:///Users/oliver/Projects/bergnerd/SignalForge/planning/reports/research-M3-fixes.md) following the code review in `planning/reports/M3-code-review.md` and resolution of CRITICAL-1, HIGH-1 through HIGH-5, and MEDIUM-1 through MEDIUM-5 under `planning/PROMPT-SIGNALFORGE-M3-FIXES.md`. Please refer to `planning/reports/research-M3-fixes.md` for authoritative findings, exact test counts, and verified evidence.
+
 **Historical Backtest Engine & Buy-and-Hold Baseline (`ETF_BUY_HOLD_V1`)**
 
 - **Date:** 2026-09-12
 - **Author:** Antigravity (Senior Full-Stack Developer Agent)
-- **Status:** Complete & Fully Verified
+- **Status:** SUPERSEDED by `planning/reports/research-M3-fixes.md`
 - **Branch:** `feature/m3`
 - **Specification Document:** `planning/PROMPT-SIGNALFORGE-M3.md`
 - **Baseline Walkthrough:** `planning/docs/backtest-baseline.md`
-- **Backlog Tracking:** `TASK-13` (Implement M3 - Backtest Engine and Buy-and-Hold Baseline)
+- **Backlog Tracking:** `TASK-13` / `TASK-14`
 
 ---
 
