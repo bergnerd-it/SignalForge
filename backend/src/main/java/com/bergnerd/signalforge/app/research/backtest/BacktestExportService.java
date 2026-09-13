@@ -4,11 +4,15 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.io.*;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -23,6 +27,10 @@ public class BacktestExportService {
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
 
+    public static final int MAX_SERIES_ROWS = 100000;
+    public static final int MAX_HOLDINGS_ROWS = 10000;
+    public static final long MAX_EXPORT_BYTES = 50 * 1024 * 1024L;
+
     public void validateExportable(String runId, String ownerId) {
         String uid = (ownerId == null || ownerId.isBlank()) ? "default" : ownerId;
         List<Map<String, Object>> runRows = jdbcTemplate.queryForList(
@@ -35,9 +43,62 @@ public class BacktestExportService {
         if (!"COMPLETED".equalsIgnoreCase(status)) {
             throw new IllegalStateException("Cannot export incomplete backtest run (current status: " + status + ")");
         }
+
+        // Bounded export preflight check: validate exact row limits before HTTP 200 response headers are committed
+        int equityCount = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM backtest_daily_equity WHERE run_id = ?", Integer.class, runId);
+        int eventsCount = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM backtest_events WHERE run_id = ?", Integer.class, runId);
+        int ordersCount = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM backtest_orders WHERE run_id = ?", Integer.class, runId);
+        int holdingsCount = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM backtest_holdings WHERE run_id = ?", Integer.class, runId);
+
+        if (equityCount > MAX_SERIES_ROWS) {
+            throw new ResponseStatusException(HttpStatus.PAYLOAD_TOO_LARGE,
+                    "Export bounds exceeded: run has " + equityCount + " daily equity rows, exceeding maximum limit of " + MAX_SERIES_ROWS);
+        }
+        if (eventsCount > MAX_SERIES_ROWS) {
+            throw new ResponseStatusException(HttpStatus.PAYLOAD_TOO_LARGE,
+                    "Export bounds exceeded: run has " + eventsCount + " event rows, exceeding maximum limit of " + MAX_SERIES_ROWS);
+        }
+        if (ordersCount > MAX_SERIES_ROWS) {
+            throw new ResponseStatusException(HttpStatus.PAYLOAD_TOO_LARGE,
+                    "Export bounds exceeded: run has " + ordersCount + " order rows, exceeding maximum limit of " + MAX_SERIES_ROWS);
+        }
+        if (holdingsCount > MAX_HOLDINGS_ROWS) {
+            throw new ResponseStatusException(HttpStatus.PAYLOAD_TOO_LARGE,
+                    "Export bounds exceeded: run has " + holdingsCount + " holdings rows, exceeding maximum limit of " + MAX_HOLDINGS_ROWS);
+        }
     }
 
     public void streamExportZip(String runId, String ownerId, OutputStream outputStream) throws IOException {
+        streamExportZip(runId, ownerId, outputStream, MAX_EXPORT_BYTES);
+    }
+
+    public Path prepareExportZip(String runId, String ownerId) throws IOException {
+        return prepareExportZip(runId, ownerId, MAX_EXPORT_BYTES);
+    }
+
+    Path prepareExportZip(String runId, String ownerId, long maxBytes) throws IOException {
+        validateExportable(runId, ownerId);
+        Path zip = Files.createTempFile("signalforge-backtest-export-", ".zip");
+        try (OutputStream output = Files.newOutputStream(zip)) {
+            streamExportZip(runId, ownerId, output, maxBytes);
+            return zip;
+        } catch (IOException | RuntimeException failure) {
+            Files.deleteIfExists(zip);
+            Throwable cause = failure;
+            while (cause != null) {
+                if (cause instanceof ExportTooLargeException) {
+                    throw new ResponseStatusException(HttpStatus.PAYLOAD_TOO_LARGE,
+                            "Export exceeds maximum ZIP size of " + maxBytes + " bytes", failure);
+                }
+                cause = cause.getCause();
+            }
+            throw failure;
+        }
+    }
+
+    private void streamExportZip(String runId, String ownerId, OutputStream outputStream, long maxBytes) throws IOException {
+        validateExportable(runId, ownerId);
+
         String uid = (ownerId == null || ownerId.isBlank()) ? "default" : ownerId;
         List<Map<String, Object>> runRows = jdbcTemplate.queryForList(
                 "SELECT * FROM backtest_runs WHERE id = ? AND owner_id = ?", runId, uid
@@ -46,26 +107,9 @@ public class BacktestExportService {
             throw new IllegalArgumentException("Backtest run not found: " + runId);
         }
         Map<String, Object> run = runRows.get(0);
-        String status = (String) run.get("status");
-        if (!"COMPLETED".equalsIgnoreCase(status)) {
-            throw new IllegalStateException("Cannot export incomplete backtest run (current status: " + status + ")");
-        }
 
-        // Bounded export preflight check: ensure row counts do not exceed bounds before streaming response bytes
-        int equityCount = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM backtest_daily_equity WHERE run_id = ?", Integer.class, runId);
-        int eventsCount = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM backtest_events WHERE run_id = ?", Integer.class, runId);
-        int ordersCount = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM backtest_orders WHERE run_id = ?", Integer.class, runId);
-        int holdingsCount = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM backtest_holdings WHERE run_id = ?", Integer.class, runId);
-
-        final int MAX_SERIES_ROWS = 100000;
-        final int MAX_HOLDINGS_ROWS = 10000;
-        if (equityCount > MAX_SERIES_ROWS || eventsCount > MAX_SERIES_ROWS || ordersCount > MAX_SERIES_ROWS || holdingsCount > MAX_HOLDINGS_ROWS) {
-            throw new IllegalArgumentException("Export bounds exceeded: run has " +
-                    Math.max(Math.max(equityCount, eventsCount), Math.max(ordersCount, holdingsCount)) +
-                    " rows, exceeding maximum export limit of " + MAX_SERIES_ROWS);
-        }
-
-        try (ZipOutputStream zos = new ZipOutputStream(outputStream, StandardCharsets.UTF_8)) {
+        BoundedOutputStream bos = new BoundedOutputStream(outputStream, maxBytes);
+        try (ZipOutputStream zos = new ZipOutputStream(bos, StandardCharsets.UTF_8)) {
             Writer writer = new OutputStreamWriter(zos, StandardCharsets.UTF_8);
 
             // 1. manifest.json: built verbatim from frozen run metadata and config snapshot
@@ -112,6 +156,7 @@ public class BacktestExportService {
                     manifest.put("engineVersion", cfg.engineVersion());
                     manifest.put("sourceCommit", cfg.sourceCommit());
                     manifest.put("dirtyFlag", cfg.dirtyFlag());
+                    manifest.put("codeFingerprint", cfg.codeFingerprint());
                     manifest.put("classification", cfg.classification());
                     manifest.put("availabilityAssumptions", cfg.availabilityAssumptions());
                 } catch (Exception e) {
@@ -150,15 +195,17 @@ public class BacktestExportService {
 
             // 3. equity_series.csv (streamed directly)
             zos.putNextEntry(new ZipEntry("equity_series.csv"));
-            writer.write("series_type,session_date,cash,holdings_value,receivables,total_equity,daily_return,drawdown,peak_equity,units,cost_basis,raw_close\n");
+            writer.write("series_type,session_date,point_kind,observation_time,cash,holdings_value,receivables,total_equity,daily_return,drawdown,peak_equity,units,cost_basis,raw_close\n");
             jdbcTemplate.query(
-                    "SELECT series_type, session_date, cash, holdings_value, receivables, total_equity, " +
+                    "SELECT series_type, session_date, point_kind, observation_time, cash, holdings_value, receivables, total_equity, " +
                             "daily_return, drawdown, peak_equity, units, cost_basis, raw_close " +
-                            "FROM backtest_daily_equity WHERE run_id = ? ORDER BY session_date ASC, series_type ASC",
+                            "FROM backtest_daily_equity WHERE run_id = ? ORDER BY session_date ASC, point_kind ASC, series_type ASC",
                     rs -> {
                         try {
                             writer.write(escapeCsvText(rs.getString("series_type")) + ",");
                             writer.write(formatNumeric(rs.getString("session_date")) + ",");
+                            writer.write(escapeCsvText(rs.getString("point_kind")) + ",");
+                            writer.write(escapeCsvText(rs.getString("observation_time")) + ",");
                             writer.write(formatNumeric(rs.getString("cash")) + ",");
                             writer.write(formatNumeric(rs.getString("holdings_value")) + ",");
                             writer.write(formatNumeric(rs.getString("receivables")) + ",");
@@ -299,4 +346,35 @@ public class BacktestExportService {
             return false;
         }
     }
+
+    private static class BoundedOutputStream extends FilterOutputStream {
+        private final long maxBytes;
+        private long bytesWritten = 0;
+
+        public BoundedOutputStream(OutputStream out, long maxBytes) {
+            super(out);
+            this.maxBytes = maxBytes;
+        }
+
+        @Override
+        public void write(int b) throws IOException {
+            checkLimit(1);
+            super.write(b);
+        }
+
+        @Override
+        public void write(byte[] b, int off, int len) throws IOException {
+            checkLimit(len);
+            out.write(b, off, len);
+        }
+
+        private void checkLimit(int len) throws IOException {
+            bytesWritten += len;
+            if (bytesWritten > maxBytes) {
+                throw new ExportTooLargeException();
+            }
+        }
+    }
+
+    private static class ExportTooLargeException extends IOException {}
 }

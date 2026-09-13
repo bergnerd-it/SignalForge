@@ -849,5 +849,91 @@ describe('BacktestService', () => {
     httpTesting.expectOne('/api/research/backtests').flush({ items: [], total: 0, limit: 50, offset: 0, hasMore: false });
     expect(service.getExportUrl('bt-run-1')).toBe('/api/research/backtests/bt-run-1/export');
   });
+
+  it('exposes incomplete state when equity series hits cap while hasMore is true', () => {
+    httpTesting.expectOne('/api/research/backtests').flush({ items: [], total: 0, limit: 50, offset: 0, hasMore: false });
+
+    // Test with boundary of 10 points
+    service.fetchAllEquity('bt-run-1', 'CANDIDATE', 10).subscribe((res) => {
+      expect(res.isComplete).toBe(false);
+      expect(res.points.length).toBe(10);
+      expect(res.total).toBe(60000);
+    });
+
+    const req = httpTesting.expectOne('/api/research/backtests/bt-run-1/equity?series=CANDIDATE&limit=5000&offset=0');
+    const mockPoints: DailyEquityPoint[] = Array.from({ length: 10 }, (_, i) => ({
+      sessionDate: `2024-02-${String(i + 1).padStart(2, '0')}`,
+      seriesType: 'CANDIDATE' as const,
+      cash: '1000.00',
+      holdingsValue: '0.00',
+      receivables: '0.00',
+      totalEquity: '1000.00',
+      dailyReturn: 0.0,
+      drawdown: 0.0,
+      peakEquity: '1000.00',
+      units: '0.00000000',
+      costBasis: '0.00',
+      rawClose: '100.00',
+    }));
+
+    req.flush({
+      items: mockPoints,
+      total: 60000,
+      limit: 5000,
+      offset: 0,
+      hasMore: true,
+    });
+  });
+
+  it('loads the page after 5000 equity observations before calling the series complete', () => {
+    httpTesting.expectOne('/api/research/backtests').flush({ items: [], total: 0, limit: 50, offset: 0, hasMore: false });
+    let loaded = 0;
+    let complete = false;
+    service.fetchAllEquity('long-run', 'CANDIDATE').subscribe((result) => {
+      loaded = result.points.length;
+      complete = result.isComplete;
+    });
+    const point: DailyEquityPoint = {
+      sessionDate: '2024-02-01', seriesType: 'CANDIDATE', cash: '1000.00',
+      holdingsValue: '0.00', receivables: '0.00', totalEquity: '1000.00',
+      dailyReturn: 0, drawdown: 0, peakEquity: '1000.00', units: '0.00000000',
+      costBasis: '0.00', rawClose: '100.00'
+    };
+    httpTesting.expectOne('/api/research/backtests/long-run/equity?series=CANDIDATE&limit=5000&offset=0')
+      .flush({ items: Array.from({ length: 5000 }, () => point), total: 5002,
+        limit: 5000, offset: 0, hasMore: true });
+    expect(loaded).toBe(0);
+    httpTesting.expectOne('/api/research/backtests/long-run/equity?series=CANDIDATE&limit=5000&offset=5000')
+      .flush({ items: [point, point], total: 5002, limit: 5000, offset: 5000, hasMore: false });
+    expect(loaded).toBe(5002);
+    expect(complete).toBe(true);
+  });
+
+  it('drops late detail responses when selection transitions before forkJoin completes', () => {
+    httpTesting.expectOne('/api/research/backtests').flush({ items: [], total: 0, limit: 50, offset: 0, hasMore: false });
+
+    service.selectRun('bt-run-1');
+    httpTesting.expectOne('/api/research/backtests/bt-run-1').flush(mockRun);
+
+    // forkJoin requests are now in-flight for bt-run-1
+    const candReq = httpTesting.expectOne('/api/research/backtests/bt-run-1/equity?series=CANDIDATE&limit=5000&offset=0');
+    const benchReq = httpTesting.expectOne('/api/research/backtests/bt-run-1/equity?series=BENCHMARK&limit=5000&offset=0');
+    const ordersReq = httpTesting.expectOne('/api/research/backtests/bt-run-1/orders?limit=200&offset=0');
+    const eventsReq = httpTesting.expectOne('/api/research/backtests/bt-run-1/events?limit=200&offset=0');
+
+    // User clears selection or selects another run before they finish
+    service.clearSelection();
+
+    // Responses arrive late
+    candReq.flush({ items: [{ sessionDate: '2024-02-01', seriesType: 'CANDIDATE' as const, cash: '1000.00', holdingsValue: '0.00', receivables: '0.00', totalEquity: '1000.00', dailyReturn: 0.0, drawdown: 0.0, peakEquity: '1000.00', units: '0.00000000', costBasis: '0.00', rawClose: '100.00' }], total: 1, limit: 5000, offset: 0, hasMore: false });
+    benchReq.flush({ items: [], total: 0, limit: 5000, offset: 0, hasMore: false });
+    ordersReq.flush({ items: [], total: 0, limit: 200, offset: 0, hasMore: false });
+    eventsReq.flush({ items: [], total: 0, limit: 200, offset: 0, hasMore: false });
+
+    // Daily equity must remain empty!
+    service.dailyEquity$.subscribe((pts) => {
+      expect(pts.length).toBe(0);
+    });
+  });
 });
 

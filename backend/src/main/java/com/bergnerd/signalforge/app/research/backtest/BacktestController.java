@@ -99,20 +99,29 @@ public class BacktestController {
             @RequestHeader(value = "X-User-Id", required = false, defaultValue = "default") String ownerId
     ) {
         try {
-            exportService.validateExportable(id, ownerId);
+            java.nio.file.Path preparedZip = exportService.prepareExportZip(id, ownerId);
             String safeFilename = "backtest-" + id.replaceAll("[^a-zA-Z0-9_-]", "_") + "-export.zip";
             org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody responseBody = outputStream -> {
-                exportService.streamExportZip(id, ownerId, outputStream);
+                try {
+                    java.nio.file.Files.copy(preparedZip, outputStream);
+                } finally {
+                    java.nio.file.Files.deleteIfExists(preparedZip);
+                }
             };
 
             return ResponseEntity.ok()
                     .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + safeFilename + "\"")
                     .contentType(MediaType.parseMediaType("application/zip"))
+                    .contentLength(java.nio.file.Files.size(preparedZip))
                     .body(responseBody);
+        } catch (ResponseStatusException e) {
+            throw e;
         } catch (IllegalArgumentException e) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
         } catch (IllegalStateException e) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
+        } catch (java.io.IOException e) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Could not prepare export", e);
         }
     }
 }

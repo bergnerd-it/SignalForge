@@ -108,12 +108,17 @@ public class BacktestEngine {
         boolean hasReinvestmentPending = false;
         BigDecimal prevSessionEquity = cash;
 
-        // Day 0: Initial Funded Point at evaluation session (warmup/evaluation boundary)
-        if (evalSession != null) {
+        // The funded observation occurs before the first open, on the first execution date.
+        if (!sessions.isEmpty() && evalSession != null) {
+            BacktestDataReader.SessionRecord firstSession = sessions.get(0);
+            String evalClose = "0.00";
             BacktestDataReader.BarRecord evalBar = bars.get(evalSession.sessionDate());
-            String evalClose = evalBar != null ? evalBar.close().toPlainString() : "0.00";
+            if (evalBar != null) {
+                evalClose = evalBar.close().toPlainString();
+            }
+
             dailyEquityList.add(new BacktestDtos.DailyEquityPoint(
-                    evalSession.sessionDate(),
+                    firstSession.sessionDate(),
                     seriesType.name(),
                     cash.toPlainString(),
                     "0.00",
@@ -124,7 +129,12 @@ public class BacktestEngine {
                     cash.toPlainString(),
                     "0.00000000",
                     "0.00",
-                    evalClose
+                    evalClose,
+                    "INITIAL_FUNDED",
+                    (firstSession.openTime() != null
+                            ? java.time.Instant.parse(firstSession.openTime())
+                            : java.time.Instant.parse(firstSession.sessionDate() + "T09:00:00Z"))
+                            .minusSeconds(900).toString()
             ));
         }
 
@@ -551,7 +561,9 @@ public class BacktestEngine {
                     peakEquity.toPlainString(),
                     units.setScale(AccountingCore.QUANTITY_SCALE, AccountingCore.CASH_ROUNDING).toPlainString(),
                     totalBasis.toPlainString(),
-                    rawClose.toPlainString()
+                    rawClose.toPlainString(),
+                    "SESSION_CLOSE",
+                    closeTime
             ));
 
             prevSessionEquity = totalEquity;

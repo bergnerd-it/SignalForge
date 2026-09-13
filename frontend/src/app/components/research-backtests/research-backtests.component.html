@@ -99,9 +99,9 @@
         <div class="kpi-card">
           <span class="kpi-label">CAGR</span>
           <span class="kpi-value font-mono">
-            {{ selectedRun.candidateSummary.cagr !== null ? formatPct(selectedRun.candidateSummary.cagr) : 'N/A (< 1 yr)' }}
+            {{ selectedRun.candidateSummary.cagr != null ? formatPct(selectedRun.candidateSummary.cagr) : 'N/A (< 1 yr)' }}
           </span>
-          <span class="kpi-sub font-mono">Benchmark: {{ selectedRun.benchmarkSummary?.cagr !== null ? formatPct(selectedRun.benchmarkSummary?.cagr) : 'N/A' }}</span>
+          <span class="kpi-sub font-mono">Benchmark: {{ selectedRun.benchmarkSummary?.cagr != null ? formatPct(selectedRun.benchmarkSummary?.cagr) : 'N/A' }}</span>
         </div>
 
         <div class="kpi-card">
@@ -158,6 +158,10 @@
               <span class="legend-item"><span class="legend-dot dot-red"></span> Drawdown</span>
             </div>
           </div>
+        </div>
+        <!-- Incomplete Series Warning -->
+        <div *ngIf="equityStatus && !equityStatus.isComplete" class="equity-truncated-warning" style="background: rgba(239, 68, 68, 0.15); border: 1px solid #ef4444; border-radius: 6px; padding: 8px 12px; margin: 12px 16px 0; color: #ef4444; font-size: 0.8125rem;">
+          <strong>Incomplete Chart Series:</strong> Showing {{ equityStatus.candidateLoaded | number }} of {{ equityStatus.candidateTotal | number }} candidate points. The series exceeds the loaded rendering limit and is incomplete.
         </div>
 
         <div class="chart-body" *ngIf="candidatePoints.length > 0">
@@ -317,7 +321,7 @@
                   <td>{{ row.receivables }}</td>
                   <td><strong>{{ row.totalEquity }}</strong></td>
                   <td [ngClass]="(row.dailyReturn ?? 0) >= 0 ? 'text-green' : 'text-red'">
-                    {{ formatPct(row.dailyReturn) }}
+                    {{ row.dailyReturn != null ? formatPct(row.dailyReturn) : '—' }}
                   </td>
                   <td class="text-red">{{ formatPct(row.drawdown) }}</td>
                   <td>{{ row.units }}</td>

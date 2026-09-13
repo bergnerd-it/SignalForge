@@ -207,7 +207,7 @@ class BacktestEngineTest {
     }
 
     @Test
-    @DisplayName("Day 0 initial funding point is injected at evaluation session and first-year return is exact 1.80%")
+    @DisplayName("Initial funding point precedes first execution on the same session and first-year return is exact 1.80%")
     void testDay0InitialFundingPointAndFirstYearReturn() {
         BacktestDataReader.SessionRecord evalSession = new BacktestDataReader.SessionRecord(
                 "2024-01-31", "2024-01-31T08:00:00Z", "2024-01-31T16:30:00Z", "TRADING"
@@ -242,7 +242,10 @@ class BacktestEngineTest {
         // Daily equity series must have Day 0 at index 0
         assertEquals(6, res.dailyEquity().size());
         BacktestDtos.DailyEquityPoint day0 = res.dailyEquity().get(0);
-        assertEquals("2024-01-31", day0.sessionDate());
+        assertEquals("2024-02-01", day0.sessionDate());
+        assertEquals("INITIAL_FUNDED", day0.pointKind());
+        assertEquals("2024-02-01T07:45:00Z", day0.observationTime());
+        assertEquals("SESSION_CLOSE", res.dailyEquity().get(1).pointKind());
         assertEquals("1000.00", day0.cash());
         assertEquals("0.00", day0.holdingsValue());
         assertEquals("0.00", day0.receivables());
@@ -258,7 +261,7 @@ class BacktestEngineTest {
         assertEquals("1018.00", summary.finalEquity());
         assertEquals(0.018, summary.cumulativeReturn(), 0.00001);
 
-        // First year return must be exactly 1.80% (0.0180) because Day 0 initial funding is at 2024-01-31
+        // First year return must be exactly 1.80% (0.0180) using the first pre-open funded observation
         assertEquals(1, summary.annualReturns().size());
         BacktestDtos.AnnualReturn yr2024 = summary.annualReturns().get(0);
         assertEquals(2024, yr2024.year());

@@ -90,6 +90,7 @@ public class BacktestDataReader {
             String effectiveEndDate,
             SessionRecord evaluationSession,
             List<SessionRecord> tradingSessions,
+            List<SessionRecord> calendarSessions,
             Map<String, Map<String, BarRecord>> barsByListingAndDate, // listingId -> date -> BarRecord
             Map<String, List<ActionRecord>> actionsByListing // listingId -> List<ActionRecord>
     ) {}
@@ -538,6 +539,7 @@ public class BacktestDataReader {
                 effectiveEndDate,
                 evalSession,
                 runTradingSessions,
+                allSessions,
                 barsByListingAndDate,
                 actionsByListing
         );

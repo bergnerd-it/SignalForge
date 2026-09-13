@@ -532,7 +532,7 @@ class MigrationRecoveryIntegrationTest {
         ));
 
         assertDoesNotThrow(migrationRunner::runMigration);
-        assertEquals(6, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM schema_migrations", Integer.class));
+        assertEquals(7, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM schema_migrations", Integer.class));
     }
 
     @Test
@@ -593,12 +593,19 @@ class MigrationRecoveryIntegrationTest {
         // Run upgrade migration
         migrationRunner.runMigration();
 
-        // 1. Verify schema migration 6 recorded
+        // Verify both upgrades recorded and the V4-V6 row preserved through the V7 rebuild.
         assertEquals(1, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM schema_migrations WHERE version = 6", Integer.class));
+        assertEquals(1, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM schema_migrations WHERE version = 7", Integer.class));
 
         // 2. Verify all parent and child rows preserved intact
         assertEquals(1, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM backtest_runs WHERE id = 'run-v6-pop'", Integer.class));
         assertEquals(1, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM backtest_daily_equity WHERE run_id = 'run-v6-pop'", Integer.class));
+        assertEquals("INITIAL_FUNDED", jdbcTemplate.queryForObject(
+                "SELECT point_kind FROM backtest_daily_equity WHERE run_id = 'run-v6-pop'", String.class));
+        assertEquals("10000.00", jdbcTemplate.queryForObject(
+                "SELECT total_equity FROM backtest_daily_equity WHERE run_id = 'run-v6-pop'", String.class));
+        assertThrows(Exception.class, () -> jdbcTemplate.update(
+                "UPDATE backtest_daily_equity SET total_equity = '0.00' WHERE run_id = 'run-v6-pop'"));
         assertEquals(1, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM backtest_orders WHERE run_id = 'run-v6-pop'", Integer.class));
         assertEquals(1, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM backtest_events WHERE run_id = 'run-v6-pop'", Integer.class));
         assertEquals(1, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM backtest_holdings WHERE run_id = 'run-v6-pop'", Integer.class));

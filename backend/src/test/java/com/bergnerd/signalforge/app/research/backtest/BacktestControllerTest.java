@@ -179,7 +179,9 @@ class BacktestControllerTest {
     @Test
     @DisplayName("GET /api/research/backtests/{id}/export streams zip archive")
     void testExportBacktest() throws Exception {
-        org.mockito.Mockito.doNothing().when(exportService).validateExportable("run-123", "default");
+        java.nio.file.Path prepared = java.nio.file.Files.createTempFile("backtest-controller-test-", ".zip");
+        java.nio.file.Files.write(prepared, new byte[] {1, 2, 3});
+        when(exportService.prepareExportZip("run-123", "default")).thenReturn(prepared);
 
         org.springframework.test.web.servlet.MvcResult result = mockMvc.perform(get("/api/research/backtests/run-123/export"))
                 .andExpect(request().asyncStarted())
@@ -189,5 +191,14 @@ class BacktestControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(header().string("Content-Disposition", "attachment; filename=\"backtest-run-123-export.zip\""))
                 .andExpect(content().contentType("application/zip"));
+        org.junit.jupiter.api.Assertions.assertFalse(java.nio.file.Files.exists(prepared));
+    }
+
+    @Test
+    void exportSizeRefusalReturnsHttp413BeforeDownload() throws Exception {
+        when(exportService.prepareExportZip("run-123", "default")).thenThrow(
+                new ResponseStatusException(HttpStatus.PAYLOAD_TOO_LARGE, "Export exceeds maximum ZIP size"));
+        mockMvc.perform(get("/api/research/backtests/run-123/export"))
+                .andExpect(status().isPayloadTooLarge());
     }
 }

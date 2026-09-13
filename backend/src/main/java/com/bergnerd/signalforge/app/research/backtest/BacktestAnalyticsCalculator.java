@@ -15,6 +15,14 @@ public class BacktestAnalyticsCalculator {
             BacktestEngine.SimulationResult result,
             BacktestEngine.SimulationResult benchmarkResult
     ) {
+        return calculateSummary(result, benchmarkResult, List.of());
+    }
+
+    public BacktestDtos.BacktestAnalyticsSummary calculateSummary(
+            BacktestEngine.SimulationResult result,
+            BacktestEngine.SimulationResult benchmarkResult,
+            List<BacktestDataReader.SessionRecord> calendarSessions
+    ) {
         List<BacktestDtos.DailyEquityPoint> points = result.dailyEquity();
         if (points.isEmpty()) {
             return null;
@@ -28,7 +36,10 @@ public class BacktestAnalyticsCalculator {
         double cumulativeReturn = cumRetBd.doubleValue();
 
         // 2. CAGR: (ending / starting)^(365.25 / elapsedDays) - 1. Suppress if < 365 days
-        LocalDate startDate = LocalDate.parse(points.get(0).sessionDate());
+        // Measure strictly across the execution interval, excluding pre-execution warmup/evaluation sessions
+        LocalDate startDate = points.size() > 1 && points.get(0).dailyReturn() == null
+                ? LocalDate.parse(points.get(1).sessionDate())
+                : LocalDate.parse(points.get(0).sessionDate());
         LocalDate endDate = LocalDate.parse(points.get(points.size() - 1).sessionDate());
         long elapsedDays = ChronoUnit.DAYS.between(startDate, endDate);
         Double cagr = null;
@@ -141,7 +152,8 @@ public class BacktestAnalyticsCalculator {
         Double turnover = avgEquity > 0.0 ? totalPurchases / avgEquity : 0.0;
 
         // 7. Annual Returns breakdown
-        List<BacktestDtos.AnnualReturn> annualReturns = buildAnnualReturns(points, benchmarkResult != null ? benchmarkResult.dailyEquity() : null);
+        List<BacktestDtos.AnnualReturn> annualReturns = buildAnnualReturns(points,
+                benchmarkResult != null ? benchmarkResult.dailyEquity() : null, calendarSessions);
 
         // 8. Ending state balances and portfolio weights
         BacktestDtos.DailyEquityPoint lastPoint = points.get(points.size() - 1);
@@ -208,7 +220,8 @@ public class BacktestAnalyticsCalculator {
 
     private List<BacktestDtos.AnnualReturn> buildAnnualReturns(
             List<BacktestDtos.DailyEquityPoint> candidatePoints,
-            List<BacktestDtos.DailyEquityPoint> benchmarkPoints
+            List<BacktestDtos.DailyEquityPoint> benchmarkPoints,
+            List<BacktestDataReader.SessionRecord> calendarSessions
     ) {
         Map<Integer, List<BacktestDtos.DailyEquityPoint>> byYear = new TreeMap<>();
         for (BacktestDtos.DailyEquityPoint pt : candidatePoints) {
@@ -232,12 +245,37 @@ public class BacktestAnalyticsCalculator {
             int year = entry.getKey();
             List<BacktestDtos.DailyEquityPoint> yearPts = entry.getValue();
 
-            LocalDate firstDate = LocalDate.parse(yearPts.get(0).sessionDate());
-            LocalDate lastDate = LocalDate.parse(yearPts.get(yearPts.size() - 1).sessionDate());
+            // Skip boundary year that only contains the initial funding point before the first execution session
+            boolean onlyInitialFunding = yearPts.size() == 1 && yearPts.get(0).dailyReturn() == null;
+            if (onlyInitialFunding) {
+                prevYearEndCandidateEq = Double.parseDouble(yearPts.get(0).totalEquity());
+                if (benchByYear.containsKey(year) && !benchByYear.get(year).isEmpty()) {
+                    prevYearEndBenchEq = Double.parseDouble(benchByYear.get(year).get(0).totalEquity());
+                }
+                continue;
+            }
 
-            // A calendar year is partial if first observation is after the first week of Jan or last observation is before late Dec
-            boolean isPartial = (firstDate.getMonthValue() != 1 || firstDate.getDayOfMonth() > 7 ||
-                    lastDate.getMonthValue() != 12 || lastDate.getDayOfMonth() < 24);
+            List<BacktestDtos.DailyEquityPoint> tradingPts = yearPts.stream()
+                    .filter(p -> p.dailyReturn() != null)
+                    .toList();
+            if (tradingPts.isEmpty()) {
+                tradingPts = yearPts;
+            }
+
+            LocalDate firstTradingDate = LocalDate.parse(tradingPts.get(0).sessionDate());
+            LocalDate lastTradingDate = LocalDate.parse(tradingPts.get(tradingPts.size() - 1).sessionDate());
+
+            List<LocalDate> yearCalendar = calendarSessions.stream()
+                    .filter(BacktestDataReader.SessionRecord::isTrading)
+                    .map(session -> LocalDate.parse(session.sessionDate()))
+                    .filter(date -> date.getYear() == year)
+                    .sorted()
+                    .toList();
+            boolean isPartial = yearCalendar.isEmpty()
+                    || yearCalendar.get(0).getMonthValue() != 1
+                    || yearCalendar.get(yearCalendar.size() - 1).getMonthValue() != 12
+                    || firstTradingDate.isAfter(yearCalendar.get(0))
+                    || lastTradingDate.isBefore(yearCalendar.get(yearCalendar.size() - 1));
 
             double startEq = prevYearEndCandidateEq != null
                     ? prevYearEndCandidateEq

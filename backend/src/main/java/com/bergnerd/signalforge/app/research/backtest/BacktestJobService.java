@@ -31,6 +31,7 @@ public class BacktestJobService {
     private final BacktestDataReader dataReader;
     private final BacktestEngine backtestEngine;
     private final BacktestAnalyticsCalculator analyticsCalculator;
+    private final BuildIdentityResolver buildIdentityResolver;
 
     private final ExecutorService calculationExecutor = new ThreadPoolExecutor(
             1, 1,
@@ -76,30 +77,6 @@ public class BacktestJobService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Idempotency-Key header is required");
         }
 
-        String canonicalHash = request.canonicalHash();
-
-        // Check if idempotency key already exists for this owner
-        List<Map<String, Object>> existing = jdbcTemplate.queryForList(
-                "SELECT id, canonical_hash, status FROM backtest_runs WHERE owner_id = ? AND idempotency_key = ?",
-                uid, idempotencyKey
-        );
-
-        if (!existing.isEmpty()) {
-            Map<String, Object> row = existing.get(0);
-            String existingHash = (String) row.get("canonical_hash");
-            String existingId = (String) row.get("id");
-
-            if (!canonicalHash.equals(existingHash)) {
-                throw new ResponseStatusException(
-                        HttpStatus.CONFLICT,
-                        "Idempotency key '" + idempotencyKey + "' already exists with conflicting configuration"
-                );
-            }
-
-            // Same intent replay
-            return new CreationResult(getBacktestDetail(existingId, uid), false);
-        }
-
         // Validate basic numeric bounds
         try {
             BigDecimal cash = new BigDecimal(request.initialCash());
@@ -122,6 +99,18 @@ public class BacktestJobService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid numeric input: " + e.getMessage());
         } catch (IllegalArgumentException e) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+        }
+
+        String intentHash;
+        try {
+            intentHash = request.canonicalHash();
+        } catch (RuntimeException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid backtest request: " + e.getMessage(), e);
+        }
+        List<Map<String, Object>> existing = jdbcTemplate.queryForList(
+                "SELECT * FROM backtest_runs WHERE owner_id = ? AND idempotency_key = ?", uid, idempotencyKey);
+        if (!existing.isEmpty()) {
+            return resolveReplay(existing.get(0), uid, idempotencyKey, intentHash);
         }
 
         // Preflight data validation to build complete normalized configuration snapshot
@@ -173,12 +162,15 @@ public class BacktestJobService {
                 "v1-basis-points-spread-slippage",
                 "v2-decimal-grammar-half-even",
                 "v1-open-auction-s1",
-                "2.0.0-M3",
-                "a13a5ad6423be4dac54e4d5e572eed41068b3f83",
-                true,
+                buildIdentityResolver.getEngineVersion(),
+                buildIdentityResolver.getSourceCommit(),
+                buildIdentityResolver.isDirty(),
+                buildIdentityResolver.getCodeFingerprint(),
                 preflightData.classification(),
                 "SYNTHETIC_DATA_TESTS_SOFTWARE_BEHAVIOR_ONLY"
         );
+
+        String canonicalHash = configSnapshot.canonicalHash();
 
         String configJson;
         try {
@@ -195,18 +187,11 @@ public class BacktestJobService {
             try {
                 // Check if another thread already inserted it
                 List<Map<String, Object>> existingCheck = jdbcTemplate.queryForList(
-                        "SELECT id, canonical_hash FROM backtest_runs WHERE owner_id = ? AND idempotency_key = ?",
+                        "SELECT * FROM backtest_runs WHERE owner_id = ? AND idempotency_key = ?",
                         uid, idempotencyKey
                 );
                 if (!existingCheck.isEmpty()) {
-                    Map<String, Object> conflictRow = existingCheck.get(0);
-                    String conflictHash = (String) conflictRow.get("canonical_hash");
-                    String conflictId = (String) conflictRow.get("id");
-                    if (canonicalHash.equals(conflictHash)) {
-                        return new CreationResult(getBacktestDetail(conflictId, uid), false);
-                    } else {
-                        throw new ResponseStatusException(HttpStatus.CONFLICT, "Idempotency key '" + idempotencyKey + "' already exists with conflicting configuration");
-                    }
+                    return resolveReplay(existingCheck.get(0), uid, idempotencyKey, intentHash);
                 }
 
                 jdbcTemplate.update(
@@ -227,34 +212,20 @@ public class BacktestJobService {
             } catch (org.springframework.dao.DataIntegrityViolationException e) {
                 // Concurrent creation race: another thread inserted (owner_id, idempotency_key)
                 List<Map<String, Object>> conflictRows = jdbcTemplate.queryForList(
-                        "SELECT id, canonical_hash FROM backtest_runs WHERE owner_id = ? AND idempotency_key = ?",
+                        "SELECT * FROM backtest_runs WHERE owner_id = ? AND idempotency_key = ?",
                         uid, idempotencyKey
                 );
                 if (!conflictRows.isEmpty()) {
-                    Map<String, Object> conflictRow = conflictRows.get(0);
-                    String conflictHash = (String) conflictRow.get("canonical_hash");
-                    String conflictId = (String) conflictRow.get("id");
-                    if (canonicalHash.equals(conflictHash)) {
-                        return new CreationResult(getBacktestDetail(conflictId, uid), false);
-                    } else {
-                        throw new ResponseStatusException(HttpStatus.CONFLICT, "Idempotency key '" + idempotencyKey + "' already exists with conflicting configuration");
-                    }
+                    return resolveReplay(conflictRows.get(0), uid, idempotencyKey, intentHash);
                 }
             } catch (org.springframework.dao.DataAccessException e) {
                 // SQLite busy or lock contention: check if another thread inserted
                 List<Map<String, Object>> conflictRows = jdbcTemplate.queryForList(
-                        "SELECT id, canonical_hash FROM backtest_runs WHERE owner_id = ? AND idempotency_key = ?",
+                        "SELECT * FROM backtest_runs WHERE owner_id = ? AND idempotency_key = ?",
                         uid, idempotencyKey
                 );
                 if (!conflictRows.isEmpty()) {
-                    Map<String, Object> conflictRow = conflictRows.get(0);
-                    String conflictHash = (String) conflictRow.get("canonical_hash");
-                    String conflictId = (String) conflictRow.get("id");
-                    if (canonicalHash.equals(conflictHash)) {
-                        return new CreationResult(getBacktestDetail(conflictId, uid), false);
-                    } else {
-                        throw new ResponseStatusException(HttpStatus.CONFLICT, "Idempotency key '" + idempotencyKey + "' already exists with conflicting configuration");
-                    }
+                    return resolveReplay(conflictRows.get(0), uid, idempotencyKey, intentHash);
                 }
                 // Retry with brief backoff
                 try {
@@ -268,18 +239,11 @@ public class BacktestJobService {
 
         if (!inserted) {
             List<Map<String, Object>> conflictRows = jdbcTemplate.queryForList(
-                    "SELECT id, canonical_hash FROM backtest_runs WHERE owner_id = ? AND idempotency_key = ?",
+                    "SELECT * FROM backtest_runs WHERE owner_id = ? AND idempotency_key = ?",
                     uid, idempotencyKey
             );
             if (!conflictRows.isEmpty()) {
-                Map<String, Object> conflictRow = conflictRows.get(0);
-                String conflictHash = (String) conflictRow.get("canonical_hash");
-                String conflictId = (String) conflictRow.get("id");
-                if (canonicalHash.equals(conflictHash)) {
-                    return new CreationResult(getBacktestDetail(conflictId, uid), false);
-                } else {
-                    throw new ResponseStatusException(HttpStatus.CONFLICT, "Idempotency key '" + idempotencyKey + "' already exists with conflicting configuration");
-                }
+                return resolveReplay(conflictRows.get(0), uid, idempotencyKey, intentHash);
             }
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Database is busy, please retry later");
         }
@@ -296,6 +260,29 @@ public class BacktestJobService {
         }
 
         return new CreationResult(getBacktestDetail(runId, uid), true);
+    }
+
+    private CreationResult resolveReplay(Map<String, Object> stored, String ownerId, String key, String intentHash) {
+        BacktestDtos.CreateBacktestRequest originalIntent = new BacktestDtos.CreateBacktestRequest(
+                (String) stored.get("dataset_id"),
+                (String) stored.get("candidate_listing_id"),
+                (String) stored.get("benchmark_listing_id"),
+                (String) stored.get("evaluation_cutoff"),
+                (String) stored.get("requested_start_date"),
+                (String) stored.get("requested_end_date"),
+                (String) stored.get("initial_cash"),
+                (String) stored.get("currency"),
+                (String) stored.get("commission_per_fill"),
+                (String) stored.get("spread_bps"),
+                (String) stored.get("slippage_bps"),
+                (String) stored.get("strategy_id"),
+                (String) stored.get("strategy_version")
+        );
+        if (!intentHash.equals(originalIntent.canonicalHash())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Idempotency key '" + key + "' already exists with conflicting request");
+        }
+        return new CreationResult(getBacktestDetail((String) stored.get("id"), ownerId), false);
     }
 
     private void executeRun(String runId, BacktestDtos.CreateBacktestRequest request) {
@@ -404,10 +391,10 @@ public class BacktestJobService {
 
             // 4. Calculate analytics summaries
             BacktestDtos.BacktestAnalyticsSummary candidateSummary = analyticsCalculator.calculateSummary(
-                    candidateResult, benchmarkResult
+                    candidateResult, benchmarkResult, data.calendarSessions()
             );
             BacktestDtos.BacktestAnalyticsSummary benchmarkSummary = analyticsCalculator.calculateSummary(
-                    benchmarkResult, null
+                    benchmarkResult, null, data.calendarSessions()
             );
 
             Map<String, Object> summaryMap = new LinkedHashMap<>();
@@ -492,11 +479,12 @@ public class BacktestJobService {
             jdbcTemplate.update(
                     "INSERT INTO backtest_daily_equity (" +
                             "run_id, series_type, session_date, cash, holdings_value, receivables, total_equity, " +
-                            "daily_return, drawdown, peak_equity, units, cost_basis, raw_close" +
-                            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            "daily_return, drawdown, peak_equity, units, cost_basis, raw_close, point_kind, observation_time" +
+                            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     runId, pt.seriesType(), pt.sessionDate(), pt.cash(), pt.holdingsValue(), pt.receivables(),
                     pt.totalEquity(), pt.dailyReturn() != null ? pt.dailyReturn().toString() : null,
-                    String.valueOf(pt.drawdown()), pt.peakEquity(), pt.units(), pt.costBasis(), pt.rawClose()
+                    String.valueOf(pt.drawdown()), pt.peakEquity(), pt.units(), pt.costBasis(), pt.rawClose(),
+                    pt.pointKind(), pt.observationTime()
             );
         }
     }
@@ -633,9 +621,9 @@ public class BacktestJobService {
 
         List<BacktestDtos.DailyEquityPoint> items = jdbcTemplate.query(
                 "SELECT session_date, series_type, cash, holdings_value, receivables, total_equity, " +
-                        "daily_return, drawdown, peak_equity, units, cost_basis, raw_close " +
+                        "daily_return, drawdown, peak_equity, units, cost_basis, raw_close, point_kind, observation_time " +
                         "FROM backtest_daily_equity WHERE run_id = ? AND series_type = ? " +
-                        "ORDER BY session_date ASC LIMIT ? OFFSET ?",
+                        "ORDER BY session_date ASC, point_kind ASC LIMIT ? OFFSET ?",
                 (rs, rowNum) -> new BacktestDtos.DailyEquityPoint(
                         rs.getString("session_date"),
                         rs.getString("series_type"),
@@ -648,7 +636,9 @@ public class BacktestJobService {
                         rs.getString("peak_equity"),
                         rs.getString("units"),
                         rs.getString("cost_basis"),
-                        rs.getString("raw_close")
+                        rs.getString("raw_close"),
+                        rs.getString("point_kind"),
+                        rs.getString("observation_time")
                 ),
                 runId, st.name(), limit, offset
         );

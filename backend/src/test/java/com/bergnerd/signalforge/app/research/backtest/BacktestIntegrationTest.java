@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.mock.mockito.SpyBean;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.mock.web.MockMultipartFile;
@@ -29,6 +30,9 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.Mockito.doAnswer;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
@@ -40,6 +44,15 @@ class BacktestIntegrationTest {
 
     @Autowired
     private MockMvc mockMvc;
+
+    @Autowired
+    private BuildIdentityResolver buildIdentityResolver;
+
+    @Autowired
+    private BacktestExportService exportService;
+
+    @SpyBean
+    private BacktestAnalyticsCalculator analyticsSpy;
 
     @Autowired
     private JdbcTemplate jdbcTemplate;
@@ -178,7 +191,7 @@ class BacktestIntegrationTest {
         assertEquals("2.00", candidate.totalCommissions());
         assertEquals(2, candidate.fillCount());
         assertEquals(-0.001, candidate.maxDrawdown(), 0.0001);
-        assertEquals("2024-01-31", candidate.peakDate());
+        assertEquals("2024-02-01", candidate.peakDate());
         assertEquals("2024-02-01", candidate.troughDate());
         assertEquals("2024-02-07", candidate.recoveryDate());
         assertTrue(candidate.isRecovered());
@@ -228,7 +241,9 @@ class BacktestIntegrationTest {
                 objectMapper.getTypeFactory().constructParametricType(BacktestDtos.PagedResponse.class, BacktestDtos.DailyEquityPoint.class)
         );
         assertEquals(6, eqPaged.total());
-        assertEquals("2024-01-31", eqPaged.items().get(0).sessionDate());
+        assertEquals("2024-02-01", eqPaged.items().get(0).sessionDate());
+        assertEquals("INITIAL_FUNDED", eqPaged.items().get(0).pointKind());
+        assertEquals("SESSION_CLOSE", eqPaged.items().get(1).pointKind());
         assertEquals("1000.00", eqPaged.items().get(0).totalEquity());
         assertEquals("0.00", eqPaged.items().get(0).holdingsValue());
         assertEquals("1018.00", eqPaged.items().get(5).totalEquity());
@@ -269,11 +284,17 @@ class BacktestIntegrationTest {
         assertTrue(zipContents.get("manifest.json").contains("MARK_TO_MARKET_EXCLUDES_HYPOTHETICAL_LIQUIDATION_COSTS"));
         assertTrue(zipContents.get("manifest.json").contains("datasetInputChecksum"));
         assertTrue(zipContents.get("summary.json").contains("1018.00"));
-        assertTrue(zipContents.get("equity_series.csv").contains("2024-02-07,18.00,1000.00,0.00,1018.00"));
+        assertTrue(zipContents.get("equity_series.csv").contains("2024-02-07,SESSION_CLOSE,"));
+        assertTrue(zipContents.get("equity_series.csv").contains(",18.00,1000.00,0.00,1018.00"));
 
         // Verify exact negative decimals: no formula-escaping apostrophe on numbers (HIGH-5 / CRITICAL-1)
         assertTrue(zipContents.get("equity_series.csv").contains("-0.001"));
         assertFalse(zipContents.get("equity_series.csv").contains("'-0.001"));
+
+        org.springframework.web.server.ResponseStatusException byteBound = assertThrows(
+                org.springframework.web.server.ResponseStatusException.class,
+                () -> exportService.prepareExportZip(runId, "default", 100));
+        assertEquals(413, byteBound.getStatusCode().value());
 
         // 7. Test Cross-Owner Non-Disclosing Isolation (HIGH-2)
         mockMvc.perform(get("/api/research/backtests/" + runId).header("X-User-Id", "other-user"))
@@ -799,5 +820,152 @@ class BacktestIntegrationTest {
             assertEquals(events1.get(i).get("cash_delta"), events2.get(i).get("cash_delta"));
             assertEquals(events1.get(i).get("units_delta"), events2.get(i).get("units_delta"));
         }
+
+        String storedFingerprint = summary1.normalizedConfig().codeFingerprint();
+        assertTrue(storedFingerprint.matches("[a-f0-9]{64}"));
+        buildIdentityResolver.setTestCodeFingerprint("f".repeat(64));
+        try {
+            MvcResult replay = mockMvc.perform(post("/api/research/backtests")
+                            .header("Idempotency-Key", key1)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(request)))
+                    .andExpect(status().isOk())
+                    .andReturn();
+            BacktestDtos.BacktestSummaryResponse replayed = objectMapper.readValue(
+                    replay.getResponse().getContentAsString(), BacktestDtos.BacktestSummaryResponse.class);
+            assertEquals(runId1, replayed.id());
+            assertEquals(storedFingerprint, replayed.normalizedConfig().codeFingerprint());
+
+            BacktestDtos.CreateBacktestRequest changedIntent = new BacktestDtos.CreateBacktestRequest(
+                    datasetId, "listing-eur-syn-1", "listing-eur-syn-1", "2024-01-31T23:59:59Z",
+                    "2024-01-31", "2024-02-07", "2000.00", "EUR", "1.00", "10", "5",
+                    "ETF_BUY_HOLD_V1", "1.0.0");
+            mockMvc.perform(post("/api/research/backtests")
+                            .header("Idempotency-Key", key1)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(changedIntent)))
+                    .andExpect(status().isConflict());
+        } finally {
+            buildIdentityResolver.clearTestOverride();
+        }
+    }
+
+    @Test
+    void realQueuedCancellationAndQueueSaturationLeaveNoPublishedRows() throws Exception {
+        String datasetId = importBundle("m3-reference-baseline.zip");
+        BacktestDtos.CreateBacktestRequest request = new BacktestDtos.CreateBacktestRequest(
+                datasetId, "listing-eur-syn-1", "listing-eur-syn-1", "2024-01-31T23:59:59Z",
+                "2024-01-31", "2024-02-07", "1000.00", "EUR", "1.00", "10", "5",
+                "ETF_BUY_HOLD_V1", "1.0.0");
+        ExecutorService worker = (ExecutorService) org.springframework.test.util.ReflectionTestUtils
+                .getField(jobService, "calculationExecutor");
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        Future<?> blocker = worker.submit(() -> {
+            entered.countDown();
+            try {
+                release.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        });
+        try {
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            String key = "queued-cancel-" + UUID.randomUUID();
+            String runId = jobService.createBacktest("default", key, request).response().id();
+            assertEquals("QUEUED", jdbcTemplate.queryForObject(
+                    "SELECT status FROM backtest_runs WHERE id = ?", String.class, runId));
+            assertEquals("CANCELLED", jobService.cancelBacktest(runId, "default").status());
+            assertEquals("CANCELLED", jobService.cancelBacktest(runId, "default").status());
+
+            for (int i = 0; i < 49; i++) {
+                worker.submit(() -> {});
+            }
+            String rejectedKey = "queue-full-" + UUID.randomUUID();
+            org.springframework.web.server.ResponseStatusException rejected = assertThrows(
+                    org.springframework.web.server.ResponseStatusException.class,
+                    () -> jobService.createBacktest("default", rejectedKey, request));
+            assertEquals(503, rejected.getStatusCode().value());
+            assertEquals("FAILED", jdbcTemplate.queryForObject(
+                    "SELECT status FROM backtest_runs WHERE idempotency_key = ?", String.class, rejectedKey));
+            assertEquals(0, jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM backtest_daily_equity WHERE run_id = ?", Integer.class, runId));
+        } finally {
+            release.countDown();
+            blocker.get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    void publicationFailureRollsBackAllResults() throws Exception {
+        String datasetId = importBundle("m3-reference-baseline.zip");
+        BacktestDtos.CreateBacktestRequest request = new BacktestDtos.CreateBacktestRequest(
+                datasetId, "listing-eur-syn-1", "listing-eur-syn-1", "2024-01-31T23:59:59Z",
+                "2024-01-31", "2024-02-07", "1000.00", "EUR", "1.00", "10", "5",
+                "ETF_BUY_HOLD_V1", "1.0.0");
+        jdbcTemplate.execute("CREATE TRIGGER fail_test_publication BEFORE INSERT ON backtest_orders " +
+                "BEGIN SELECT RAISE(FAIL, 'injected publication failure'); END");
+        try {
+            String runId = jobService.createBacktest("default", "publication-failure-" + UUID.randomUUID(), request)
+                    .response().id();
+            String status = null;
+            for (int i = 0; i < 100; i++) {
+                status = jdbcTemplate.queryForObject("SELECT status FROM backtest_runs WHERE id = ?", String.class, runId);
+                if ("FAILED".equals(status)) break;
+                Thread.sleep(50);
+            }
+            assertEquals("FAILED", status);
+            assertEquals(0, jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM backtest_daily_equity WHERE run_id = ?", Integer.class, runId));
+            assertEquals(0, jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM backtest_orders WHERE run_id = ?", Integer.class, runId));
+            assertEquals(0, jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM backtest_events WHERE run_id = ?", Integer.class, runId));
+            assertEquals(0, jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM backtest_holdings WHERE run_id = ?", Integer.class, runId));
+        } finally {
+            jdbcTemplate.execute("DROP TRIGGER fail_test_publication");
+        }
+    }
+
+    @Test
+    void cancellationAtPublicationBoundaryWinsWithoutPartialResults() throws Exception {
+        String datasetId = importBundle("m3-reference-baseline.zip");
+        BacktestDtos.CreateBacktestRequest request = new BacktestDtos.CreateBacktestRequest(
+                datasetId, "listing-eur-syn-1", "listing-eur-syn-1", "2024-01-31T23:59:59Z",
+                "2024-01-31", "2024-02-07", "1000.00", "EUR", "1.00", "10", "5",
+                "ETF_BUY_HOLD_V1", "1.0.0");
+        CountDownLatch atSummary = new CountDownLatch(1);
+        CountDownLatch resume = new CountDownLatch(1);
+        doAnswer(invocation -> {
+            atSummary.countDown();
+            if (!resume.await(5, TimeUnit.SECONDS)) {
+                throw new IllegalStateException("Timed out waiting at publication boundary");
+            }
+            return invocation.callRealMethod();
+        }).when(analyticsSpy).calculateSummary(any(BacktestEngine.SimulationResult.class),
+                any(), anyList());
+        String runId = null;
+        try {
+            runId = jobService.createBacktest("default", "cancel-publish-" + UUID.randomUUID(), request)
+                    .response().id();
+            assertTrue(atSummary.await(5, TimeUnit.SECONDS));
+            assertEquals("RUNNING", jdbcTemplate.queryForObject(
+                    "SELECT status FROM backtest_runs WHERE id = ?", String.class, runId));
+            jobService.cancelBacktest(runId, "default");
+        } finally {
+            resume.countDown();
+        }
+        String status = null;
+        for (int i = 0; i < 100; i++) {
+            status = jdbcTemplate.queryForObject("SELECT status FROM backtest_runs WHERE id = ?", String.class, runId);
+            if ("CANCELLED".equals(status)) break;
+            Thread.sleep(50);
+        }
+        assertEquals("CANCELLED", status);
+        assertEquals(0, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM backtest_daily_equity WHERE run_id = ?", Integer.class, runId));
+        assertEquals(0, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM backtest_events WHERE run_id = ?", Integer.class, runId));
     }
 }

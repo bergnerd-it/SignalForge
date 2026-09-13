@@ -138,4 +138,23 @@ class BacktestAnalyticsCalculatorTest {
         assertNotNull(summary.annualizedVolatility());
         assertTrue(summary.annualizedVolatility() > 0.0);
     }
+
+    @Test
+    void annualPartialFlagUsesCalendarBoundariesRatherThanFixedJanuaryDecemberDays() {
+        List<BacktestDtos.DailyEquityPoint> points = List.of(
+                new BacktestDtos.DailyEquityPoint("2024-01-05", "CANDIDATE", "1000", "0", "0", "1000", 0.0, 0.0, "1000", "0", "0", "100"),
+                new BacktestDtos.DailyEquityPoint("2024-12-31", "CANDIDATE", "1100", "0", "0", "1100", 0.1, 0.0, "1100", "0", "0", "100"));
+        BacktestEngine.SimulationResult result = new BacktestEngine.SimulationResult(
+                BacktestDtos.SeriesType.CANDIDATE, "listing-1", points, List.of(), List.of(), null,
+                new BigDecimal("1000"), new BigDecimal("1100"), BigDecimal.ZERO, BigDecimal.ZERO,
+                new BigDecimal("1100"), 0);
+        List<BacktestDataReader.SessionRecord> calendar = List.of(
+                new BacktestDataReader.SessionRecord("2024-01-02", null, null, "TRADING"),
+                new BacktestDataReader.SessionRecord("2024-01-05", null, null, "TRADING"),
+                new BacktestDataReader.SessionRecord("2024-12-31", null, null, "TRADING"));
+        assertTrue(calculator.calculateSummary(result, null, calendar).annualReturns().get(0).isPartial());
+
+        List<BacktestDataReader.SessionRecord> matchingCalendar = calendar.subList(1, 3);
+        assertFalse(calculator.calculateSummary(result, null, matchingCalendar).annualReturns().get(0).isPartial());
+    }
 }

@@ -42,6 +42,55 @@ dependencies {
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
+def getGitCommit() {
+    try {
+        def stdout = new ByteArrayOutputStream()
+        exec {
+            commandLine 'git', 'rev-parse', 'HEAD'
+            standardOutput = stdout
+        }
+        return stdout.toString().trim()
+    } catch (Exception ignored) {
+        return "UNKNOWN"
+    }
+}
+
+def isGitDirty() {
+    try {
+        def stdout = new ByteArrayOutputStream()
+        exec {
+            commandLine 'git', 'status', '--porcelain'
+            standardOutput = stdout
+        }
+        return !stdout.toString().trim().isEmpty()
+    } catch (Exception ignored) {
+        return false
+    }
+}
+
+def getCodeFingerprint() {
+    def digest = java.security.MessageDigest.getInstance('SHA-256')
+    def sources = fileTree('src/main/java').files + fileTree('src/main/resources/db/migration').files + [file('build.gradle')]
+    sources.sort { it.path }.each { source ->
+        digest.update(project.relativePath(source).getBytes('UTF-8'))
+        digest.update([0] as byte[])
+        digest.update(source.bytes)
+    }
+    return digest.digest().encodeHex().toString()
+}
+
+processResources {
+    inputs.files(fileTree('src/main/java'), fileTree('src/main/resources/db/migration'), file('build.gradle'))
+    filesMatching('signalforge-build.properties') {
+        expand(
+            'buildVersion': project.version.toString(),
+            'gitCommit': getGitCommit(),
+            'gitDirty': isGitDirty().toString(),
+            'codeFingerprint': getCodeFingerprint()
+        )
+    }
+}
+
 bootJar {
     archiveBaseName = 'signalforge-backend'
     archiveVersion = '1.0.0-SNAPSHOT'

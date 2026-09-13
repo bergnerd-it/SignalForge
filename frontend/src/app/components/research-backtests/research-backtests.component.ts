@@ -78,6 +78,13 @@ export class ResearchBacktestsComponent implements OnInit {
   public maxEquity: number = 0;
   public maxDrawdownDepth: number = 0;
   public chartDates: string[] = [];
+  public equityStatus: {
+    isComplete: boolean;
+    candidateLoaded: number;
+    candidateTotal: number;
+    benchmarkLoaded: number;
+    benchmarkTotal: number;
+  } | null = null;
 
   constructor(
     private readonly backtestService: BacktestService,
@@ -111,6 +118,13 @@ export class ResearchBacktestsComponent implements OnInit {
       });
 
     // 3. Subscribe to Details
+    this.backtestService.equityStatus$
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe((status) => {
+        this.equityStatus = status;
+        this.cdr.markForCheck();
+      });
+
     this.backtestService.dailyEquity$
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe((points) => {

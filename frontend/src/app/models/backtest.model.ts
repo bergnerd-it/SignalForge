@@ -48,7 +48,7 @@ export interface BacktestAnalyticsSummary {
   initialEquity: string;
   finalEquity: string;
   cumulativeReturn: number;
-  cagr: number | null;
+  cagr?: number | null;
   benchmarkReturn?: number | null;
   benchmarkDifference: number | null;
   maxDrawdown: number;
@@ -158,6 +158,8 @@ export interface DailyEquityPoint {
   units: string;
   costBasis: string;
   rawClose: string;
+  pointKind?: 'INITIAL_FUNDED' | 'SESSION_CLOSE';
+  observationTime?: string | null;
 }
 
 export interface BacktestOrderDto {

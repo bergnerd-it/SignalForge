@@ -40,7 +40,7 @@ public class MigrationRunner {
     private String datasourceUrl;
 
     public static final String CODE_VERSION = "2.0.0-M3";
-    public static final int CURRENT_SCHEMA_VERSION = 6;
+    public static final int CURRENT_SCHEMA_VERSION = 7;
 
     public static final List<String> DEFAULT_TICKERS = List.of(
             "AAPL", "GOOGL", "MSFT", "AMZN", "TSLA",
@@ -135,19 +135,21 @@ public class MigrationRunner {
     }
 
     private void applyFreshInstall() {
-        log.info("Applying fresh M3 installation schema (Versions 1-6)...");
+        log.info("Applying fresh M3 installation schema (Versions 1-7)...");
         String v1Sql = loadResource("db/migration/V1__init_m1b_schema.sql");
         String v2Sql = loadResource("db/migration/V2__m1b_review_fixes.sql");
         String v3Sql = loadResource("db/migration/V3__historical_datasets_and_import.sql");
         String v4Sql = loadResource("db/migration/V4__backtest_engine.sql");
         String v5Sql = loadResource("db/migration/V5__backtest_engine_hardening.sql");
         String v6Sql = loadResource("db/migration/V6__backtest_listing_integrity.sql");
+        String v7Sql = loadResource("db/migration/V7__backtest_funded_observation.sql");
         String v1Checksum = computeV1MigrationChecksum(v1Sql);
         String v2Checksum = computeSqlChecksum(v2Sql);
         String v3Checksum = computeSqlChecksum(v3Sql);
         String v4Checksum = computeSqlChecksum(v4Sql);
         String v5Checksum = computeSqlChecksum(v5Sql);
         String v6Checksum = computeSqlChecksum(v6Sql);
+        String v7Checksum = computeSqlChecksum(v7Sql);
 
         transactionTemplate.executeWithoutResult(status -> {
             executeSqlScript(v1Sql);
@@ -156,6 +158,7 @@ public class MigrationRunner {
             executeSqlScript(v4Sql);
             executeSqlScript(v5Sql);
             executeSqlScript(v6Sql);
+            executeSqlScript(v7Sql);
 
             // Record migrations
             String now = Instant.now().toString();
@@ -183,6 +186,10 @@ public class MigrationRunner {
                     "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (6, 'M3 backtest listing integrity', ?, ?, ?)",
                     v6Checksum, now, CODE_VERSION
             );
+            jdbcTemplate.update(
+                    "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (7, 'M3 funded observation timing', ?, ?, ?)",
+                    v7Checksum, now, CODE_VERSION
+            );
 
             // Seed default user legacy demo portfolio and initial cash
             seedFreshDefaults(now);
@@ -206,12 +213,14 @@ public class MigrationRunner {
         String v4Sql = loadResource("db/migration/V4__backtest_engine.sql");
         String v5Sql = loadResource("db/migration/V5__backtest_engine_hardening.sql");
         String v6Sql = loadResource("db/migration/V6__backtest_listing_integrity.sql");
+        String v7Sql = loadResource("db/migration/V7__backtest_funded_observation.sql");
         String v1Checksum = computeV1MigrationChecksum(v1Sql);
         String v2Checksum = computeSqlChecksum(v2Sql);
         String v3Checksum = computeSqlChecksum(v3Sql);
         String v4Checksum = computeSqlChecksum(v4Sql);
         String v5Checksum = computeSqlChecksum(v5Sql);
         String v6Checksum = computeSqlChecksum(v6Sql);
+        String v7Checksum = computeSqlChecksum(v7Sql);
 
         transactionTemplate.executeWithoutResult(status -> {
             log.info("Renaming legacy tables to raw archive tables...");
@@ -230,6 +239,7 @@ public class MigrationRunner {
             executeSqlScript(v4Sql);
             executeSqlScript(v5Sql);
             executeSqlScript(v6Sql);
+            executeSqlScript(v7Sql);
 
             // Sync legacy tables for backwards compatibility
             syncLegacyCompatibilityTables();
@@ -260,6 +270,10 @@ public class MigrationRunner {
                     "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (6, 'M3 backtest listing integrity', ?, ?, ?)",
                     v6Checksum, now, CODE_VERSION
             );
+            jdbcTemplate.update(
+                    "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (7, 'M3 funded observation timing', ?, ?, ?)",
+                    v7Checksum, now, CODE_VERSION
+            );
         });
         validateCurrentSchema();
 
@@ -273,6 +287,7 @@ public class MigrationRunner {
         String v4Sql = loadResource("db/migration/V4__backtest_engine.sql");
         String v5Sql = loadResource("db/migration/V5__backtest_engine_hardening.sql");
         String v6Sql = loadResource("db/migration/V6__backtest_listing_integrity.sql");
+        String v7Sql = loadResource("db/migration/V7__backtest_funded_observation.sql");
         String expectedV1Checksum = computeV1MigrationChecksum(v1Sql);
         String candidateV1Checksum = computeCandidateV1MigrationChecksum(v1Sql);
         String expectedV2Checksum = computeSqlChecksum(v2Sql);
@@ -280,6 +295,7 @@ public class MigrationRunner {
         String expectedV4Checksum = computeSqlChecksum(v4Sql);
         String expectedV5Checksum = computeSqlChecksum(v5Sql);
         String expectedV6Checksum = computeSqlChecksum(v6Sql);
+        String expectedV7Checksum = computeSqlChecksum(v7Sql);
 
         List<Map<String, Object>> migrations = jdbcTemplate.queryForList(
                 "SELECT version, checksum, description, applied_at FROM schema_migrations ORDER BY version ASC"
@@ -320,6 +336,10 @@ public class MigrationRunner {
             } else if (version == 6) {
                 if (!expectedV6Checksum.equals(recordedChecksum)) {
                     throw new IllegalStateException("Migration version 6 checksum mismatch! Recorded: " + recordedChecksum);
+                }
+            } else if (version == 7) {
+                if (!expectedV7Checksum.equals(recordedChecksum)) {
+                    throw new IllegalStateException("Migration version 7 checksum mismatch! Recorded: " + recordedChecksum);
                 }
             } else {
                 throw new IllegalStateException("Unknown migration version found in database: " + version);
@@ -377,6 +397,11 @@ public class MigrationRunner {
         if (!versions.contains(6)) {
             executeMigrationWithFkToggle(v6Sql, 6, "M3 backtest listing integrity", expectedV6Checksum);
             versions.add(6);
+        }
+
+        if (!versions.contains(7)) {
+            executeMigrationWithFkToggle(v7Sql, 7, "M3 funded observation timing", expectedV7Checksum);
+            versions.add(7);
         }
 
         validateCurrentSchema();
@@ -571,7 +596,8 @@ public class MigrationRunner {
         ));
         requireColumns("backtest_daily_equity", Set.of(
                 "run_id", "series_type", "session_date", "cash", "holdings_value", "receivables",
-                "total_equity", "drawdown", "peak_equity", "units", "cost_basis", "raw_close"
+                "total_equity", "drawdown", "peak_equity", "units", "cost_basis", "raw_close",
+                "point_kind", "observation_time"
         ));
         requireColumns("backtest_orders", Set.of(
                 "id", "run_id", "series_type", "order_type", "listing_id", "session_date",

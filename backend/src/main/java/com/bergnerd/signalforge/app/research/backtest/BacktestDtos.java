@@ -161,9 +161,56 @@ public final class BacktestDtos {
             String engineVersion,
             String sourceCommit,
             boolean dirtyFlag,
+            String codeFingerprint,
             String classification,
             String availabilityAssumptions
-    ) {}
+    ) {
+        public String canonicalHash() {
+            try {
+                MessageDigest md = MessageDigest.getInstance("SHA-256");
+                String canonical = String.join("|",
+                        strategyId != null ? strategyId.trim() : "",
+                        strategyVersion != null ? strategyVersion.trim() : "",
+                        datasetId != null ? datasetId.trim() : "",
+                        datasetInputChecksum != null ? datasetInputChecksum.trim() : "",
+                        datasetContentChecksum != null ? datasetContentChecksum.trim() : "",
+                        parserVersion != null ? parserVersion.trim() : "",
+                        schemaVersion != null ? schemaVersion.trim() : "",
+                        calendarId != null ? calendarId.trim() : "",
+                        calendarTimezone != null ? calendarTimezone.trim() : "",
+                        candidateListingId != null ? candidateListingId.trim() : "",
+                        benchmarkListingId != null ? benchmarkListingId.trim() : "",
+                        quoteCurrency != null ? quoteCurrency.trim().toUpperCase() : "",
+                        initialCash != null ? initialCash.trim() : "",
+                        evaluationCutoff != null ? evaluationCutoff.trim() : "",
+                        selectedEvaluationSession != null ? selectedEvaluationSession.trim() : "",
+                        selectedEndSession != null ? selectedEndSession.trim() : "",
+                        requestedStartDate != null ? requestedStartDate.trim() : "",
+                        requestedEndDate != null ? requestedEndDate.trim() : "",
+                        effectiveStartDate != null ? effectiveStartDate.trim() : "",
+                        effectiveEndDate != null ? effectiveEndDate.trim() : "",
+                        commissionPerFill != null ? commissionPerFill.trim() : "",
+                        spreadBps != null ? spreadBps.trim() : "",
+                        slippageBps != null ? slippageBps.trim() : "",
+                        costModelVersion != null ? costModelVersion.trim() : "",
+                        accountingVersion != null ? accountingVersion.trim() : "",
+                        executionModelVersion != null ? executionModelVersion.trim() : "",
+                        engineVersion != null ? engineVersion.trim() : "",
+                        sourceCommit != null ? sourceCommit.trim() : "",
+                        String.valueOf(dirtyFlag),
+                        codeFingerprint != null ? codeFingerprint.trim() : ""
+                );
+                byte[] digest = md.digest(canonical.getBytes(StandardCharsets.UTF_8));
+                StringBuilder sb = new StringBuilder();
+                for (byte b : digest) {
+                    sb.append(String.format("%02x", b));
+                }
+                return sb.toString();
+            } catch (NoSuchAlgorithmException e) {
+                throw new IllegalStateException("SHA-256 not available", e);
+            }
+        }
+    }
 
     public record UnpaidReceivableDto(
             String actionId,
@@ -260,8 +307,17 @@ public final class BacktestDtos {
             String peakEquity,
             String units,
             String costBasis,
-            String rawClose
-    ) {}
+            String rawClose,
+            String pointKind,
+            String observationTime
+    ) {
+        public DailyEquityPoint(String sessionDate, String seriesType, String cash, String holdingsValue,
+                                String receivables, String totalEquity, Double dailyReturn, Double drawdown,
+                                String peakEquity, String units, String costBasis, String rawClose) {
+            this(sessionDate, seriesType, cash, holdingsValue, receivables, totalEquity, dailyReturn,
+                    drawdown, peakEquity, units, costBasis, rawClose, "SESSION_CLOSE", null);
+        }
+    }
 
     public record BacktestOrderDto(
             String id,

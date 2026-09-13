@@ -12,7 +12,7 @@ import { ResearchDataComponent } from './research-data/research-data.component';
 import { ResearchBacktestsComponent } from './research-backtests/research-backtests.component';
 import { provideHttpClient } from '@angular/common/http';
 import { provideHttpClientTesting } from '@angular/common/http/testing';
-import { of } from 'rxjs';
+import { BehaviorSubject, of } from 'rxjs';
 import { ResearchService } from '../services/research.service';
 import { HistoricalDataService } from '../services/historical-data.service';
 import { BacktestService } from '../services/backtest.service';
@@ -413,6 +413,7 @@ describe('Component Unit Tests', () => {
   });
 
   it('ResearchBacktestsComponent should render run history and summary', () => {
+    const selectedRun = new BehaviorSubject<unknown>(null);
     const mockRun = {
       id: 'run-test-123',
       ownerId: 'default',
@@ -465,8 +466,9 @@ describe('Component Unit Tests', () => {
 
     const mockBacktestService = {
       runs$: of([mockRun]),
-      selectedRun$: of(null),
+      selectedRun$: selectedRun.asObservable(),
       dailyEquity$: of([]),
+      equityStatus$: of({ isComplete: true, candidateLoaded: 0, candidateTotal: 0, benchmarkLoaded: 0, benchmarkTotal: 0 }),
       orders$: of([]),
       ordersTotal$: of(0),
       events$: of([]),
@@ -504,5 +506,10 @@ describe('Component Unit Tests', () => {
     expect(el.textContent).toContain('ETF_BUY_HOLD_V1');
     expect(el.textContent).toContain('COMPLETED');
     expect(el.textContent).toContain('+1.80%');
+
+    const { cagr: ignoredCagr, ...summaryWithoutCagr } = mockRun.candidateSummary;
+    selectedRun.next({ ...mockRun, candidateSummary: summaryWithoutCagr });
+    fixture.detectChanges();
+    expect(el.textContent).toContain('N/A (< 1 yr)');
   });
 });

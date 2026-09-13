@@ -3,9 +3,9 @@ id: TASK-14
 title: Correct M3 after independent code review
 status: Done
 assignee:
-  - '@antigravity'
+  - '@codex'
 created_date: '2026-09-12 15:48'
-updated_date: '2026-09-13 14:30'
+updated_date: '2026-09-13 22:32'
 labels: []
 dependencies:
   - TASK-13
@@ -36,23 +36,26 @@ Code review of M3 revealed critical and high findings: missing owner scoping and
 ## Implementation Plan
 
 <!-- SECTION:PLAN:BEGIN -->
-1. Audit and fix SQL parameter binding and owner isolation across all backtest endpoints (CRITICAL-1).
-2. Establish complete normalized immutable configuration and deterministic business sequence/IDs (HIGH-3).
-3. Enforce month-end evaluation session, strict calendar dates/instants, full timeline payment settlement, and corporate action validation (HIGH-1 / HIGH-2).
-4. Implement concurrency-safe creation, repeat-safe terminal states, atomic publication, and bounded queue capacity (HIGH-4).
-5. Add initial funded equity point, calendar-accurate annual returns, V5 migration for terminal insert guards, and streaming export without apostrophe corruption on negative numbers (MEDIUM-1 / MEDIUM-2 / MEDIUM-3).
-6. Update Angular UI with strict types, dual candidate/benchmark series loading, pagination, and stale-response cancellation (HIGH-5 / MEDIUM-4).
-7. Execute focused test suites, run native browser walkthrough on disposable database, and write research-M3-fixes.md (MEDIUM-5).
+1. Derive truthful build identity and bind complete execution snapshot into idempotency canonical hash (HIGH-3).
+2. Align initial funded equity boundary with first execution and reconcile CAGR/partial-year detection (MEDIUM-1).
+3. Follow paged equity series up to 100k, expose incomplete series warnings, and suppress stale responses (HIGH-5).
+4. Validate export bounds before HTTP 200 response and enforce streaming byte limits (MEDIUM-3).
+5. Add deterministic temporary-SQLite tests for queued cancel, repeat cancel, cancel vs publication race, queue saturation, and rollback (HIGH-4).
+6. Update research-M3-fixes.md with verified evidence and accurate versions (MEDIUM-5).
+
+7. Reconcile the execution-boundary reference series without fabricating dates; test baseline and holiday gaps.
+
+8. Prove export byte-limit HTTP behavior and lifecycle race/rollback gates on temporary SQLite, then run full native checks on final tree.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
-Validated all 11 original findings (CRITICAL-1, HIGH-1..5, MEDIUM-1..5) from M3-code-review.md and M3-closeout-review.md. Backend suite: 156 tests passed (0 failures). Frontend suite: 36 tests passed (0 failures). Production build: 0 errors. E2E browser walkthrough recorded and verified on disposable SQLite DB. Export ZIP SHA-256: d95dac323de9bbb8a84dc9de9f657ac648f950e479ecb5ccaa8ba650f189eb15.
+2026-09-14 M3 closeout: V7 same-date funded observation preserves existing rows; build source fingerprint is frozen while same-key replay uses stored client intent; calendar annual labels, bounded pre-response ZIP and omitted CAGR display corrected. 161 backend tests/25 suites, 39 frontend tests/3 files, Angular production build and git diff --check pass. Disposable native browser verified baseline creation, candidate/benchmark curves, orders/events, deep link, synthetic 5002-point-per-series long-run rendering, queued cancellation and cutoff error. Actual local ZIP download integrity/hash checked. The long table exceeded accessibility-frame capture; API pages and a Vitest 5000+2 boundary test verify continuation. Exact 50 MiB artifact and archived cross-binary replay were not executed; no known native M3 blocker. Docker deferred. See planning/reports/research-M3-fixes.md.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-Completed all native M3 remediations preserving original finding IDs: parameterized listing queries against SQL injection (CRITICAL-1), cutoff availability validation (HIGH-1), session-relative action timing and split/payment validation (HIGH-2), frozen config snapshot with source commit hash and deterministic sequences (HIGH-3), bounded SQLite lock retry and repeat cancellation (HIGH-4), Angular strict DTOs and dual-series/events pagination (HIGH-5 & MEDIUM-4), Day 0 equity boundary and CAGR formula reconciliation (MEDIUM-1), V6 migration with composite foreign keys and pre-migration scan (MEDIUM-2), bounded export streaming with exact negative decimal formatting (MEDIUM-3), and comprehensive verification with 156 backend tests, 36 frontend tests, and browser walkthrough (MEDIUM-5).
+Corrected M3 reproducibility, first-execution funding, calendar analytics, export bounds and UI null handling; verified migration preservation, lifecycle races, 161 backend and 39 frontend tests, production build, disposable browser scenarios and ZIP integrity. Docker deferred.
 <!-- SECTION:FINAL_SUMMARY:END -->

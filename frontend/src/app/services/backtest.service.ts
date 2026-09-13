@@ -106,6 +106,13 @@ export class BacktestService {
     this.ordersTotalSubject.next(0);
     this.eventsSubject.next([]);
     this.eventsTotalSubject.next(0);
+    this.equityStatusSubject.next({
+      isComplete: true,
+      candidateLoaded: 0,
+      candidateTotal: 0,
+      benchmarkLoaded: 0,
+      benchmarkTotal: 0,
+    });
     this.loadingSubject.next(false);
     this.errorSubject.next(null);
   }
@@ -131,19 +138,51 @@ export class BacktestService {
     );
   }
 
-  public fetchAllEquity(runId: string, series: SeriesType): Observable<DailyEquityPoint[]> {
+  private readonly equityStatusSubject = new BehaviorSubject<{
+    isComplete: boolean;
+    candidateLoaded: number;
+    candidateTotal: number;
+    benchmarkLoaded: number;
+    benchmarkTotal: number;
+  }>({
+    isComplete: true,
+    candidateLoaded: 0,
+    candidateTotal: 0,
+    benchmarkLoaded: 0,
+    benchmarkTotal: 0,
+  });
+  public readonly equityStatus$: Observable<{
+    isComplete: boolean;
+    candidateLoaded: number;
+    candidateTotal: number;
+    benchmarkLoaded: number;
+    benchmarkTotal: number;
+  }> = this.equityStatusSubject.asObservable();
+
+  public fetchAllEquity(
+    runId: string,
+    series: SeriesType,
+    maxPoints = 50000
+  ): Observable<{ points: DailyEquityPoint[]; isComplete: boolean; total: number }> {
     const pageSize = 5000;
-    const fetchPage = (offset: number, acc: DailyEquityPoint[]): Observable<DailyEquityPoint[]> => {
+    const fetchPage = (
+      offset: number,
+      acc: DailyEquityPoint[]
+    ): Observable<{ points: DailyEquityPoint[]; isComplete: boolean; total: number }> => {
       return this.http.get<PagedResponse<DailyEquityPoint>>(
         `/api/research/backtests/${runId}/equity?series=${series}&limit=${pageSize}&offset=${offset}`
       ).pipe(
         switchMap((res) => {
           const items = res?.items || [];
+          const total = res?.total ?? (acc.length + items.length);
           const nextAcc = [...acc, ...items];
-          if (res?.hasMore && items.length > 0 && nextAcc.length < 50000) {
+          if (res?.hasMore && items.length > 0) {
+            if (nextAcc.length >= maxPoints) {
+              return of({ points: nextAcc, isComplete: false, total });
+            }
             return fetchPage(offset + items.length, nextAcc);
           }
-          return of(nextAcc);
+          return of({ points: nextAcc, isComplete: true, total });
         })
       );
     };
@@ -177,7 +216,16 @@ export class BacktestService {
           return;
         }
 
-        this.dailyEquitySubject.next([...candidateEquity, ...benchmarkEquity]);
+        const isComplete = candidateEquity.isComplete && benchmarkEquity.isComplete;
+        this.equityStatusSubject.next({
+          isComplete,
+          candidateLoaded: candidateEquity.points.length,
+          candidateTotal: candidateEquity.total,
+          benchmarkLoaded: benchmarkEquity.points.length,
+          benchmarkTotal: benchmarkEquity.total,
+        });
+
+        this.dailyEquitySubject.next([...candidateEquity.points, ...benchmarkEquity.points]);
         this.ordersSubject.next(ordersPage?.items || []);
         this.ordersTotalSubject.next(ordersPage?.total || 0);
         this.eventsSubject.next(eventsPage?.items || []);
