@@ -25,14 +25,36 @@ public class BacktestEngine {
             BigDecimal totalCommissions,
             BigDecimal totalSpreadSlippageEstimate,
             BigDecimal totalDistributionsRecognized,
-            int fillCount
-    ) {}
+            int fillCount,
+            List<PendingDistribution> unpaidReceivables
+    ) {
+        public SimulationResult(
+                BacktestDtos.SeriesType seriesType,
+                String listingId,
+                List<BacktestDtos.DailyEquityPoint> dailyEquity,
+                List<BacktestDtos.BacktestOrderDto> orders,
+                List<BacktestDtos.BacktestEventDto> events,
+                BacktestDtos.BacktestHoldingsDto finalHoldings,
+                BigDecimal initialCash,
+                BigDecimal finalEquity,
+                BigDecimal totalCommissions,
+                BigDecimal totalSpreadSlippageEstimate,
+                BigDecimal totalDistributionsRecognized,
+                int fillCount
+        ) {
+            this(seriesType, listingId, dailyEquity, orders, events, finalHoldings,
+                 initialCash, finalEquity, totalCommissions, totalSpreadSlippageEstimate,
+                 totalDistributionsRecognized, fillCount, List.of());
+        }
+    }
 
-    private record PendingDistribution(
+    public record PendingDistribution(
             String actionId,
             BigDecimal amount,
             String paymentDate,
-            String paymentInstant
+            String paymentInstant,
+            String entitlementDate,
+            String entitlementTime
     ) {}
 
     public SimulationResult runS1(
@@ -43,6 +65,22 @@ public class BacktestEngine {
             BigDecimal commissionPerFill,
             BigDecimal spreadBps,
             BigDecimal slippageBps,
+            List<BacktestDataReader.SessionRecord> sessions,
+            Map<String, BacktestDataReader.BarRecord> bars,
+            List<BacktestDataReader.ActionRecord> actions
+    ) {
+        return runS1(runId, seriesType, listingId, initialCash, commissionPerFill, spreadBps, slippageBps, null, sessions, bars, actions);
+    }
+
+    public SimulationResult runS1(
+            String runId,
+            BacktestDtos.SeriesType seriesType,
+            String listingId,
+            BigDecimal initialCash,
+            BigDecimal commissionPerFill,
+            BigDecimal spreadBps,
+            BigDecimal slippageBps,
+            BacktestDataReader.SessionRecord evalSession,
             List<BacktestDataReader.SessionRecord> sessions,
             Map<String, BacktestDataReader.BarRecord> bars,
             List<BacktestDataReader.ActionRecord> actions
@@ -59,15 +97,36 @@ public class BacktestEngine {
         BigDecimal totalSpreadSlippage = BigDecimal.ZERO.setScale(AccountingCore.CASH_SCALE, AccountingCore.CASH_ROUNDING);
         BigDecimal totalDistributions = BigDecimal.ZERO.setScale(AccountingCore.CASH_SCALE, AccountingCore.CASH_ROUNDING);
         int fillCount = 0;
+        int orderSeq = 0;
+        int eventSeq = 0;
 
         List<BacktestDtos.DailyEquityPoint> dailyEquityList = new ArrayList<>();
         List<BacktestDtos.BacktestOrderDto> ordersList = new ArrayList<>();
         List<BacktestDtos.BacktestEventDto> eventsList = new ArrayList<>();
         List<PendingDistribution> pendingDistributions = new ArrayList<>();
 
-        int eventSeq = 0;
         boolean hasReinvestmentPending = false;
         BigDecimal prevSessionEquity = cash;
+
+        // Day 0: Initial Funded Point at evaluation session (warmup/evaluation boundary)
+        if (evalSession != null) {
+            BacktestDataReader.BarRecord evalBar = bars.get(evalSession.sessionDate());
+            String evalClose = evalBar != null ? evalBar.close().toPlainString() : "0.00";
+            dailyEquityList.add(new BacktestDtos.DailyEquityPoint(
+                    evalSession.sessionDate(),
+                    seriesType.name(),
+                    cash.toPlainString(),
+                    "0.00",
+                    "0.00",
+                    cash.toPlainString(),
+                    null,
+                    0.0,
+                    cash.toPlainString(),
+                    "0.00000000",
+                    "0.00",
+                    evalClose
+            ));
+        }
 
         // Spread & slippage fractions
         BigDecimal halfSpreadFraction = spreadBps.divide(new BigDecimal("20000"), 8, RoundingMode.HALF_EVEN);
@@ -82,29 +141,36 @@ public class BacktestEngine {
                 throw new IllegalStateException("Missing bar on session " + sDate + " for listing " + listingId);
             }
 
+            // Session open instant
+            java.time.Instant sessionOpenInstant = session.openTime() != null
+                    ? java.time.Instant.parse(session.openTime())
+                    : java.time.LocalDate.parse(sDate).atTime(9, 0, 0).atZone(java.time.ZoneOffset.UTC).toInstant();
+
             // --- 1. Initial Funding (immediately before first session open) ---
             if (i == 0) {
                 eventSeq++;
+                String eventId = runId + "-" + seriesType.name().toLowerCase() + "-evt-" + String.format("%04d", eventSeq);
+                String fundingTime = sessionOpenInstant.minusSeconds(900).toString();
                 eventsList.add(new BacktestDtos.BacktestEventDto(
-                        UUID.randomUUID().toString(),
+                        eventId,
                         runId,
                         seriesType.name(),
                         eventSeq,
                         BacktestDtos.EventType.FUNDING.name(),
                         sDate,
-                        session.openTime() != null ? session.openTime() : sDate + "T09:00:00Z",
+                        fundingTime,
                         "Initial funding of " + cash.toPlainString() + " EUR",
-                        null,
+                        "{\"initialCash\":\"" + cash.toPlainString() + "\",\"currency\":\"EUR\"}",
                         cash.toPlainString(),
                         "0.00000000",
                         "0.00",
                         "0.00",
-                        Instant.now().toString()
+                        fundingTime
                 ));
             }
 
-            // --- 2. Session Start: Corporate Actions (08:55) ---
-            // Process splits first
+            // --- 2. Corporate Actions (pre-open, relative to session open): Splits first, then Entitlements ---
+            String splitTime = sessionOpenInstant.minusSeconds(600).toString();
             for (BacktestDataReader.ActionRecord action : actions) {
                 if (sDate.equals(action.effectiveDate()) && action.isSplit()) {
                     BigDecimal ratio = action.splitRatio();
@@ -115,28 +181,30 @@ public class BacktestEngine {
                     units = newUnits;
 
                     eventSeq++;
+                    String eventId = runId + "-" + seriesType.name().toLowerCase() + "-evt-" + String.format("%04d", eventSeq);
                     eventsList.add(new BacktestDtos.BacktestEventDto(
-                            UUID.randomUUID().toString(),
+                            eventId,
                             runId,
                             seriesType.name(),
                             eventSeq,
                             BacktestDtos.EventType.SPLIT.name(),
                             sDate,
-                            sDate + "T08:55:00Z",
+                            splitTime,
                             "Stock split " + action.splitNumerator() + ":" + action.splitDenominator() +
                                     ", units adjusted from " + units.subtract(unitsDelta).setScale(AccountingCore.QUANTITY_SCALE, AccountingCore.CASH_ROUNDING).toPlainString() +
                                     " to " + units.setScale(AccountingCore.QUANTITY_SCALE, AccountingCore.CASH_ROUNDING).toPlainString(),
-                            null,
+                            "{\"actionId\":\"" + action.actionId() + "\",\"splitNumerator\":" + action.splitNumerator() + ",\"splitDenominator\":" + action.splitDenominator() + "}",
                             "0.00",
                             unitsDelta.setScale(AccountingCore.QUANTITY_SCALE, AccountingCore.CASH_ROUNDING).toPlainString(),
                             "0.00",
                             "0.00",
-                            Instant.now().toString()
+                            splitTime
                     ));
                 }
             }
 
-            // Process distribution entitlements (based on pre-trade holdings)
+            // Process distribution entitlements (based on pre-trade holdings adjusted for same-day split)
+            String entitlementTime = sessionOpenInstant.minusSeconds(300).toString();
             for (BacktestDataReader.ActionRecord action : actions) {
                 if (sDate.equals(action.effectiveDate()) && action.isDistribution()) {
                     if (units.compareTo(BigDecimal.ZERO) > 0 && action.distributionAmount() != null) {
@@ -150,58 +218,83 @@ public class BacktestEngine {
                                 action.actionId(),
                                 entitlement,
                                 action.paymentDate(),
-                                action.paymentInstant()
+                                action.paymentInstant(),
+                                sDate,
+                                entitlementTime
                         ));
 
                         eventSeq++;
+                        String eventId = runId + "-" + seriesType.name().toLowerCase() + "-evt-" + String.format("%04d", eventSeq);
+                        String payload = "{\"actionId\":\"" + action.actionId() + "\",\"amount\":\"" + entitlement.toPlainString() + "\"" +
+                                ",\"paymentDate\":" + (action.paymentDate() != null ? "\"" + action.paymentDate() + "\"" : "null") +
+                                ",\"paymentInstant\":" + (action.paymentInstant() != null ? "\"" + action.paymentInstant() + "\"" : "null") +
+                                ",\"entitlementDate\":\"" + sDate + "\",\"entitlementTime\":\"" + entitlementTime + "\"}";
                         eventsList.add(new BacktestDtos.BacktestEventDto(
-                                UUID.randomUUID().toString(),
+                                eventId,
                                 runId,
                                 seriesType.name(),
                                 eventSeq,
                                 BacktestDtos.EventType.ENTITLEMENT.name(),
                                 sDate,
-                                sDate + "T08:55:00Z",
+                                entitlementTime,
                                 "Cash distribution entitlement of " + entitlement.toPlainString() + " EUR (" +
                                         action.distributionAmount().toPlainString() + " EUR/unit on " + units.toPlainString() + " units)",
-                                null,
+                                payload,
                                 "0.00",
                                 "0.00000000",
                                 "0.00",
                                 entitlement.toPlainString(),
-                                Instant.now().toString()
+                                entitlementTime
                         ));
                     }
                 }
             }
 
-            // --- 3. Distribution Payments arriving before open ---
+            // --- 3. Payments arriving strictly before this session open (intraday or earlier closed days) ---
             Iterator<PendingDistribution> pIter = pendingDistributions.iterator();
             while (pIter.hasNext()) {
                 PendingDistribution p = pIter.next();
-                if (p.paymentInstant != null && session.openTime() != null &&
-                        p.paymentInstant.compareTo(session.openTime()) < 0 &&
-                        (p.paymentDate == null || p.paymentDate.compareTo(sDate) <= 0)) {
+                boolean settlesBeforeOpen = false;
+                String settlementTime = null;
+
+                if (p.paymentInstant != null) {
+                    java.time.Instant pInst = java.time.Instant.parse(p.paymentInstant);
+                    java.time.Instant openInst = java.time.Instant.parse(session.openTime());
+                    if (pInst.isBefore(openInst)) {
+                        settlesBeforeOpen = true;
+                        settlementTime = p.paymentInstant;
+                    }
+                } else if (p.paymentDate != null) {
+                    java.time.LocalDate pDate = java.time.LocalDate.parse(p.paymentDate);
+                    java.time.LocalDate sDateLocal = java.time.LocalDate.parse(sDate);
+                    if (pDate.isBefore(sDateLocal)) {
+                        settlesBeforeOpen = true;
+                        settlementTime = p.paymentDate + "T23:59:59Z";
+                    }
+                }
+
+                if (settlesBeforeOpen) {
                     cash = cash.add(p.amount);
                     receivables = receivables.subtract(p.amount);
                     hasReinvestmentPending = true;
 
                     eventSeq++;
+                    String eventId = runId + "-" + seriesType.name().toLowerCase() + "-evt-" + String.format("%04d", eventSeq);
                     eventsList.add(new BacktestDtos.BacktestEventDto(
-                            UUID.randomUUID().toString(),
+                            eventId,
                             runId,
                             seriesType.name(),
                             eventSeq,
                             BacktestDtos.EventType.PAYMENT.name(),
-                            sDate,
-                            p.paymentInstant,
-                            "Distribution payment received: " + p.amount.toPlainString() + " EUR",
-                            null,
+                            p.paymentDate != null ? p.paymentDate : sDate,
+                            settlementTime != null ? settlementTime : session.openTime(),
+                            "Distribution payment settled before open: " + p.amount.toPlainString() + " EUR (action " + p.actionId + ")",
+                            "{\"actionId\":\"" + p.actionId + "\",\"amount\":\"" + p.amount.toPlainString() + "\"}",
                             p.amount.toPlainString(),
                             "0.00000000",
                             "0.00",
                             p.amount.negate().toPlainString(),
-                            Instant.now().toString()
+                            settlementTime != null ? settlementTime : session.openTime()
                     ));
                     pIter.remove();
                 }
@@ -243,7 +336,10 @@ public class BacktestEngine {
                     }
                 }
 
-                String orderId = UUID.randomUUID().toString();
+                orderSeq++;
+                String orderId = runId + "-" + seriesType.name().toLowerCase() + "-ord-" + String.format("%04d", orderSeq);
+                String marketTime = session.openTime() != null ? session.openTime() : sDate + "T09:00:00Z";
+
                 if (affordableUnits >= 1) {
                     BigDecimal executedQty = BigDecimal.valueOf(affordableUnits).setScale(AccountingCore.QUANTITY_SCALE, AccountingCore.CASH_ROUNDING);
                     BigDecimal grossCost = AccountingCore.roundCash(executedQty.multiply(fillPrice, AccountingCore.MATH_CONTEXT));
@@ -273,28 +369,30 @@ public class BacktestEngine {
                             commission.toPlainString(),
                             spreadCost.toPlainString(),
                             slippageCost.toPlainString(),
+                            totalCost.negate().toPlainString(),
                             BacktestDtos.OrderStatus.FILLED.name(),
                             null,
-                            Instant.now().toString()
+                            marketTime
                     ));
 
                     eventSeq++;
+                    String eventId = runId + "-" + seriesType.name().toLowerCase() + "-evt-" + String.format("%04d", eventSeq);
                     eventsList.add(new BacktestDtos.BacktestEventDto(
-                            UUID.randomUUID().toString(),
+                            eventId,
                             runId,
                             seriesType.name(),
                             eventSeq,
                             BacktestDtos.EventType.EXECUTION.name(),
                             sDate,
-                            session.openTime() != null ? session.openTime() : sDate + "T09:00:00Z",
+                            marketTime,
                             orderType + " filled: " + executedQty.toPlainString() + " units @ " + fillPrice.toPlainString() +
                                     " EUR (commission " + commission.toPlainString() + " EUR)",
-                            null,
+                            "{\"orderId\":\"" + orderId + "\",\"units\":\"" + executedQty.toPlainString() + "\",\"fillPrice\":\"" + fillPrice.toPlainString() + "\"}",
                             totalCost.negate().toPlainString(),
                             executedQty.toPlainString(),
                             totalCost.toPlainString(),
                             "0.00",
-                            Instant.now().toString()
+                            marketTime
                     ));
                 } else {
                     // Skipped order - cash preserved, fee = 0
@@ -312,44 +410,90 @@ public class BacktestEngine {
                             "0.00",
                             "0.00",
                             "0.00",
+                            "0.00",
                             BacktestDtos.OrderStatus.SKIPPED.name(),
                             "INSUFFICIENT_CASH",
-                            Instant.now().toString()
+                            marketTime
                     ));
                 }
             }
 
-            // --- 5. Date-only / Post-close distribution payments ---
+            // --- 5. Intraday Payments (at open or during trading up to close) ---
             pIter = pendingDistributions.iterator();
             while (pIter.hasNext()) {
                 PendingDistribution p = pIter.next();
-                if (p.paymentDate != null && p.paymentDate.equals(sDate)) {
+                boolean settlesIntraday = false;
+                String settlementTime = null;
+
+                if (p.paymentInstant != null) {
+                    java.time.Instant pInst = java.time.Instant.parse(p.paymentInstant);
+                    java.time.Instant openInst = java.time.Instant.parse(session.openTime());
+                    java.time.Instant closeInst = java.time.Instant.parse(session.closeTime());
+                    if (!pInst.isBefore(openInst) && !pInst.isAfter(closeInst)) {
+                        settlesIntraday = true;
+                        settlementTime = p.paymentInstant;
+                    }
+                }
+
+                if (settlesIntraday) {
                     cash = cash.add(p.amount);
                     receivables = receivables.subtract(p.amount);
                     hasReinvestmentPending = true; // Armed for next session open
 
                     eventSeq++;
+                    String eventId = runId + "-" + seriesType.name().toLowerCase() + "-evt-" + String.format("%04d", eventSeq);
                     eventsList.add(new BacktestDtos.BacktestEventDto(
-                            UUID.randomUUID().toString(),
+                            eventId,
+                            runId,
+                            seriesType.name(),
+                            eventSeq,
+                            BacktestDtos.EventType.PAYMENT.name(),
+                            sDate,
+                            settlementTime,
+                            "Intraday distribution payment settled: " + p.amount.toPlainString() + " EUR (action " + p.actionId + ")",
+                            "{\"actionId\":\"" + p.actionId + "\",\"amount\":\"" + p.amount.toPlainString() + "\"}",
+                            p.amount.toPlainString(),
+                            "0.00000000",
+                            "0.00",
+                            p.amount.negate().toPlainString(),
+                            settlementTime
+                    ));
+                    pIter.remove();
+                }
+            }
+
+            // --- 6. Date-only / Post-close distribution payments on this session date ---
+            pIter = pendingDistributions.iterator();
+            while (pIter.hasNext()) {
+                PendingDistribution p = pIter.next();
+                if (p.paymentDate != null && p.paymentDate.equals(sDate) && p.paymentInstant == null) {
+                    cash = cash.add(p.amount);
+                    receivables = receivables.subtract(p.amount);
+                    hasReinvestmentPending = true; // Armed for next session open
+
+                    eventSeq++;
+                    String eventId = runId + "-" + seriesType.name().toLowerCase() + "-evt-" + String.format("%04d", eventSeq);
+                    eventsList.add(new BacktestDtos.BacktestEventDto(
+                            eventId,
                             runId,
                             seriesType.name(),
                             eventSeq,
                             BacktestDtos.EventType.PAYMENT.name(),
                             sDate,
                             session.closeTime() != null ? session.closeTime() : sDate + "T17:30:00Z",
-                            "Date-only distribution payment settled post-close: " + p.amount.toPlainString() + " EUR",
-                            null,
+                            "Date-only distribution payment settled post-close: " + p.amount.toPlainString() + " EUR (action " + p.actionId + ")",
+                            "{\"actionId\":\"" + p.actionId + "\",\"amount\":\"" + p.amount.toPlainString() + "\"}",
                             p.amount.toPlainString(),
                             "0.00000000",
                             "0.00",
                             p.amount.negate().toPlainString(),
-                            Instant.now().toString()
+                            session.closeTime() != null ? session.closeTime() : sDate + "T17:30:00Z"
                     ));
                     pIter.remove();
                 }
             }
 
-            // --- 6. Closing Valuation & Daily Equity Snapshot ---
+            // --- 7. Closing Valuation & Daily Equity Snapshot ---
             BigDecimal rawClose = bar.close();
             BigDecimal holdingsValue = AccountingCore.roundCash(
                     units.multiply(rawClose, AccountingCore.MATH_CONTEXT)
@@ -375,22 +519,24 @@ public class BacktestEngine {
             }
 
             eventSeq++;
+            String closingEventId = runId + "-" + seriesType.name().toLowerCase() + "-evt-" + String.format("%04d", eventSeq);
+            String closeTime = session.closeTime() != null ? session.closeTime() : sDate + "T17:30:00Z";
             eventsList.add(new BacktestDtos.BacktestEventDto(
-                    UUID.randomUUID().toString(),
+                    closingEventId,
                     runId,
                     seriesType.name(),
                     eventSeq,
                     BacktestDtos.EventType.CLOSING_MARK.name(),
                     sDate,
-                    session.closeTime() != null ? session.closeTime() : sDate + "T17:30:00Z",
+                    closeTime,
                     "Closing mark: Equity=" + totalEquity.toPlainString() + " EUR (Cash=" + cash.toPlainString() +
                             ", Holdings=" + holdingsValue.toPlainString() + ", Receivables=" + receivables.toPlainString() + ")",
-                    null,
+                    "{\"cash\":\"" + cash.toPlainString() + "\",\"holdingsValue\":\"" + holdingsValue.toPlainString() + "\",\"receivables\":\"" + receivables.toPlainString() + "\"}",
                     "0.00",
                     "0.00000000",
                     "0.00",
                     "0.00",
-                    Instant.now().toString()
+                    closeTime
             ));
 
             dailyEquityList.add(new BacktestDtos.DailyEquityPoint(
@@ -419,6 +565,7 @@ public class BacktestEngine {
                 ? totalBasis.divide(units, 8, RoundingMode.HALF_EVEN)
                 : BigDecimal.ZERO.setScale(AccountingCore.CASH_SCALE, AccountingCore.CASH_ROUNDING);
 
+        String lastSessionClose = sessions.get(sessions.size() - 1).closeTime();
         BacktestDtos.BacktestHoldingsDto holdingsDto = new BacktestDtos.BacktestHoldingsDto(
                 seriesType.name(),
                 listingId,
@@ -428,7 +575,7 @@ public class BacktestEngine {
                 lastClose.toPlainString(),
                 finalHoldingsValue.toPlainString(),
                 unrealizedGain.toPlainString(),
-                Instant.now().toString()
+                lastSessionClose != null ? lastSessionClose : sessions.get(sessions.size() - 1).sessionDate() + "T17:30:00Z"
         );
 
         BigDecimal finalEquity = prevSessionEquity;
@@ -445,7 +592,8 @@ public class BacktestEngine {
                 totalCommissions,
                 totalSpreadSlippage,
                 totalDistributions,
-                fillCount
+                fillCount,
+                new ArrayList<>(pendingDistributions)
         );
     }
 }

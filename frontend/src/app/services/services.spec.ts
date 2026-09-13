@@ -7,6 +7,14 @@ import { WatchlistService } from './watchlist.service';
 import { ChatService } from './chat.service';
 import { Portfolio, WatchlistEntry, ChatResponse } from '../models/market.model';
 import { BacktestService } from './backtest.service';
+import {
+  BacktestSummaryResponse,
+  PagedResponse,
+  CreateBacktestRequest,
+  DailyEquityPoint,
+  BacktestOrderDto,
+  BacktestEventDto,
+} from '../models/backtest.model';
 
 describe('PortfolioService', () => {
   let service: PortfolioService;
@@ -527,10 +535,10 @@ describe('HistoricalDataService', () => {
 });
 
 describe('BacktestService', () => {
-  let service: any;
+  let service: BacktestService;
   let httpTesting: HttpTestingController;
 
-  const mockRun: any = {
+  const mockRun: BacktestSummaryResponse = {
     id: 'bt-run-1',
     ownerId: 'default',
     idempotencyKey: 'key-1',
@@ -546,8 +554,8 @@ describe('BacktestService', () => {
     requestedStartDate: '2024-01-31',
     requestedEndDate: '2024-02-07',
     commissionPerFill: '1.00',
-    spreadBps: '0',
-    slippageBps: '0',
+    spreadBps: '10',
+    slippageBps: '5',
     status: 'COMPLETED',
     progressPct: 100,
     failureReason: null,
@@ -563,10 +571,10 @@ describe('BacktestService', () => {
       peakDate: '2024-02-01',
       troughDate: '2024-02-01',
       recoveryDate: '2024-02-07',
-      drawdownDurationDays: 6,
+      underwaterDurationDays: 6,
       isRecovered: true,
       annualizedVolatility: 0.12,
-      turnoverRatio: 0.998,
+      turnover: 0.998,
       fillCount: 2,
       totalCommissions: '2.00',
       endingCash: '18.00',
@@ -578,6 +586,12 @@ describe('BacktestService', () => {
       benchmarkDifference: 0.0,
     },
     benchmarkSummary: null,
+  };
+
+  const mockRunB: BacktestSummaryResponse = {
+    ...mockRun,
+    id: 'bt-run-2',
+    idempotencyKey: 'key-2',
   };
 
   beforeEach(() => {
@@ -599,18 +613,25 @@ describe('BacktestService', () => {
 
   it('fetches runs on initialization and refreshRuns()', () => {
     const initReq = httpTesting.expectOne('/api/research/backtests');
-    initReq.flush([mockRun]);
+    const paged: PagedResponse<BacktestSummaryResponse> = {
+      items: [mockRun],
+      total: 1,
+      limit: 50,
+      offset: 0,
+      hasMore: false,
+    };
+    initReq.flush(paged);
 
-    service.runs$.subscribe((runs: any[]) => {
+    service.runs$.subscribe((runs: BacktestSummaryResponse[]) => {
       expect(runs.length).toBe(1);
       expect(runs[0].id).toBe('bt-run-1');
     });
   });
 
   it('submits a new backtest run with Idempotency-Key header', () => {
-    httpTesting.expectOne('/api/research/backtests').flush([]);
+    httpTesting.expectOne('/api/research/backtests').flush({ items: [], total: 0, limit: 50, offset: 0, hasMore: false });
 
-    const createReq = {
+    const createReq: CreateBacktestRequest = {
       datasetId: 'ds-1',
       candidateListingId: 'listing-1',
       benchmarkListingId: 'listing-1',
@@ -620,13 +641,13 @@ describe('BacktestService', () => {
       initialCash: '1000.00',
       currency: 'EUR',
       commissionPerFill: '1.00',
-      spreadBps: '0',
-      slippageBps: '0',
+      spreadBps: '10',
+      slippageBps: '5',
       strategyId: 'ETF_BUY_HOLD_V1',
       strategyVersion: '1.0.0',
     };
 
-    service.createRun(createReq, 'idem-test-key').subscribe((res: any) => {
+    service.createRun(createReq, 'idem-test-key').subscribe((res: BacktestSummaryResponse) => {
       expect(res.id).toBe('bt-run-1');
     });
 
@@ -635,28 +656,197 @@ describe('BacktestService', () => {
     expect(req.request.headers.get('Idempotency-Key')).toBe('idem-test-key');
     req.flush(mockRun);
 
-    httpTesting.expectOne('/api/research/backtests').flush([mockRun]);
+    httpTesting.expectOne('/api/research/backtests').flush({ items: [mockRun], total: 1, limit: 50, offset: 0, hasMore: false });
   });
 
-  it('loads run details on selectRun(id)', () => {
-    httpTesting.expectOne('/api/research/backtests').flush([]);
+  it('loads run details on selectRun(id) with equity multi-page traversal', () => {
+    httpTesting.expectOne('/api/research/backtests').flush({ items: [], total: 0, limit: 50, offset: 0, hasMore: false });
 
     service.selectRun('bt-run-1');
     const getReq = httpTesting.expectOne('/api/research/backtests/bt-run-1');
     getReq.flush(mockRun);
 
-    // Should load equity, orders, events
-    httpTesting.expectOne('/api/research/backtests/bt-run-1/equity').flush([]);
-    httpTesting.expectOne('/api/research/backtests/bt-run-1/orders').flush([]);
-    httpTesting.expectOne('/api/research/backtests/bt-run-1/events').flush([]);
+    // Page 1 for Candidate has hasMore=true
+    const candP1 = httpTesting.expectOne('/api/research/backtests/bt-run-1/equity?series=CANDIDATE&limit=5000&offset=0');
+    candP1.flush({
+      items: [{
+        sessionDate: '2024-02-01',
+        seriesType: 'CANDIDATE' as const,
+        cash: '100.00',
+        holdingsValue: '900.00',
+        receivables: '0.00',
+        totalEquity: '1000.00',
+        dailyReturn: 0.0,
+        drawdown: 0.0,
+        peakEquity: '1000.00',
+        units: '10.00000000',
+        costBasis: '900.00',
+        rawClose: '90.00',
+      }],
+      total: 2,
+      limit: 5000,
+      offset: 0,
+      hasMore: true,
+    });
 
-    service.selectedRun$.subscribe((r: any) => {
-      expect(r?.id).toBe('bt-run-1');
+    // Page 2 for Candidate has hasMore=false
+    const candP2 = httpTesting.expectOne('/api/research/backtests/bt-run-1/equity?series=CANDIDATE&limit=5000&offset=1');
+    candP2.flush({
+      items: [{
+        sessionDate: '2024-02-02',
+        seriesType: 'CANDIDATE' as const,
+        cash: '100.00',
+        holdingsValue: '920.00',
+        receivables: '0.00',
+        totalEquity: '1020.00',
+        dailyReturn: 0.02,
+        drawdown: 0.0,
+        peakEquity: '1020.00',
+        units: '10.00000000',
+        costBasis: '900.00',
+        rawClose: '92.00',
+      }],
+      total: 2,
+      limit: 5000,
+      offset: 1,
+      hasMore: false,
+    });
+
+    // Benchmark equity single page
+    httpTesting.expectOne('/api/research/backtests/bt-run-1/equity?series=BENCHMARK&limit=5000&offset=0').flush({
+      items: [{
+        sessionDate: '2024-02-01',
+        seriesType: 'BENCHMARK' as const,
+        cash: '1000.00',
+        holdingsValue: '0.00',
+        receivables: '0.00',
+        totalEquity: '1000.00',
+        dailyReturn: 0.0,
+        drawdown: 0.0,
+        peakEquity: '1000.00',
+        units: '0.00000000',
+        costBasis: '0.00',
+        rawClose: '100.00',
+      }],
+      total: 1,
+      limit: 5000,
+      offset: 0,
+      hasMore: false,
+    });
+
+    // Orders and events
+    httpTesting.expectOne('/api/research/backtests/bt-run-1/orders?limit=200&offset=0').flush({
+      items: [{
+        id: 'ord-1',
+        runId: 'bt-run-1',
+        seriesType: 'CANDIDATE' as const,
+        orderType: 'INITIAL_BUY' as const,
+        listingId: 'listing-1',
+        sessionDate: '2024-02-01',
+        requestedQuantity: '10.00',
+        executedQuantity: '10.00',
+        rawOpen: '90.00',
+        fillPrice: '90.00',
+        commission: '1.00',
+        spreadCost: '0.09',
+        slippageCost: '0.045',
+        totalCashImpact: '-901.135',
+        status: 'FILLED' as const,
+        skipReason: null,
+        createdAt: '2026-09-12T00:00:00Z',
+      }],
+      total: 1,
+      limit: 200,
+      offset: 0,
+      hasMore: false,
+    });
+
+    httpTesting.expectOne('/api/research/backtests/bt-run-1/events?limit=200&offset=0').flush({
+      items: [{
+        id: 'evt-1',
+        runId: 'bt-run-1',
+        seriesType: 'CANDIDATE' as const,
+        eventSeq: 1,
+        eventType: 'FUNDING',
+        eventDate: '2024-02-01',
+        eventTime: '2024-02-01T07:45:00Z',
+        description: 'Initial Funding',
+        detailsJson: '{}',
+        cashDelta: '1000.00',
+        unitsDelta: '0',
+        basisDelta: '0',
+        receivableDelta: '0',
+        createdAt: '2026-09-12T00:00:00Z',
+      }],
+      total: 1,
+      limit: 200,
+      offset: 0,
+      hasMore: false,
+    });
+
+    service.dailyEquity$.subscribe((pts: DailyEquityPoint[]) => {
+      expect(pts.length).toBe(3); // 2 candidate + 1 benchmark
+    });
+
+    service.orders$.subscribe((ords: BacktestOrderDto[]) => {
+      expect(ords.length).toBe(1);
+      expect(ords[0].orderType).toBe('INITIAL_BUY');
+    });
+
+    service.events$.subscribe((evts: BacktestEventDto[]) => {
+      expect(evts.length).toBe(1);
+      expect(evts[0].eventSeq).toBe(1);
+    });
+  });
+
+  it('discards stale in-flight response when selection transitions from A to B', () => {
+    httpTesting.expectOne('/api/research/backtests').flush({ items: [], total: 0, limit: 50, offset: 0, hasMore: false });
+
+    // User selects Run A
+    service.selectRun('bt-run-1');
+    const reqA = httpTesting.expectOne('/api/research/backtests/bt-run-1');
+
+    // Before Run A resolves, user selects Run B
+    service.selectRun('bt-run-2');
+    const reqB = httpTesting.expectOne('/api/research/backtests/bt-run-2');
+
+    // Run B resolves first
+    reqB.flush(mockRunB);
+    httpTesting.expectOne('/api/research/backtests/bt-run-2/equity?series=CANDIDATE&limit=5000&offset=0').flush({ items: [], total: 0, limit: 5000, offset: 0, hasMore: false });
+    httpTesting.expectOne('/api/research/backtests/bt-run-2/equity?series=BENCHMARK&limit=5000&offset=0').flush({ items: [], total: 0, limit: 5000, offset: 0, hasMore: false });
+    httpTesting.expectOne('/api/research/backtests/bt-run-2/orders?limit=200&offset=0').flush({ items: [], total: 0, limit: 200, offset: 0, hasMore: false });
+    httpTesting.expectOne('/api/research/backtests/bt-run-2/events?limit=200&offset=0').flush({ items: [], total: 0, limit: 200, offset: 0, hasMore: false });
+
+    // Now Run A finally resolves late
+    reqA.flush(mockRun);
+
+    // Selected run must still be Run B!
+    service.selectedRun$.subscribe((selected) => {
+      expect(selected?.id).toBe('bt-run-2');
+    });
+  });
+
+  it('clearSelection resets all state and invalidates pending requests', () => {
+    httpTesting.expectOne('/api/research/backtests').flush({ items: [], total: 0, limit: 50, offset: 0, hasMore: false });
+
+    service.selectRun('bt-run-1');
+    const reqA = httpTesting.expectOne('/api/research/backtests/bt-run-1');
+
+    service.clearSelection();
+
+    // Late response for Run A arrives
+    reqA.flush(mockRun);
+
+    service.selectedRun$.subscribe((selected) => {
+      expect(selected).toBeNull();
+    });
+    service.dailyEquity$.subscribe((pts) => {
+      expect(pts.length).toBe(0);
     });
   });
 
   it('provides export zip URL', () => {
-    httpTesting.expectOne('/api/research/backtests').flush([]);
+    httpTesting.expectOne('/api/research/backtests').flush({ items: [], total: 0, limit: 50, offset: 0, hasMore: false });
     expect(service.getExportUrl('bt-run-1')).toBe('/api/research/backtests/bt-run-1/export');
   });
 });

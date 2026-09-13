@@ -110,7 +110,7 @@
             {{ formatPct(selectedRun.candidateSummary.maxDrawdown) }}
           </span>
           <span class="kpi-sub font-mono">
-            {{ selectedRun.candidateSummary.isRecovered ? 'Recovered (' + (selectedRun.candidateSummary.underwaterDurationDays ?? selectedRun.candidateSummary.drawdownDurationDays ?? 0) + 'd)' : 'Underwater (' + (selectedRun.candidateSummary.underwaterDurationDays ?? selectedRun.candidateSummary.drawdownDurationDays ?? 0) + 'd)' }}
+            {{ selectedRun.candidateSummary.isRecovered ? 'Recovered (' + (selectedRun.candidateSummary.underwaterDurationDays ?? 0) + 'd)' : 'Underwater (' + (selectedRun.candidateSummary.underwaterDurationDays ?? 0) + 'd)' }}
           </span>
         </div>
 
@@ -133,7 +133,7 @@
         <div class="kpi-card">
           <span class="kpi-label">PORTFOLIO TURNOVER</span>
           <span class="kpi-value font-mono">
-            {{ formatNumber(((selectedRun.candidateSummary.turnover ?? selectedRun.candidateSummary.turnoverRatio ?? 0) * 100)) }}%
+            {{ formatNumber(((selectedRun.candidateSummary.turnover ?? 0) * 100)) }}%
           </span>
           <span class="kpi-sub font-mono">Fills: {{ selectedRun.candidateSummary.fillCount }}</span>
         </div>
@@ -244,14 +244,14 @@
                 {{ formatPct(ar.candidateReturn) }}
               </td>
               <td>{{ formatPct(ar.benchmarkReturn) }}</td>
-              <td [ngClass]="((ar.difference ?? (ar.candidateReturn ?? 0) - (ar.benchmarkReturn ?? 0))) >= 0 ? 'text-green' : 'text-red'">
-                {{ formatPct(ar.difference ?? ((ar.candidateReturn ?? 0) - (ar.benchmarkReturn ?? 0))) }}
+              <td [ngClass]="(((ar.candidateReturn ?? 0) - (ar.benchmarkReturn ?? 0))) >= 0 ? 'text-green' : 'text-red'">
+                {{ formatPct(((ar.candidateReturn ?? 0) - (ar.benchmarkReturn ?? 0))) }}
               </td>
-              <td>{{ ar.candidateStartEquity || selectedRun.candidateSummary.initialEquity }}</td>
-              <td>{{ ar.candidateEndEquity || selectedRun.candidateSummary.finalEquity }}</td>
+              <td>{{ selectedRun.candidateSummary.initialEquity }}</td>
+              <td>{{ selectedRun.candidateSummary.finalEquity }}</td>
               <td>
-                <span *ngIf="ar.isPartial || ar.isPartialYear" class="badge-partial">PARTIAL</span>
-                <span *ngIf="!ar.isPartial && !ar.isPartialYear" class="badge-full">FULL</span>
+                <span *ngIf="ar.isPartial" class="badge-partial">PARTIAL</span>
+                <span *ngIf="!ar.isPartial" class="badge-full">FULL</span>
               </td>
             </tr>
           </tbody>
@@ -312,9 +312,9 @@
                 <tr *ngFor="let row of dailyEquity">
                   <td>{{ row.sessionDate }}</td>
                   <td><span [ngClass]="row.seriesType === 'CANDIDATE' ? 'tag-candidate' : 'tag-benchmark'">{{ row.seriesType }}</span></td>
-                  <td>{{ row.cashBalance }}</td>
+                  <td>{{ row.cash }}</td>
                   <td>{{ row.holdingsValue }}</td>
-                  <td>{{ row.receivablesBalance }}</td>
+                  <td>{{ row.receivables }}</td>
                   <td><strong>{{ row.totalEquity }}</strong></td>
                   <td [ngClass]="(row.dailyReturn ?? 0) >= 0 ? 'text-green' : 'text-red'">
                     {{ formatPct(row.dailyReturn) }}
@@ -339,8 +339,8 @@
                   <th>LISTING</th>
                   <th>REQ UNITS</th>
                   <th>FILLED</th>
+                  <th>RAW OPEN</th>
                   <th>FILL PRICE</th>
-                  <th>MODELED PRICE</th>
                   <th>COMMISSION</th>
                   <th>CASH IMPACT</th>
                   <th>STATUS</th>
@@ -350,21 +350,26 @@
                 <tr *ngFor="let order of orders">
                   <td>{{ order.sessionDate }}</td>
                   <td><span [ngClass]="order.seriesType === 'CANDIDATE' ? 'tag-candidate' : 'tag-benchmark'">{{ order.seriesType }}</span></td>
-                  <td><span class="side-badge" [ngClass]="'side-' + order.side.toLowerCase()">{{ order.side }}</span></td>
+                  <td><span class="side-badge side-buy">{{ order.orderType }}</span></td>
                   <td>{{ order.listingId }}</td>
-                  <td>{{ order.requestedUnits }}</td>
-                  <td>{{ order.filledUnits }}</td>
-                  <td>{{ order.unadjustedFillPrice }}</td>
-                  <td>{{ order.modeledFillPrice }}</td>
+                  <td>{{ order.requestedQuantity }}</td>
+                  <td>{{ order.executedQuantity }}</td>
+                  <td>{{ order.rawOpen }}</td>
+                  <td>{{ order.fillPrice }}</td>
                   <td>{{ order.commission }}</td>
                   <td>{{ order.totalCashImpact }}</td>
-                  <td><span class="order-status-filled">{{ order.orderStatus }}</span></td>
+                  <td><span class="order-status-filled">{{ order.status }}</span></td>
                 </tr>
                 <tr *ngIf="orders.length === 0">
                   <td colspan="11" class="text-center text-muted">No orders executed in this simulation.</td>
                 </tr>
               </tbody>
             </table>
+            <div *ngIf="orders.length < ordersTotal" class="pagination-bar text-center my-3">
+              <button class="btn btn-secondary btn-sm" (click)="loadMoreOrders()">
+                Load More Orders (Showing {{ orders.length }} of {{ ordersTotal }})
+              </button>
+            </div>
           </div>
         </div>
 
@@ -378,24 +383,29 @@
                   <th>DATE</th>
                   <th>SERIES</th>
                   <th>EVENT TYPE</th>
-                  <th>OCCURRED AT</th>
-                  <th>PAYLOAD</th>
+                  <th>EVENT TIME</th>
+                  <th>DESCRIPTION</th>
                 </tr>
               </thead>
               <tbody>
                 <tr *ngFor="let event of events">
-                  <td>{{ event.eventId }}</td>
-                  <td>{{ event.sessionDate }}</td>
+                  <td>{{ event.eventSeq }}</td>
+                  <td>{{ event.eventDate }}</td>
                   <td><span [ngClass]="event.seriesType === 'CANDIDATE' ? 'tag-candidate' : 'tag-benchmark'">{{ event.seriesType }}</span></td>
                   <td><span class="event-type-badge">{{ event.eventType }}</span></td>
-                  <td>{{ event.occurredAt }}</td>
-                  <td class="payload-cell">{{ event.eventPayloadJson }}</td>
+                  <td>{{ event.eventTime }}</td>
+                  <td class="payload-cell">{{ event.description || event.detailsJson }}</td>
                 </tr>
                 <tr *ngIf="events.length === 0">
                   <td colspan="6" class="text-center text-muted">No audit events recorded.</td>
                 </tr>
               </tbody>
             </table>
+            <div *ngIf="events.length < eventsTotal" class="pagination-bar text-center my-3">
+              <button class="btn btn-secondary btn-sm" (click)="loadMoreEvents()">
+                Load More Events (Showing {{ events.length }} of {{ eventsTotal }})
+              </button>
+            </div>
           </div>
         </div>
 

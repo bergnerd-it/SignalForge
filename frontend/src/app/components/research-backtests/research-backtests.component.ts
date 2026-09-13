@@ -36,7 +36,9 @@ export class ResearchBacktestsComponent implements OnInit {
   public candidatePoints: DailyEquityPoint[] = [];
   public benchmarkPoints: DailyEquityPoint[] = [];
   public orders: BacktestOrderDto[] = [];
+  public ordersTotal: number = 0;
   public events: BacktestEventDto[] = [];
+  public eventsTotal: number = 0;
 
   // Datasets for Modal
   public availableDatasets: DatasetSummary[] = [];
@@ -60,8 +62,8 @@ export class ResearchBacktestsComponent implements OnInit {
     initialCash: '1000.00',
     currency: 'EUR',
     commissionPerFill: '1.00',
-    spreadBps: '0',
-    slippageBps: '0',
+    spreadBps: '10',
+    slippageBps: '5',
     strategyId: 'ETF_BUY_HOLD_V1',
     strategyVersion: '1.0.0',
   };
@@ -84,21 +86,19 @@ export class ResearchBacktestsComponent implements OnInit {
   ) {}
 
   ngOnInit(): void {
+    // Check URL for direct deep-link /research/backtests/:id immediately
+    if (typeof window !== 'undefined' && window.location) {
+      const match = window.location.pathname.match(/\/research\/backtests\/([a-zA-Z0-9_-]+)/);
+      if (match && match[1]) {
+        this.selectRun(match[1]);
+      }
+    }
+
     // 1. Subscribe to Backtest Runs
     this.backtestService.runs$
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe((runs) => {
-        this.runs = Array.isArray(runs) ? runs : ((runs as any)?.items || []);
-        // Check URL for direct deep-link /research/backtests/:id
-        if (!this.selectedRun && runs.length > 0 && typeof window !== 'undefined') {
-          const match = window.location.pathname.match(/\/research\/backtests\/([a-zA-Z0-9_-]+)/);
-          if (match && match[1]) {
-            const found = runs.find((r) => r.id === match[1]);
-            if (found) {
-              this.selectRun(found.id);
-            }
-          }
-        }
+        this.runs = runs || [];
         this.cdr.markForCheck();
       });
 
@@ -128,10 +128,24 @@ export class ResearchBacktestsComponent implements OnInit {
         this.cdr.markForCheck();
       });
 
+    this.backtestService.ordersTotal$
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe((total) => {
+        this.ordersTotal = total;
+        this.cdr.markForCheck();
+      });
+
     this.backtestService.events$
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe((events) => {
         this.events = events;
+        this.cdr.markForCheck();
+      });
+
+    this.backtestService.eventsTotal$
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe((total) => {
+        this.eventsTotal = total;
         this.cdr.markForCheck();
       });
 
@@ -179,10 +193,23 @@ export class ResearchBacktestsComponent implements OnInit {
 
   public clearSelection(): void {
     this.selectedRun = null;
+    this.backtestService.clearSelection();
     if (typeof window !== 'undefined' && window.history) {
       window.history.pushState({}, '', '/research/backtests');
     }
     this.cdr.markForCheck();
+  }
+
+  public loadMoreOrders(): void {
+    if (this.selectedRun) {
+      this.backtestService.loadMoreOrders(this.selectedRun.id, this.orders.length);
+    }
+  }
+
+  public loadMoreEvents(): void {
+    if (this.selectedRun) {
+      this.backtestService.loadMoreEvents(this.selectedRun.id, this.events.length);
+    }
   }
 
   public openNewModal(): void {
@@ -318,9 +345,11 @@ export class ResearchBacktestsComponent implements OnInit {
     this.equityCandidatePolyline = candCoords.join(' ');
     this.candidateAreaPolygon = `0,${height} ${this.equityCandidatePolyline} ${width},${height}`;
 
-    if (this.benchmarkPoints.length === n) {
+    if (this.benchmarkPoints.length > 0) {
+      const benchN = this.benchmarkPoints.length;
+      const benchStepX = benchN > 1 ? width / (benchN - 1) : width;
       const benchCoords = this.benchmarkPoints.map((p, idx) => {
-        const x = idx * stepX;
+        const x = idx * benchStepX;
         const y = height - 10 - ((parseFloat(p.totalEquity) - minVal) / range) * (height - 20);
         return `${x.toFixed(1)},${y.toFixed(1)}`;
       });

@@ -62,7 +62,7 @@ class BacktestControllerTest {
                 "run-123", "default", "key-123", "hash-123", "QUEUED", 0,
                 "ETF_BUY_HOLD_V1", "1.0.0", "ds-1", "listing-1", "listing-1",
                 "1000.00", "EUR", "2024-01-31T23:59:59Z", "2024-01-31", "2024-02-07",
-                null, null, "1.00", "10", "5", null, null, null,
+                null, null, "1.00", "10", "5", null, null, null, null,
                 "2026-09-12T10:00:00Z", "2026-09-12T10:00:00Z", null
         );
 
@@ -91,7 +91,7 @@ class BacktestControllerTest {
                 "run-123", "default", "key-123", "hash-123", "COMPLETED", 100,
                 "ETF_BUY_HOLD_V1", "1.0.0", "ds-1", "listing-1", "listing-1",
                 "1000.00", "EUR", "2024-01-31T23:59:59Z", "2024-01-31", "2024-02-07",
-                "2024-02-01", "2024-02-07", "1.00", "10", "5", null, null, null,
+                "2024-02-01", "2024-02-07", "1.00", "10", "5", null, null, null, null,
                 "2026-09-12T10:00:00Z", "2026-09-12T10:01:00Z", "2026-09-12T10:01:00Z"
         );
 
@@ -147,10 +147,10 @@ class BacktestControllerTest {
                 "run-123", "default", "key-123", "hash-123", "COMPLETED", 100,
                 "ETF_BUY_HOLD_V1", "1.0.0", "ds-1", "listing-1", "listing-1",
                 "1000.00", "EUR", "2024-01-31T23:59:59Z", "2024-01-31", "2024-02-07",
-                "2024-02-01", "2024-02-07", "1.00", "10", "5", null, null, null,
+                "2024-02-01", "2024-02-07", "1.00", "10", "5", null, null, null, null,
                 "2026-09-12T10:00:00Z", "2026-09-12T10:01:00Z", "2026-09-12T10:01:00Z"
         );
-        when(jobService.getBacktestDetail("run-123")).thenReturn(responseDto);
+        when(jobService.getBacktestDetail("run-123", "default")).thenReturn(responseDto);
 
         mockMvc.perform(get("/api/research/backtests/run-123"))
                 .andExpect(status().isOk())
@@ -165,10 +165,10 @@ class BacktestControllerTest {
                 "run-123", "default", "key-123", "hash-123", "CANCELLED", 0,
                 "ETF_BUY_HOLD_V1", "1.0.0", "ds-1", "listing-1", "listing-1",
                 "1000.00", "EUR", "2024-01-31T23:59:59Z", "2024-01-31", "2024-02-07",
-                null, null, "1.00", "10", "5", null, null, null,
+                null, null, "1.00", "10", "5", null, null, null, null,
                 "2026-09-12T10:00:00Z", "2026-09-12T10:01:00Z", null
         );
-        when(jobService.cancelBacktest("run-123")).thenReturn(responseDto);
+        when(jobService.cancelBacktest("run-123", "default")).thenReturn(responseDto);
 
         mockMvc.perform(post("/api/research/backtests/run-123/cancel")
                         .contentType(MediaType.APPLICATION_JSON))
@@ -179,10 +179,13 @@ class BacktestControllerTest {
     @Test
     @DisplayName("GET /api/research/backtests/{id}/export streams zip archive")
     void testExportBacktest() throws Exception {
-        byte[] dummyZip = new byte[]{0x50, 0x4b, 0x03, 0x04}; // PK zip magic
-        when(exportService.generateExportZip("run-123")).thenReturn(dummyZip);
+        org.mockito.Mockito.doNothing().when(exportService).validateExportable("run-123", "default");
 
-        mockMvc.perform(get("/api/research/backtests/run-123/export"))
+        org.springframework.test.web.servlet.MvcResult result = mockMvc.perform(get("/api/research/backtests/run-123/export"))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch(result))
                 .andExpect(status().isOk())
                 .andExpect(header().string("Content-Disposition", "attachment; filename=\"backtest-run-123-export.zip\""))
                 .andExpect(content().contentType("application/zip"));

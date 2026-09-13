@@ -143,8 +143,24 @@ public class BacktestAnalyticsCalculator {
         // 7. Annual Returns breakdown
         List<BacktestDtos.AnnualReturn> annualReturns = buildAnnualReturns(points, benchmarkResult != null ? benchmarkResult.dailyEquity() : null);
 
-        // 8. Ending state balances
+        // 8. Ending state balances and portfolio weights
         BacktestDtos.DailyEquityPoint lastPoint = points.get(points.size() - 1);
+        BigDecimal endCashBd = new BigDecimal(lastPoint.cash());
+        BigDecimal endHoldingsBd = new BigDecimal(lastPoint.holdingsValue());
+        BigDecimal endRecBd = new BigDecimal(lastPoint.receivables());
+        BigDecimal totalEndEq = new BigDecimal(lastPoint.totalEquity());
+
+        Double exposureWeight = totalEndEq.compareTo(BigDecimal.ZERO) > 0
+                ? endHoldingsBd.divide(totalEndEq, 6, RoundingMode.HALF_EVEN).doubleValue()
+                : 0.0;
+        Double cashWeight = totalEndEq.compareTo(BigDecimal.ZERO) > 0
+                ? endCashBd.divide(totalEndEq, 6, RoundingMode.HALF_EVEN).doubleValue()
+                : 0.0;
+        Double receivablesWeight = totalEndEq.compareTo(BigDecimal.ZERO) > 0
+                ? endRecBd.divide(totalEndEq, 6, RoundingMode.HALF_EVEN).doubleValue()
+                : 0.0;
+        String turnoverFormula = "TOTAL_PURCHASES_DIVIDED_BY_AVERAGE_EQUITY";
+        String receivableTreatment = "CONTRIBUTES_TO_EQUITY_UNSPENDABLE_UNTIL_PAYMENT";
 
         return new BacktestDtos.BacktestAnalyticsSummary(
                 initialEq.setScale(2, RoundingMode.HALF_EVEN).toPlainString(),
@@ -171,7 +187,22 @@ public class BacktestAnalyticsCalculator {
                 lastPoint.holdingsValue(),
                 lastPoint.costBasis(),
                 lastPoint.units(),
-                annualReturns
+                exposureWeight,
+                cashWeight,
+                receivablesWeight,
+                turnoverFormula,
+                receivableTreatment,
+                annualReturns,
+                result.unpaidReceivables() != null
+                        ? result.unpaidReceivables().stream().map(p -> new BacktestDtos.UnpaidReceivableDto(
+                                p.actionId(),
+                                p.amount().toPlainString(),
+                                p.entitlementDate(),
+                                p.entitlementTime(),
+                                p.paymentDate(),
+                                p.paymentInstant()
+                        )).toList()
+                        : Collections.emptyList()
         );
     }
 
@@ -204,8 +235,9 @@ public class BacktestAnalyticsCalculator {
             LocalDate firstDate = LocalDate.parse(yearPts.get(0).sessionDate());
             LocalDate lastDate = LocalDate.parse(yearPts.get(yearPts.size() - 1).sessionDate());
 
-            // A year is partial if firstDate > Jan 15 or lastDate < Dec 15
-            boolean isPartial = (firstDate.getDayOfYear() > 15 || lastDate.getDayOfYear() < 345);
+            // A calendar year is partial if first observation is after the first week of Jan or last observation is before late Dec
+            boolean isPartial = (firstDate.getMonthValue() != 1 || firstDate.getDayOfMonth() > 7 ||
+                    lastDate.getMonthValue() != 12 || lastDate.getDayOfMonth() < 24);
 
             double startEq = prevYearEndCandidateEq != null
                     ? prevYearEndCandidateEq

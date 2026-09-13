@@ -1,12 +1,14 @@
 import { Injectable } from '@angular/core';
 import { HttpClient, HttpHeaders } from '@angular/common/http';
-import { Observable, BehaviorSubject, of, catchError, tap } from 'rxjs';
+import { Observable, BehaviorSubject, forkJoin, of, switchMap, tap } from 'rxjs';
 import {
   BacktestSummaryResponse,
   CreateBacktestRequest,
   DailyEquityPoint,
   BacktestOrderDto,
   BacktestEventDto,
+  PagedResponse,
+  SeriesType,
 } from '../models/backtest.model';
 
 @Injectable({
@@ -25,8 +27,14 @@ export class BacktestService {
   private readonly ordersSubject = new BehaviorSubject<BacktestOrderDto[]>([]);
   public readonly orders$: Observable<BacktestOrderDto[]> = this.ordersSubject.asObservable();
 
+  private readonly ordersTotalSubject = new BehaviorSubject<number>(0);
+  public readonly ordersTotal$: Observable<number> = this.ordersTotalSubject.asObservable();
+
   private readonly eventsSubject = new BehaviorSubject<BacktestEventDto[]>([]);
   public readonly events$: Observable<BacktestEventDto[]> = this.eventsSubject.asObservable();
+
+  private readonly eventsTotalSubject = new BehaviorSubject<number>(0);
+  public readonly eventsTotal$: Observable<number> = this.eventsTotalSubject.asObservable();
 
   private readonly loadingSubject = new BehaviorSubject<boolean>(false);
   public readonly loading$: Observable<boolean> = this.loadingSubject.asObservable();
@@ -34,14 +42,16 @@ export class BacktestService {
   private readonly errorSubject = new BehaviorSubject<string | null>(null);
   public readonly error$: Observable<string | null> = this.errorSubject.asObservable();
 
+  private activeLoadingRunId: string | null = null;
+
   constructor(private readonly http: HttpClient) {
     this.refreshRuns();
   }
 
   public refreshRuns(): void {
-    this.http.get<any>('/api/research/backtests').subscribe({
+    this.http.get<PagedResponse<BacktestSummaryResponse>>('/api/research/backtests').subscribe({
       next: (res) => {
-        const list: BacktestSummaryResponse[] = Array.isArray(res) ? res : (res?.items || res?.backtests || []);
+        const list: BacktestSummaryResponse[] = Array.isArray(res) ? res : (res?.items || []);
         this.runsSubject.next(list);
       },
       error: (err) => {
@@ -51,27 +61,57 @@ export class BacktestService {
     });
   }
 
+  public getRun(id: string): Observable<BacktestSummaryResponse> {
+    return this.http.get<BacktestSummaryResponse>(`/api/research/backtests/${id}`);
+  }
+
   public selectRun(id: string): void {
+    this.activeLoadingRunId = id;
     this.loadingSubject.next(true);
     this.errorSubject.next(null);
-    this.http.get<BacktestSummaryResponse>(`/api/research/backtests/${id}`).subscribe({
+
+    this.getRun(id).subscribe({
       next: (run) => {
+        // Suppress stale response if a different run was selected while in-flight
+        if (this.activeLoadingRunId !== id) {
+          return;
+        }
         this.selectedRunSubject.next(run);
         this.loadingSubject.next(false);
         if (run.status === 'COMPLETED') {
           this.loadDetails(id);
+        } else {
+          this.dailyEquitySubject.next([]);
+          this.ordersSubject.next([]);
+          this.ordersTotalSubject.next(0);
+          this.eventsSubject.next([]);
+          this.eventsTotalSubject.next(0);
         }
       },
       error: (err) => {
-        console.error(`Failed to load backtest run ${id}:`, err);
-        this.errorSubject.next(`Failed to load backtest run ${id}`);
-        this.loadingSubject.next(false);
+        if (this.activeLoadingRunId === id) {
+          console.error(`Failed to load backtest run ${id}:`, err);
+          this.errorSubject.next(`Failed to load backtest run ${id}`);
+          this.loadingSubject.next(false);
+        }
       },
     });
   }
 
+  public clearSelection(): void {
+    this.activeLoadingRunId = null;
+    this.selectedRunSubject.next(null);
+    this.dailyEquitySubject.next([]);
+    this.ordersSubject.next([]);
+    this.ordersTotalSubject.next(0);
+    this.eventsSubject.next([]);
+    this.eventsTotalSubject.next(0);
+    this.loadingSubject.next(false);
+    this.errorSubject.next(null);
+  }
+
   public pollRun(id: string): Observable<BacktestSummaryResponse> {
-    return this.http.get<BacktestSummaryResponse>(`/api/research/backtests/${id}`).pipe(
+    return this.getRun(id).pipe(
       tap((run) => {
         const currentSelected = this.selectedRunSubject.value;
         if (currentSelected && currentSelected.id === id) {
@@ -80,7 +120,6 @@ export class BacktestService {
             this.loadDetails(id);
           }
         }
-        // Also update run in list
         const currentList = this.runsSubject.value;
         const index = currentList.findIndex((r) => r.id === id);
         if (index >= 0) {
@@ -92,64 +131,100 @@ export class BacktestService {
     );
   }
 
+  public fetchAllEquity(runId: string, series: SeriesType): Observable<DailyEquityPoint[]> {
+    const pageSize = 5000;
+    const fetchPage = (offset: number, acc: DailyEquityPoint[]): Observable<DailyEquityPoint[]> => {
+      return this.http.get<PagedResponse<DailyEquityPoint>>(
+        `/api/research/backtests/${runId}/equity?series=${series}&limit=${pageSize}&offset=${offset}`
+      ).pipe(
+        switchMap((res) => {
+          const items = res?.items || [];
+          const nextAcc = [...acc, ...items];
+          if (res?.hasMore && items.length > 0 && nextAcc.length < 50000) {
+            return fetchPage(offset + items.length, nextAcc);
+          }
+          return of(nextAcc);
+        })
+      );
+    };
+    return fetchPage(0, []);
+  }
+
+  public loadOrders(runId: string, limit = 200, offset = 0): Observable<PagedResponse<BacktestOrderDto>> {
+    return this.http.get<PagedResponse<BacktestOrderDto>>(
+      `/api/research/backtests/${runId}/orders?limit=${limit}&offset=${offset}`
+    );
+  }
+
+  public loadEvents(runId: string, limit = 200, offset = 0): Observable<PagedResponse<BacktestEventDto>> {
+    return this.http.get<PagedResponse<BacktestEventDto>>(
+      `/api/research/backtests/${runId}/events?limit=${limit}&offset=${offset}`
+    );
+  }
+
   public loadDetails(id: string): void {
-    this.http.get<any>(`/api/research/backtests/${id}/equity`).pipe(
-      catchError(() => of({ items: [] }))
-    ).subscribe((res) => {
-      const items: any[] = Array.isArray(res) ? res : (res?.items || []);
-      const mapped: DailyEquityPoint[] = items.map((p) => ({
-        runId: p.runId || id,
-        sessionDate: p.sessionDate,
-        seriesType: p.seriesType,
-        cashBalance: p.cashBalance ?? p.cash ?? '0.00',
-        holdingsValue: p.holdingsValue ?? '0.00',
-        receivablesBalance: p.receivablesBalance ?? p.receivables ?? '0.00',
-        totalEquity: p.totalEquity ?? '0.00',
-        dailyReturn: p.dailyReturn ?? null,
-        cumulativeReturn: p.cumulativeReturn ?? 0,
-        drawdown: p.drawdown ?? 0,
-        units: p.units ?? '0',
-        closingPrice: p.closingPrice ?? p.rawClose ?? '0.00',
-      }));
-      this.dailyEquitySubject.next(mapped);
-    });
+    this.activeLoadingRunId = id;
 
-    this.http.get<any>(`/api/research/backtests/${id}/orders`).pipe(
-      catchError(() => of({ items: [] }))
-    ).subscribe((res) => {
-      const items: any[] = Array.isArray(res) ? res : (res?.items || []);
-      const mapped: BacktestOrderDto[] = items.map((o) => ({
-        orderId: o.orderId || o.id,
-        sessionDate: o.sessionDate,
-        seriesType: o.seriesType,
-        listingId: o.listingId,
-        side: (o.side || (o.orderType?.includes('BUY') ? 'BUY' : 'BUY')) as 'BUY' | 'SELL',
-        requestedUnits: o.requestedUnits ?? o.requestedQuantity ?? '0',
-        filledUnits: o.filledUnits ?? o.executedQuantity ?? '0',
-        orderStatus: o.orderStatus ?? o.status ?? 'FILLED',
-        limitPrice: o.limitPrice ?? null,
-        unadjustedFillPrice: o.unadjustedFillPrice ?? o.rawOpen ?? '0.00',
-        modeledFillPrice: o.modeledFillPrice ?? o.fillPrice ?? '0.00',
-        commission: o.commission ?? '0.00',
-        totalCashImpact: o.totalCashImpact ?? (o.totalCost ? String(o.totalCost) : '0.00'),
-        executedAt: o.executedAt ?? o.createdAt ?? '',
-      }));
-      this.ordersSubject.next(mapped);
-    });
+    forkJoin({
+      candidateEquity: this.fetchAllEquity(id, 'CANDIDATE'),
+      benchmarkEquity: this.fetchAllEquity(id, 'BENCHMARK'),
+      ordersPage: this.loadOrders(id, 200, 0),
+      eventsPage: this.loadEvents(id, 200, 0),
+    }).subscribe({
+      next: ({ candidateEquity, benchmarkEquity, ordersPage, eventsPage }) => {
+        // Drop stale response if user selected another run while in flight
+        if (this.activeLoadingRunId !== id) {
+          return;
+        }
 
-    this.http.get<any>(`/api/research/backtests/${id}/events`).pipe(
-      catchError(() => of({ items: [] }))
-    ).subscribe((res) => {
-      const items: any[] = Array.isArray(res) ? res : (res?.items || []);
-      const mapped: BacktestEventDto[] = items.map((e) => ({
-        eventId: e.eventId ?? e.eventSeq ?? 0,
-        sessionDate: e.sessionDate ?? e.eventDate ?? '',
-        seriesType: e.seriesType,
-        eventType: e.eventType,
-        eventPayloadJson: e.eventPayloadJson ?? e.description ?? e.detailsJson ?? '',
-        occurredAt: e.occurredAt ?? e.eventTime ?? e.createdAt ?? '',
-      }));
-      this.eventsSubject.next(mapped);
+        this.dailyEquitySubject.next([...candidateEquity, ...benchmarkEquity]);
+        this.ordersSubject.next(ordersPage?.items || []);
+        this.ordersTotalSubject.next(ordersPage?.total || 0);
+        this.eventsSubject.next(eventsPage?.items || []);
+        this.eventsTotalSubject.next(eventsPage?.total || 0);
+      },
+      error: (err) => {
+        if (this.activeLoadingRunId === id) {
+          console.error(`Failed to load details for run ${id}:`, err);
+          this.errorSubject.next(`Failed to load details for backtest run ${id}`);
+        }
+      },
+    });
+  }
+
+  public loadMoreOrders(runId: string, currentLength: number, limit = 200): void {
+    if (this.activeLoadingRunId !== runId) {
+      return;
+    }
+    this.loadOrders(runId, limit, currentLength).subscribe({
+      next: (page) => {
+        if (this.activeLoadingRunId === runId && page?.items) {
+          this.ordersSubject.next([...this.ordersSubject.value, ...page.items]);
+          this.ordersTotalSubject.next(page.total);
+        }
+      },
+      error: (err) => {
+        console.error('Failed to load more orders:', err);
+        this.errorSubject.next('Failed to load more orders');
+      },
+    });
+  }
+
+  public loadMoreEvents(runId: string, currentLength: number, limit = 200): void {
+    if (this.activeLoadingRunId !== runId) {
+      return;
+    }
+    this.loadEvents(runId, limit, currentLength).subscribe({
+      next: (page) => {
+        if (this.activeLoadingRunId === runId && page?.items) {
+          this.eventsSubject.next([...this.eventsSubject.value, ...page.items]);
+          this.eventsTotalSubject.next(page.total);
+        }
+      },
+      error: (err) => {
+        console.error('Failed to load more events:', err);
+        this.errorSubject.next('Failed to load more events');
+      },
     });
   }
 
@@ -162,6 +237,7 @@ export class BacktestService {
 
     return this.http.post<BacktestSummaryResponse>('/api/research/backtests', request, { headers }).pipe(
       tap((newRun) => {
+        this.activeLoadingRunId = newRun.id;
         this.refreshRuns();
         this.selectedRunSubject.next(newRun);
       })

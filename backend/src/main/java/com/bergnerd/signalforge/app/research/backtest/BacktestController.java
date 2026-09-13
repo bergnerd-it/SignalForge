@@ -45,62 +45,74 @@ public class BacktestController {
     }
 
     @GetMapping("/{id}")
-    public BacktestDtos.BacktestSummaryResponse getBacktest(@PathVariable("id") String id) {
-        return jobService.getBacktestDetail(id);
+    public BacktestDtos.BacktestSummaryResponse getBacktest(
+            @PathVariable("id") String id,
+            @RequestHeader(value = "X-User-Id", required = false, defaultValue = "default") String ownerId
+    ) {
+        return jobService.getBacktestDetail(id, ownerId);
     }
 
     @PostMapping("/{id}/cancel")
-    public BacktestDtos.BacktestSummaryResponse cancelBacktest(@PathVariable("id") String id) {
-        return jobService.cancelBacktest(id);
+    public BacktestDtos.BacktestSummaryResponse cancelBacktest(
+            @PathVariable("id") String id,
+            @RequestHeader(value = "X-User-Id", required = false, defaultValue = "default") String ownerId
+    ) {
+        return jobService.cancelBacktest(id, ownerId);
     }
 
     @GetMapping("/{id}/equity")
     public BacktestDtos.PagedResponse<BacktestDtos.DailyEquityPoint> getDailyEquity(
             @PathVariable("id") String id,
+            @RequestHeader(value = "X-User-Id", required = false, defaultValue = "default") String ownerId,
             @RequestParam(value = "series", defaultValue = "CANDIDATE") String series,
             @RequestParam(value = "limit", defaultValue = "1000") int limit,
             @RequestParam(value = "offset", defaultValue = "0") int offset
     ) {
-        return jobService.getDailyEquity(id, series, limit, offset);
+        return jobService.getDailyEquity(id, ownerId, series, limit, offset);
     }
 
     @GetMapping("/{id}/orders")
     public BacktestDtos.PagedResponse<BacktestDtos.BacktestOrderDto> getOrders(
             @PathVariable("id") String id,
+            @RequestHeader(value = "X-User-Id", required = false, defaultValue = "default") String ownerId,
             @RequestParam(value = "series", required = false) String series,
             @RequestParam(value = "limit", defaultValue = "100") int limit,
             @RequestParam(value = "offset", defaultValue = "0") int offset
     ) {
-        return jobService.getOrders(id, series, limit, offset);
+        return jobService.getOrders(id, ownerId, series, limit, offset);
     }
 
     @GetMapping("/{id}/events")
     public BacktestDtos.PagedResponse<BacktestDtos.BacktestEventDto> getEvents(
             @PathVariable("id") String id,
+            @RequestHeader(value = "X-User-Id", required = false, defaultValue = "default") String ownerId,
             @RequestParam(value = "series", required = false) String series,
             @RequestParam(value = "limit", defaultValue = "100") int limit,
             @RequestParam(value = "offset", defaultValue = "0") int offset
     ) {
-        return jobService.getEvents(id, series, limit, offset);
+        return jobService.getEvents(id, ownerId, series, limit, offset);
     }
 
     @GetMapping(value = "/{id}/export", produces = "application/zip")
-    public ResponseEntity<byte[]> exportBacktest(@PathVariable("id") String id) {
+    public ResponseEntity<org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody> exportBacktest(
+            @PathVariable("id") String id,
+            @RequestHeader(value = "X-User-Id", required = false, defaultValue = "default") String ownerId
+    ) {
         try {
-            byte[] zipData = exportService.generateExportZip(id);
+            exportService.validateExportable(id, ownerId);
             String safeFilename = "backtest-" + id.replaceAll("[^a-zA-Z0-9_-]", "_") + "-export.zip";
+            org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody responseBody = outputStream -> {
+                exportService.streamExportZip(id, ownerId, outputStream);
+            };
 
             return ResponseEntity.ok()
                     .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + safeFilename + "\"")
                     .contentType(MediaType.parseMediaType("application/zip"))
-                    .body(zipData);
+                    .body(responseBody);
         } catch (IllegalArgumentException e) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
         } catch (IllegalStateException e) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
-        } catch (IOException e) {
-            log.error("Failed to generate export zip for run {}", id, e);
-            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Export generation failed");
         }
     }
 }

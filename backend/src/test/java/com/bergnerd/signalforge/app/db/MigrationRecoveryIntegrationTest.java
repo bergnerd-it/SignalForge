@@ -483,6 +483,12 @@ class MigrationRecoveryIntegrationTest {
                 "SELECT COUNT(*) FROM schema_migrations WHERE version = 4", Integer.class
         ));
         assertEquals(1, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 5", Integer.class
+        ));
+        assertEquals(1, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 6", Integer.class
+        ));
+        assertEquals(1, jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'chat_requests'", Integer.class
         ));
         assertEquals(1, jdbcTemplate.queryForObject(
@@ -526,7 +532,7 @@ class MigrationRecoveryIntegrationTest {
         ));
 
         assertDoesNotThrow(migrationRunner::runMigration);
-        assertEquals(4, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM schema_migrations", Integer.class));
+        assertEquals(6, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM schema_migrations", Integer.class));
     }
 
     @Test
@@ -540,6 +546,120 @@ class MigrationRecoveryIntegrationTest {
                         "changed-compiled-migrator".getBytes(StandardCharsets.UTF_8), accounting, policy
                 )
         );
+    }
+
+    @Test
+    void v6Upgrade_preservesPopulatedBacktestsAndEnforcesForeignKeys() {
+        String v1 = resource("db/migration/V1__init_m1b_schema.sql");
+        String v2 = resource("db/migration/V2__m1b_review_fixes.sql");
+        String v3 = resource("db/migration/V3__historical_datasets_and_import.sql");
+        String v4 = resource("db/migration/V4__backtest_engine.sql");
+        String v5 = resource("db/migration/V5__backtest_engine_hardening.sql");
+
+        for (String stmt : SqlScriptParser.parseStatements(v1)) { jdbcTemplate.execute(stmt); }
+        for (String stmt : SqlScriptParser.parseStatements(v2)) { jdbcTemplate.execute(stmt); }
+        for (String stmt : SqlScriptParser.parseStatements(v3)) { jdbcTemplate.execute(stmt); }
+        for (String stmt : SqlScriptParser.parseStatements(v4)) { jdbcTemplate.execute(stmt); }
+        for (String stmt : SqlScriptParser.parseStatements(v5)) { jdbcTemplate.execute(stmt); }
+
+        String now = "2026-09-12T00:00:00Z";
+        jdbcTemplate.update("INSERT INTO schema_migrations VALUES (1, 'v1', ?, ?, '2.0.0-M3')", migrationRunner.computeV1MigrationChecksum(v1), now);
+        jdbcTemplate.update("INSERT INTO schema_migrations VALUES (2, 'v2', ?, ?, '2.0.0-M3')", migrationRunner.computeSqlChecksum(v2), now);
+        jdbcTemplate.update("INSERT INTO schema_migrations VALUES (3, 'v3', ?, ?, '2.0.0-M3')", migrationRunner.computeSqlChecksum(v3), now);
+        jdbcTemplate.update("INSERT INTO schema_migrations VALUES (4, 'v4', ?, ?, '2.0.0-M3')", migrationRunner.computeSqlChecksum(v4), now);
+        jdbcTemplate.update("INSERT INTO schema_migrations VALUES (5, 'v5', ?, ?, '2.0.0-M3')", migrationRunner.computeSqlChecksum(v5), now);
+
+        // Seed populated dataset and listings
+        jdbcTemplate.update("INSERT INTO datasets (id, name, source, classification, schema_version, parser_version, input_checksum, content_checksum, manifest_json, coverage_start, coverage_end, validation_status, validation_findings_json, quality_label, imported_at, created_at) " +
+                "VALUES ('ds-v6-test', 'Dataset V6', 'TEST', 'HISTORICAL', 'v1', 'p1', 'in-cs', 'out-cs', '{}', '2026-01-01', '2026-01-10', 'VALID', '[]', 'VERIFIED', ?, ?)", now, now);
+        jdbcTemplate.update("INSERT INTO dataset_listings (dataset_id, listing_id, instrument_id, symbol, quote_currency, calendar_id) " +
+                "VALUES ('ds-v6-test', 'cand-1', 'inst-1', 'CAND', 'EUR', 'XETR')");
+        jdbcTemplate.update("INSERT INTO dataset_listings (dataset_id, listing_id, instrument_id, symbol, quote_currency, calendar_id) " +
+                "VALUES ('ds-v6-test', 'bm-1', 'inst-2', 'BM', 'EUR', 'XETR')");
+
+        // Seed populated backtest_runs in RUNNING state, insert child records, then transition to COMPLETED
+        jdbcTemplate.update("INSERT INTO backtest_runs (id, owner_id, idempotency_key, canonical_hash, strategy_id, strategy_version, dataset_id, candidate_listing_id, benchmark_listing_id, initial_cash, currency, evaluation_cutoff, requested_start_date, requested_end_date, commission_per_fill, spread_bps, slippage_bps, status, progress_pct, config_json, created_at, updated_at) " +
+                "VALUES ('run-v6-pop', 'default', 'idemp-v6', 'hash-v6', 'buy_and_hold', '1.0', 'ds-v6-test', 'cand-1', 'bm-1', '10000.00', 'EUR', '2026-01-01T20:00:00Z', '2026-01-02', '2026-01-05', '1.00', '10', '5', 'RUNNING', 50, '{}', ?, ?)", now, now);
+        jdbcTemplate.update("INSERT INTO backtest_daily_equity (run_id, series_type, session_date, cash, holdings_value, receivables, total_equity, drawdown, peak_equity, units, cost_basis, raw_close) " +
+                "VALUES ('run-v6-pop', 'CANDIDATE', '2026-01-02', '500.00', '9500.00', '0.00', '10000.00', '0.00', '10000.00', '95.00', '9500.00', '100.00')");
+        jdbcTemplate.update("INSERT INTO backtest_orders (id, run_id, series_type, order_type, listing_id, session_date, requested_quantity, executed_quantity, raw_open, fill_price, commission, spread_cost, slippage_cost, status, created_at) " +
+                "VALUES ('ord-v6-1', 'run-v6-pop', 'CANDIDATE', 'INITIAL_BUY', 'cand-1', '2026-01-02', '95.00', '95.00', '100.00', '100.00', '1.00', '0.10', '0.05', 'FILLED', ?)", now);
+        jdbcTemplate.update("INSERT INTO backtest_events (id, run_id, series_type, event_seq, event_type, event_date, event_time, description, cash_delta, units_delta, basis_delta, receivable_delta, created_at) " +
+                "VALUES ('evt-v6-1', 'run-v6-pop', 'CANDIDATE', 1, 'FUNDING', '2026-01-02', '2026-01-02T07:45:00Z', 'Initial Funding', '10000.00', '0', '0', '0', ?)", now);
+        jdbcTemplate.update("INSERT INTO backtest_holdings (run_id, series_type, listing_id, units, total_cost_basis, average_cost, current_price, market_value, unrealized_gain, updated_at) " +
+                "VALUES ('run-v6-pop', 'CANDIDATE', 'cand-1', '95.00', '9500.00', '100.00', '100.00', '9500.00', '0.00', ?)", now);
+        jdbcTemplate.update("UPDATE backtest_runs SET status = 'COMPLETED', progress_pct = 100 WHERE id = 'run-v6-pop'");
+
+        // Run upgrade migration
+        migrationRunner.runMigration();
+
+        // 1. Verify schema migration 6 recorded
+        assertEquals(1, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM schema_migrations WHERE version = 6", Integer.class));
+
+        // 2. Verify all parent and child rows preserved intact
+        assertEquals(1, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM backtest_runs WHERE id = 'run-v6-pop'", Integer.class));
+        assertEquals(1, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM backtest_daily_equity WHERE run_id = 'run-v6-pop'", Integer.class));
+        assertEquals(1, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM backtest_orders WHERE run_id = 'run-v6-pop'", Integer.class));
+        assertEquals(1, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM backtest_events WHERE run_id = 'run-v6-pop'", Integer.class));
+        assertEquals(1, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM backtest_holdings WHERE run_id = 'run-v6-pop'", Integer.class));
+
+        // 3. Verify foreign keys on backtest_runs include composite dataset_listings
+        List<Map<String, Object>> fks = jdbcTemplate.queryForList("PRAGMA foreign_key_list(backtest_runs)");
+        long distinctListingFks = fks.stream()
+                .filter(row -> "dataset_listings".equals(row.get("table")))
+                .map(row -> row.get("id"))
+                .distinct()
+                .count();
+        assertEquals(2, distinctListingFks, "Must have 2 composite foreign keys referencing dataset_listings");
+        long totalListingFkColumns = fks.stream()
+                .filter(row -> "dataset_listings".equals(row.get("table")))
+                .count();
+        assertEquals(4, totalListingFkColumns, "Each composite foreign key must map 2 columns");
+
+        // 4. Verify inserting an orphaned listing into backtest_runs is rejected
+        assertThrows(Exception.class, () -> jdbcTemplate.update(
+                "INSERT INTO backtest_runs (id, owner_id, idempotency_key, canonical_hash, strategy_id, strategy_version, dataset_id, candidate_listing_id, benchmark_listing_id, initial_cash, currency, evaluation_cutoff, requested_start_date, requested_end_date, commission_per_fill, spread_bps, slippage_bps, status, progress_pct, config_json, created_at, updated_at) " +
+                        "VALUES ('run-orphaned', 'default', 'idemp-orphan', 'hash-orphan', 'buy_and_hold', '1.0', 'ds-v6-test', 'cand-nonexistent', 'bm-1', '10000.00', 'EUR', '2026-01-01T20:00:00Z', '2026-01-02', '2026-01-05', '1.00', '10', '5', 'QUEUED', 0, '{}', '2026-09-12T00:00:00Z', '2026-09-12T00:00:00Z')"
+        ));
+    }
+
+    @Test
+    void v6Upgrade_refusesInconsistentExistingBacktests() {
+        String v1 = resource("db/migration/V1__init_m1b_schema.sql");
+        String v2 = resource("db/migration/V2__m1b_review_fixes.sql");
+        String v3 = resource("db/migration/V3__historical_datasets_and_import.sql");
+        String v4 = resource("db/migration/V4__backtest_engine.sql");
+        String v5 = resource("db/migration/V5__backtest_engine_hardening.sql");
+
+        for (String stmt : SqlScriptParser.parseStatements(v1)) { jdbcTemplate.execute(stmt); }
+        for (String stmt : SqlScriptParser.parseStatements(v2)) { jdbcTemplate.execute(stmt); }
+        for (String stmt : SqlScriptParser.parseStatements(v3)) { jdbcTemplate.execute(stmt); }
+        for (String stmt : SqlScriptParser.parseStatements(v4)) { jdbcTemplate.execute(stmt); }
+
+        String now = "2026-09-12T00:00:00Z";
+        jdbcTemplate.update("INSERT INTO schema_migrations VALUES (1, 'v1', ?, ?, '2.0.0-M3')", migrationRunner.computeV1MigrationChecksum(v1), now);
+        jdbcTemplate.update("INSERT INTO schema_migrations VALUES (2, 'v2', ?, ?, '2.0.0-M3')", migrationRunner.computeSqlChecksum(v2), now);
+        jdbcTemplate.update("INSERT INTO schema_migrations VALUES (3, 'v3', ?, ?, '2.0.0-M3')", migrationRunner.computeSqlChecksum(v3), now);
+        jdbcTemplate.update("INSERT INTO schema_migrations VALUES (4, 'v4', ?, ?, '2.0.0-M3')", migrationRunner.computeSqlChecksum(v4), now);
+
+        // Seed dataset but do NOT include the candidate listing in dataset_listings
+        jdbcTemplate.update("INSERT INTO datasets (id, name, source, classification, schema_version, parser_version, input_checksum, content_checksum, manifest_json, coverage_start, coverage_end, validation_status, validation_findings_json, quality_label, imported_at, created_at) " +
+                "VALUES ('ds-inconsistent', 'Dataset Bad', 'TEST', 'HISTORICAL', 'v1', 'p1', 'in-cs', 'out-cs', '{}', '2026-01-01', '2026-01-10', 'VALID', '[]', 'VERIFIED', ?, ?)", now, now);
+        jdbcTemplate.update("INSERT INTO dataset_listings (dataset_id, listing_id, instrument_id, symbol, quote_currency, calendar_id) " +
+                "VALUES ('ds-inconsistent', 'bm-only', 'inst-2', 'BM', 'EUR', 'XETR')");
+
+        // Insert an inconsistent run while on V4 schema (before V5 trigger was applied)
+        jdbcTemplate.update("INSERT INTO backtest_runs (id, owner_id, idempotency_key, canonical_hash, strategy_id, strategy_version, dataset_id, candidate_listing_id, benchmark_listing_id, initial_cash, currency, evaluation_cutoff, requested_start_date, requested_end_date, commission_per_fill, spread_bps, slippage_bps, status, progress_pct, config_json, created_at, updated_at) " +
+                "VALUES ('run-bad-listings', 'default', 'idemp-bad', 'hash-bad', 'buy_and_hold', '1.0', 'ds-inconsistent', 'cand-missing', 'bm-only', '10000.00', 'EUR', '2026-01-01T20:00:00Z', '2026-01-02', '2026-01-05', '1.00', '10', '5', 'COMPLETED', 100, '{}', ?, ?)", now, now);
+
+        // Now apply V5
+        for (String stmt : SqlScriptParser.parseStatements(v5)) { jdbcTemplate.execute(stmt); }
+        jdbcTemplate.update("INSERT INTO schema_migrations VALUES (5, 'v5', ?, ?, '2.0.0-M3')", migrationRunner.computeSqlChecksum(v5), now);
+
+        // Attempting to upgrade to V6 must fail during pre-migration scan!
+        Exception ex = assertThrows(Exception.class, migrationRunner::runMigration);
+        assertTrue(ex.getMessage().contains("invalid candidate or benchmark listing") ||
+                (ex.getCause() != null && ex.getCause().getMessage().contains("invalid candidate or benchmark listing")));
     }
 
     private String resource(String name) {

@@ -59,24 +59,71 @@ public class BacktestDataReader {
         }
 
         public BigDecimal splitRatio() {
-            if (splitNumerator == null || splitDenominator == null || splitDenominator <= 0) {
-                return BigDecimal.ONE;
+            if (splitNumerator == null || splitDenominator == null || splitDenominator <= 0 || splitNumerator <= 0) {
+                throw new IllegalArgumentException("Invalid split ratio for action " + actionId + ": numerator and denominator must be positive integers");
             }
-            return BigDecimal.valueOf(splitNumerator).divide(BigDecimal.valueOf(splitDenominator), 8, java.math.RoundingMode.HALF_EVEN);
+            try {
+                BigDecimal ratio = BigDecimal.valueOf(splitNumerator).divide(BigDecimal.valueOf(splitDenominator));
+                if (ratio.scale() > 8) {
+                    throw new IllegalArgumentException("Unsupported split precision for action " + actionId + ": ratio " + splitNumerator + "/" + splitDenominator + " exceeds supported scale of 8");
+                }
+                return ratio;
+            } catch (ArithmeticException e) {
+                throw new IllegalArgumentException("Unsupported split precision for action " + actionId + ": ratio " + splitNumerator + "/" + splitDenominator + " cannot be represented exactly without rounding", e);
+            }
         }
     }
 
     public record LoadedBacktestData(
             String datasetId,
             String calendarId,
+            String datasetInputChecksum,
+            String datasetContentChecksum,
+            String parserVersion,
+            String schemaVersion,
+            String classification,
+            String coverageStart,
+            String coverageEnd,
+            String selectedEvaluationSession,
+            String selectedEndSession,
             String effectiveStartDate,
             String effectiveEndDate,
+            SessionRecord evaluationSession,
             List<SessionRecord> tradingSessions,
             Map<String, Map<String, BarRecord>> barsByListingAndDate, // listingId -> date -> BarRecord
             Map<String, List<ActionRecord>> actionsByListing // listingId -> List<ActionRecord>
     ) {}
 
-    public LoadedBacktestData loadAndValidateData(
+    public record PreflightValidationResult(
+            String datasetId,
+            String calendarId,
+            String calendarTimezone,
+            String inputChecksum,
+            String contentChecksum,
+            String parserVersion,
+            String schemaVersion,
+            String classification,
+            String coverageStart,
+            String coverageEnd,
+            String requestedStartDate,
+            String requestedEndDate,
+            String effectiveStartDate,
+            String effectiveEndDate,
+            SessionRecord evaluationSession,
+            SessionRecord endSession,
+            List<SessionRecord> allSessions,
+            List<SessionRecord> runTradingSessions
+    ) {
+        public String selectedEvaluationSession() {
+            return evaluationSession != null ? evaluationSession.sessionDate() : requestedStartDate;
+        }
+
+        public String selectedEndSession() {
+            return endSession != null ? endSession.sessionDate() : requestedEndDate;
+        }
+    }
+
+    public PreflightValidationResult validatePreflight(
             String datasetId,
             String candidateListingId,
             String benchmarkListingId,
@@ -86,16 +133,26 @@ public class BacktestDataReader {
     ) {
         // 1. Verify dataset exists and is validated
         List<Map<String, Object>> dsRows = jdbcTemplate.queryForList(
-                "SELECT id, validation_status, quality_label, coverage_start, coverage_end FROM datasets WHERE id = ?",
+                "SELECT id, validation_status, quality_label, classification, schema_version, parser_version, " +
+                        "input_checksum, content_checksum, coverage_start, coverage_end FROM datasets WHERE id = ?",
                 datasetId
         );
         if (dsRows.isEmpty()) {
             throw new IllegalArgumentException("Dataset not found: " + datasetId);
         }
-        String status = (String) dsRows.get(0).get("validation_status");
+        Map<String, Object> dsRow = dsRows.get(0);
+        String status = (String) dsRow.get("validation_status");
         if (!"VALID".equalsIgnoreCase(status) && !"VALIDATED".equalsIgnoreCase(status)) {
             throw new IllegalArgumentException("Dataset " + datasetId + " is not VALID (current status: " + status + ")");
         }
+
+        String classification = (String) dsRow.get("classification");
+        String schemaVersion = (String) dsRow.get("schema_version");
+        String parserVersion = (String) dsRow.get("parser_version");
+        String inputChecksum = (String) dsRow.get("input_checksum");
+        String contentChecksum = (String) dsRow.get("content_checksum");
+        String coverageStart = (String) dsRow.get("coverage_start");
+        String coverageEnd = (String) dsRow.get("coverage_end");
 
         // 2. Verify candidate & benchmark listings exist in this dataset
         List<Map<String, Object>> candidateListings = jdbcTemplate.queryForList(
@@ -141,18 +198,96 @@ public class BacktestDataReader {
             throw new IllegalArgumentException("No calendar sessions found for dataset " + datasetId + " and calendar " + candCal);
         }
 
-        // 4. Find first trading session strictly after evaluationCutoff
-        // Cutoff can be date or ISO instant. E.g. "2024-01-31T23:59:59Z" -> compare open_time > cutoff
+        // 4. Strict date parsing and Month-end evaluation session validation
+        java.time.LocalDate reqStart;
+        java.time.LocalDate reqEnd;
+        try {
+            reqStart = java.time.LocalDate.parse(requestedStartDate.trim());
+            reqEnd = java.time.LocalDate.parse(requestedEndDate.trim());
+        } catch (Exception e) {
+            throw new IllegalArgumentException("Invalid date format: " + e.getMessage(), e);
+        }
+
+        if (reqStart.isAfter(reqEnd)) {
+            throw new IllegalArgumentException("Requested start date " + requestedStartDate + " is after requested end date " + requestedEndDate);
+        }
+
+        SessionRecord evalSession = null;
+        for (SessionRecord s : allSessions) {
+            if (s.sessionDate().equals(requestedStartDate.trim()) && s.isTrading()) {
+                evalSession = s;
+                break;
+            }
+        }
+        if (evalSession == null) {
+            throw new IllegalArgumentException("Requested start date " + requestedStartDate + " is not a trading session in dataset calendar " + candCal);
+        }
+
+        // Month-end requirement: ensure no later trading session exists in that same calendar year & month
+        for (SessionRecord s : allSessions) {
+            if (s.isTrading()) {
+                java.time.LocalDate sDate = java.time.LocalDate.parse(s.sessionDate());
+                if (sDate.getYear() == reqStart.getYear() && sDate.getMonth() == reqStart.getMonth() && sDate.isAfter(reqStart)) {
+                    throw new IllegalArgumentException("Requested start date " + requestedStartDate +
+                            " is not a completed month-end session (later trading session exists on " + s.sessionDate() + ")");
+                }
+            }
+        }
+
+        // 5. Cutoff validation against evaluation session close and required observation availability
+        java.time.Instant cutoffInstant;
+        try {
+            cutoffInstant = java.time.Instant.parse(evaluationCutoff.trim());
+        } catch (Exception e) {
+            cutoffInstant = java.time.LocalDate.parse(evaluationCutoff.trim()).atTime(23, 59, 59).atZone(java.time.ZoneOffset.UTC).toInstant();
+        }
+
+        java.time.Instant evalSessionClose;
+        String closeStr = evalSession.closeTime().trim();
+        if (closeStr.contains("T")) {
+            evalSessionClose = java.time.Instant.parse(closeStr);
+        } else {
+            evalSessionClose = java.time.Instant.parse(evalSession.sessionDate() + "T" + closeStr);
+        }
+        if (cutoffInstant.isBefore(evalSessionClose)) {
+            throw new IllegalArgumentException("Evaluation cutoff " + evaluationCutoff +
+                    " is before evaluation session close time " + evalSession.closeTime() + "; completed observations unavailable");
+        }
+
+        // Validate that evaluation session bars exist for both candidate and benchmark, and were available by cutoff
+        List<String> evalListings = List.of(candidateListingId, benchmarkListingId);
+        for (String lid : evalListings) {
+            List<Map<String, Object>> evalBarRows = jdbcTemplate.queryForList(
+                    "SELECT available_at FROM historical_bars WHERE dataset_id = ? AND listing_id = ? AND session_date = ?",
+                    datasetId, lid, evalSession.sessionDate()
+            );
+            if (evalBarRows.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "Missing evaluation bar on session " + evalSession.sessionDate() + " for listing " + lid
+                );
+            }
+            String availAtStr = (String) evalBarRows.get(0).get("available_at");
+            if (availAtStr == null || availAtStr.isBlank()) {
+                throw new IllegalArgumentException(
+                        "Evaluation bar for listing " + lid + " on " + evalSession.sessionDate() + " has null available_at"
+                );
+            }
+            java.time.Instant availInstant = java.time.Instant.parse(availAtStr);
+            if (availInstant.isAfter(cutoffInstant)) {
+                throw new IllegalArgumentException(
+                        "Evaluation bar for listing " + lid + " on " + evalSession.sessionDate() +
+                                " was not available until " + availAtStr +
+                                ", which is strictly after evaluation cutoff " + cutoffInstant + "; completed observations unavailable"
+                );
+            }
+        }
+
+        // 6. Find first trading session strictly after evaluationCutoff
         SessionRecord effectiveStartSession = null;
         for (SessionRecord session : allSessions) {
             if (!session.isTrading()) continue;
-            // session is eligible if session.open_time is strictly after evaluationCutoff,
-            // or if session_date > cutoff's date
-            String cutoffDate = evaluationCutoff.length() >= 10 ? evaluationCutoff.substring(0, 10) : evaluationCutoff;
-            if (session.sessionDate.compareTo(cutoffDate) > 0) {
-                effectiveStartSession = session;
-                break;
-            } else if (session.sessionDate.equals(cutoffDate) && session.openTime != null && session.openTime.compareTo(evaluationCutoff) > 0) {
+            java.time.Instant sessionOpen = java.time.Instant.parse(session.openTime());
+            if (sessionOpen.isAfter(cutoffInstant)) {
                 effectiveStartSession = session;
                 break;
             }
@@ -162,36 +297,112 @@ public class BacktestDataReader {
             throw new IllegalArgumentException("No eligible trading session found strictly after evaluation cutoff " + evaluationCutoff);
         }
 
-        String effectiveStartDate = effectiveStartSession.sessionDate();
+        // 7. Validate requestedEndDate is an explicit trading session
+        SessionRecord endSession = null;
+        for (SessionRecord s : allSessions) {
+            if (s.sessionDate().equals(requestedEndDate.trim()) && s.isTrading()) {
+                endSession = s;
+                break;
+            }
+        }
+        if (endSession == null) {
+            throw new IllegalArgumentException("Requested end date " + requestedEndDate + " is not an explicit trading session in dataset calendar " + candCal);
+        }
 
-        // 5. Select all trading sessions between effectiveStartDate and requestedEndDate
+        java.time.LocalDate effStartDate = java.time.LocalDate.parse(effectiveStartSession.sessionDate());
+        if (effStartDate.isAfter(reqEnd)) {
+            throw new IllegalArgumentException("Effective start session " + effectiveStartSession.sessionDate() + " is after requested end date " + requestedEndDate);
+        }
+
+        // 8. Select all trading sessions between effectiveStartDate and requestedEndDate
         List<SessionRecord> runTradingSessions = new ArrayList<>();
         for (SessionRecord session : allSessions) {
-            if (session.sessionDate().compareTo(effectiveStartDate) >= 0 &&
-                    session.sessionDate().compareTo(requestedEndDate) <= 0) {
-                if (session.isTrading()) {
+            if (session.isTrading()) {
+                java.time.LocalDate sDate = java.time.LocalDate.parse(session.sessionDate());
+                if (!sDate.isBefore(effStartDate) && !sDate.isAfter(reqEnd)) {
                     runTradingSessions.add(session);
                 }
             }
         }
 
         if (runTradingSessions.isEmpty()) {
-            throw new IllegalArgumentException("No trading sessions found in effective window [" + effectiveStartDate + ", " + requestedEndDate + "]");
+            throw new IllegalArgumentException("No trading sessions found in effective window [" + effectiveStartSession.sessionDate() + ", " + requestedEndDate + "]");
         }
 
-        String effectiveEndDate = runTradingSessions.get(runTradingSessions.size() - 1).sessionDate();
+        String effectiveStartDate = effectiveStartSession.sessionDate();
+        String effectiveEndDate = endSession.sessionDate();
 
-        // 6. Load all historical bars for candidate and benchmark
+        return new PreflightValidationResult(
+                datasetId,
+                candCal,
+                "UTC",
+                inputChecksum,
+                contentChecksum,
+                parserVersion,
+                schemaVersion,
+                classification,
+                coverageStart,
+                coverageEnd,
+                requestedStartDate.trim(),
+                requestedEndDate.trim(),
+                effectiveStartDate,
+                effectiveEndDate,
+                evalSession,
+                endSession,
+                allSessions,
+                runTradingSessions
+        );
+    }
+
+    public LoadedBacktestData loadAndValidateData(
+            String datasetId,
+            String candidateListingId,
+            String benchmarkListingId,
+            String evaluationCutoff,
+            String requestedStartDate,
+            String requestedEndDate
+    ) {
+        PreflightValidationResult preflight = validatePreflight(
+                datasetId,
+                candidateListingId,
+                benchmarkListingId,
+                evaluationCutoff,
+                requestedStartDate,
+                requestedEndDate
+        );
+
+        String candCal = preflight.calendarId();
+        String inputChecksum = preflight.inputChecksum();
+        String contentChecksum = preflight.contentChecksum();
+        String parserVersion = preflight.parserVersion();
+        String schemaVersion = preflight.schemaVersion();
+        String classification = preflight.classification();
+        String coverageStart = preflight.coverageStart();
+        String coverageEnd = preflight.coverageEnd();
+        String effectiveStartDate = preflight.effectiveStartDate();
+        String effectiveEndDate = preflight.effectiveEndDate();
+        SessionRecord evalSession = preflight.evaluationSession();
+        List<SessionRecord> allSessions = preflight.allSessions();
+        List<SessionRecord> runTradingSessions = preflight.runTradingSessions();
+
+        // 9. Load all historical bars for candidate and benchmark with parameterized query
         Set<String> listingsToLoad = new HashSet<>(Arrays.asList(candidateListingId, benchmarkListingId));
         Map<String, Map<String, BarRecord>> barsByListingAndDate = new HashMap<>();
         for (String listingId : listingsToLoad) {
             barsByListingAndDate.put(listingId, new HashMap<>());
         }
 
-        String inListings = String.join("','", listingsToLoad);
+        List<String> listingList = new ArrayList<>(listingsToLoad);
+        String barPlaceholders = String.join(",", Collections.nCopies(listingList.size(), "?"));
+        List<Object> barParams = new ArrayList<>();
+        barParams.add(datasetId);
+        barParams.addAll(listingList);
+        barParams.add(evalSession.sessionDate());
+        barParams.add(effectiveEndDate);
+
         jdbcTemplate.query(
                 "SELECT listing_id, session_date, open, high, low, close, volume, available_at FROM historical_bars " +
-                        "WHERE dataset_id = ? AND listing_id IN ('" + inListings + "') " +
+                        "WHERE dataset_id = ? AND listing_id IN (" + barPlaceholders + ") " +
                         "AND session_date >= ? AND session_date <= ? ORDER BY session_date ASC",
                 rs -> {
                     String lid = rs.getString("listing_id");
@@ -208,10 +419,19 @@ public class BacktestDataReader {
                     );
                     barsByListingAndDate.get(lid).put(sDate, bar);
                 },
-                datasetId, effectiveStartDate, effectiveEndDate
+                barParams.toArray()
         );
 
-        // Verify that every trading session has a bar for each listing
+        // Verify that evaluation session has a bar for each listing
+        for (String listingId : listingsToLoad) {
+            if (!barsByListingAndDate.get(listingId).containsKey(evalSession.sessionDate())) {
+                throw new IllegalArgumentException(
+                        "Missing evaluation bar for listing " + listingId + " on evaluation session " + evalSession.sessionDate()
+                );
+            }
+        }
+
+        // Verify that every trading session in runTradingSessions has a bar for each listing
         for (SessionRecord session : runTradingSessions) {
             String sDate = session.sessionDate();
             for (String listingId : listingsToLoad) {
@@ -223,17 +443,22 @@ public class BacktestDataReader {
             }
         }
 
-        // 7. Load all corporate actions for candidate and benchmark
+        // 10. Load all corporate actions for candidate and benchmark with parameterized query
         Map<String, List<ActionRecord>> actionsByListing = new HashMap<>();
         for (String listingId : listingsToLoad) {
             actionsByListing.put(listingId, new ArrayList<>());
         }
 
+        String actionPlaceholders = String.join(",", Collections.nCopies(listingList.size(), "?"));
+        List<Object> actionParams = new ArrayList<>();
+        actionParams.add(datasetId);
+        actionParams.addAll(listingList);
+
         jdbcTemplate.query(
                 "SELECT action_id, listing_id, action_type, effective_date, available_at, " +
                         "split_ratio_numerator, split_ratio_denominator, distribution_amount, distribution_currency, " +
                         "payment_date, payment_instant FROM historical_actions " +
-                        "WHERE dataset_id = ? AND listing_id IN ('" + inListings + "') " +
+                        "WHERE dataset_id = ? AND listing_id IN (" + actionPlaceholders + ") " +
                         "ORDER BY effective_date ASC, action_id ASC",
                 rs -> {
                     String lid = rs.getString("listing_id");
@@ -252,20 +477,38 @@ public class BacktestDataReader {
                     );
                     actionsByListing.get(lid).add(action);
                 },
-                datasetId
+                actionParams.toArray()
         );
 
-        // Verify action availability constraints:
-        // For any action effective on or after effectiveStartDate and <= effectiveEndDate:
-        // available_at must be known before trading starts on effective_date
+        // Strict action validation
         for (String listingId : listingsToLoad) {
             for (ActionRecord action : actionsByListing.get(listingId)) {
-                if (action.effectiveDate().compareTo(effectiveStartDate) >= 0 &&
+                if (action.isSplit()) {
+                    action.splitRatio(); // Will throw IllegalArgumentException if numerator or denominator are invalid or unrepresentable
+                } else if (action.isDistribution()) {
+                    if (action.distributionCurrency() == null || !"EUR".equalsIgnoreCase(action.distributionCurrency())) {
+                        throw new IllegalArgumentException("Distribution action " + action.actionId() + " must have EUR currency, got: " + action.distributionCurrency());
+                    }
+                    if (action.distributionAmount() == null || action.distributionAmount().compareTo(BigDecimal.ZERO) <= 0) {
+                        throw new IllegalArgumentException("Distribution action " + action.actionId() + " must have positive distribution amount");
+                    }
+                    if ((action.paymentDate() == null || action.paymentDate().isBlank()) &&
+                            (action.paymentInstant() == null || action.paymentInstant().isBlank())) {
+                        throw new IllegalArgumentException("Distribution action " + action.actionId() + " must have payment_date or payment_instant specified");
+                    }
+                }
+
+                // Verify action availability constraints for actions within the run window:
+                if (action.effectiveDate().compareTo(evalSession.sessionDate()) >= 0 &&
                         action.effectiveDate().compareTo(effectiveEndDate) <= 0) {
-                    // Find session open time
-                    for (SessionRecord session : runTradingSessions) {
-                        if (session.sessionDate().equals(action.effectiveDate())) {
-                            if (action.availableAt() != null && action.availableAt().compareTo(session.openTime()) > 0) {
+                    if (action.availableAt() == null || action.availableAt().isBlank()) {
+                        throw new IllegalArgumentException("Corporate action " + action.actionId() + " effective on " + action.effectiveDate() + " has null available_at");
+                    }
+                    java.time.Instant actionAvail = java.time.Instant.parse(action.availableAt());
+                    for (SessionRecord session : allSessions) {
+                        if (session.sessionDate().equals(action.effectiveDate()) && session.isTrading()) {
+                            java.time.Instant sessionOpen = java.time.Instant.parse(session.openTime());
+                            if (actionAvail.isAfter(sessionOpen)) {
                                 throw new IllegalArgumentException(
                                         "Corporate action " + action.actionId() + " effective on " + action.effectiveDate() +
                                                 " was not available until " + action.availableAt() +
@@ -282,8 +525,18 @@ public class BacktestDataReader {
         return new LoadedBacktestData(
                 datasetId,
                 candCal,
+                inputChecksum,
+                contentChecksum,
+                parserVersion,
+                schemaVersion,
+                classification,
+                coverageStart,
+                coverageEnd,
+                requestedStartDate.trim(),
+                requestedEndDate.trim(),
                 effectiveStartDate,
                 effectiveEndDate,
+                evalSession,
                 runTradingSessions,
                 barsByListingAndDate,
                 actionsByListing

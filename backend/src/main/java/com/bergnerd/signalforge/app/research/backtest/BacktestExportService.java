@@ -6,10 +6,12 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
+import java.io.*;
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
-import java.util.*;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
@@ -21,10 +23,24 @@ public class BacktestExportService {
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
 
-    public byte[] generateExportZip(String runId) throws IOException {
-        // 1. Fetch backtest run
+    public void validateExportable(String runId, String ownerId) {
+        String uid = (ownerId == null || ownerId.isBlank()) ? "default" : ownerId;
         List<Map<String, Object>> runRows = jdbcTemplate.queryForList(
-                "SELECT * FROM backtest_runs WHERE id = ?", runId
+                "SELECT id, status FROM backtest_runs WHERE id = ? AND owner_id = ?", runId, uid
+        );
+        if (runRows.isEmpty()) {
+            throw new IllegalArgumentException("Backtest run not found: " + runId);
+        }
+        String status = (String) runRows.get(0).get("status");
+        if (!"COMPLETED".equalsIgnoreCase(status)) {
+            throw new IllegalStateException("Cannot export incomplete backtest run (current status: " + status + ")");
+        }
+    }
+
+    public void streamExportZip(String runId, String ownerId, OutputStream outputStream) throws IOException {
+        String uid = (ownerId == null || ownerId.isBlank()) ? "default" : ownerId;
+        List<Map<String, Object>> runRows = jdbcTemplate.queryForList(
+                "SELECT * FROM backtest_runs WHERE id = ? AND owner_id = ?", runId, uid
         );
         if (runRows.isEmpty()) {
             throw new IllegalArgumentException("Backtest run not found: " + runId);
@@ -35,161 +51,252 @@ public class BacktestExportService {
             throw new IllegalStateException("Cannot export incomplete backtest run (current status: " + status + ")");
         }
 
-        ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        try (ZipOutputStream zos = new ZipOutputStream(baos, StandardCharsets.UTF_8)) {
+        // Bounded export preflight check: ensure row counts do not exceed bounds before streaming response bytes
+        int equityCount = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM backtest_daily_equity WHERE run_id = ?", Integer.class, runId);
+        int eventsCount = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM backtest_events WHERE run_id = ?", Integer.class, runId);
+        int ordersCount = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM backtest_orders WHERE run_id = ?", Integer.class, runId);
+        int holdingsCount = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM backtest_holdings WHERE run_id = ?", Integer.class, runId);
 
-            // 1. manifest.json
+        final int MAX_SERIES_ROWS = 100000;
+        final int MAX_HOLDINGS_ROWS = 10000;
+        if (equityCount > MAX_SERIES_ROWS || eventsCount > MAX_SERIES_ROWS || ordersCount > MAX_SERIES_ROWS || holdingsCount > MAX_HOLDINGS_ROWS) {
+            throw new IllegalArgumentException("Export bounds exceeded: run has " +
+                    Math.max(Math.max(equityCount, eventsCount), Math.max(ordersCount, holdingsCount)) +
+                    " rows, exceeding maximum export limit of " + MAX_SERIES_ROWS);
+        }
+
+        try (ZipOutputStream zos = new ZipOutputStream(outputStream, StandardCharsets.UTF_8)) {
+            Writer writer = new OutputStreamWriter(zos, StandardCharsets.UTF_8);
+
+            // 1. manifest.json: built verbatim from frozen run metadata and config snapshot
             Map<String, Object> manifest = new LinkedHashMap<>();
             manifest.put("runId", run.get("id"));
             manifest.put("ownerId", run.get("owner_id"));
             manifest.put("idempotencyKey", run.get("idempotency_key"));
             manifest.put("canonicalHash", run.get("canonical_hash"));
-            manifest.put("engineVersion", "2.0.0-M3");
-            manifest.put("accountingPolicy", "v2-decimal-grammar-half-even");
-            manifest.put("strategyId", run.get("strategy_id"));
-            manifest.put("strategyVersion", run.get("strategy_version"));
-            manifest.put("datasetId", run.get("dataset_id"));
-            manifest.put("candidateListingId", run.get("candidate_listing_id"));
-            manifest.put("benchmarkListingId", run.get("benchmark_listing_id"));
-            manifest.put("currency", run.get("currency"));
-            manifest.put("initialCash", run.get("initial_cash"));
-            manifest.put("evaluationCutoff", run.get("evaluation_cutoff"));
-            manifest.put("requestedStartDate", run.get("requested_start_date"));
-            manifest.put("requestedEndDate", run.get("requested_end_date"));
-            manifest.put("effectiveStartDate", run.get("effective_start_date"));
-            manifest.put("effectiveEndDate", run.get("effective_end_date"));
-            manifest.put("commissionPerFill", run.get("commission_per_fill"));
-            manifest.put("spreadBps", run.get("spread_bps"));
-            manifest.put("slippageBps", run.get("slippage_bps"));
-            manifest.put("createdAt", run.get("created_at"));
-            manifest.put("completedAt", run.get("completed_at"));
+
+            String configJson = (String) run.get("config_json");
+            if (configJson != null && !configJson.isBlank()) {
+                try {
+                    BacktestDtos.BacktestNormalizedConfig cfg = objectMapper.readValue(
+                            configJson, BacktestDtos.BacktestNormalizedConfig.class
+                    );
+                    manifest.put("strategyId", cfg.strategyId());
+                    manifest.put("strategyVersion", cfg.strategyVersion());
+                    manifest.put("datasetId", cfg.datasetId());
+                    manifest.put("datasetInputChecksum", cfg.datasetInputChecksum());
+                    manifest.put("datasetContentChecksum", cfg.datasetContentChecksum());
+                    manifest.put("parserVersion", cfg.parserVersion());
+                    manifest.put("schemaVersion", cfg.schemaVersion());
+                    manifest.put("calendarId", cfg.calendarId());
+                    manifest.put("calendarTimezone", cfg.calendarTimezone());
+                    manifest.put("coverageStart", cfg.coverageStart());
+                    manifest.put("coverageEnd", cfg.coverageEnd());
+                    manifest.put("candidateListingId", cfg.candidateListingId());
+                    manifest.put("benchmarkListingId", cfg.benchmarkListingId());
+                    manifest.put("quoteCurrency", cfg.quoteCurrency());
+                    manifest.put("initialCash", cfg.initialCash());
+                    manifest.put("evaluationCutoff", cfg.evaluationCutoff());
+                    manifest.put("selectedEvaluationSession", cfg.selectedEvaluationSession());
+                    manifest.put("selectedEndSession", cfg.selectedEndSession());
+                    manifest.put("requestedStartDate", cfg.requestedStartDate());
+                    manifest.put("requestedEndDate", cfg.requestedEndDate());
+                    manifest.put("effectiveStartDate", cfg.effectiveStartDate());
+                    manifest.put("effectiveEndDate", cfg.effectiveEndDate());
+                    manifest.put("commissionPerFill", cfg.commissionPerFill());
+                    manifest.put("spreadBps", cfg.spreadBps());
+                    manifest.put("slippageBps", cfg.slippageBps());
+                    manifest.put("costModelVersion", cfg.costModelVersion());
+                    manifest.put("accountingPolicy", cfg.accountingVersion());
+                    manifest.put("executionModelVersion", cfg.executionModelVersion());
+                    manifest.put("engineVersion", cfg.engineVersion());
+                    manifest.put("sourceCommit", cfg.sourceCommit());
+                    manifest.put("dirtyFlag", cfg.dirtyFlag());
+                    manifest.put("classification", cfg.classification());
+                    manifest.put("availabilityAssumptions", cfg.availabilityAssumptions());
+                } catch (Exception e) {
+                    log.warn("Failed to parse config_json for manifest, falling back to raw fields", e);
+                }
+            }
+
+            manifest.putIfAbsent("strategyId", run.get("strategy_id"));
+            manifest.putIfAbsent("strategyVersion", run.get("strategy_version"));
+            manifest.putIfAbsent("datasetId", run.get("dataset_id"));
+            manifest.putIfAbsent("candidateListingId", run.get("candidate_listing_id"));
+            manifest.putIfAbsent("benchmarkListingId", run.get("benchmark_listing_id"));
+            manifest.putIfAbsent("initialCash", run.get("initial_cash"));
+            manifest.putIfAbsent("currency", run.get("currency"));
+            manifest.putIfAbsent("createdAt", run.get("created_at"));
+            manifest.putIfAbsent("completedAt", run.get("completed_at"));
             manifest.put("endLiquidationConvention", "MARK_TO_MARKET_EXCLUDES_HYPOTHETICAL_LIQUIDATION_COSTS");
+            manifest.put("turnoverFormula", "TOTAL_PURCHASES_DIVIDED_BY_AVERAGE_EQUITY");
+            manifest.put("receivableTreatment", "CONTRIBUTES_TO_EQUITY_UNSPENDABLE_UNTIL_PAYMENT");
             manifest.put("dataWarning", "SYNTHETIC_DATA_TESTS_SOFTWARE_BEHAVIOR_ONLY_NOT_REAL_WORLD_PERFORMANCE");
 
-            addZipEntry(zos, "manifest.json", objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(manifest));
+            zos.putNextEntry(new ZipEntry("manifest.json"));
+            writer.write(objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(manifest));
+            writer.flush();
+            zos.closeEntry();
 
             // 2. summary.json
             String summaryJson = (String) run.get("summary_json");
-            if (summaryJson != null) {
+            if (summaryJson != null && !summaryJson.isBlank()) {
+                zos.putNextEntry(new ZipEntry("summary.json"));
                 Object summaryObj = objectMapper.readValue(summaryJson, Object.class);
-                addZipEntry(zos, "summary.json", objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(summaryObj));
+                writer.write(objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(summaryObj));
+                writer.flush();
+                zos.closeEntry();
             }
 
-            // 3. equity_series.csv
-            StringBuilder eqCsv = new StringBuilder();
-            eqCsv.append("series_type,session_date,cash,holdings_value,receivables,total_equity,daily_return,drawdown,peak_equity,units,cost_basis,raw_close\n");
+            // 3. equity_series.csv (streamed directly)
+            zos.putNextEntry(new ZipEntry("equity_series.csv"));
+            writer.write("series_type,session_date,cash,holdings_value,receivables,total_equity,daily_return,drawdown,peak_equity,units,cost_basis,raw_close\n");
             jdbcTemplate.query(
                     "SELECT series_type, session_date, cash, holdings_value, receivables, total_equity, " +
                             "daily_return, drawdown, peak_equity, units, cost_basis, raw_close " +
                             "FROM backtest_daily_equity WHERE run_id = ? ORDER BY session_date ASC, series_type ASC",
                     rs -> {
-                        eqCsv.append(escapeCsv(rs.getString("series_type"))).append(",")
-                                .append(escapeCsv(rs.getString("session_date"))).append(",")
-                                .append(escapeCsv(rs.getString("cash"))).append(",")
-                                .append(escapeCsv(rs.getString("holdings_value"))).append(",")
-                                .append(escapeCsv(rs.getString("receivables"))).append(",")
-                                .append(escapeCsv(rs.getString("total_equity"))).append(",")
-                                .append(rs.getObject("daily_return") != null ? rs.getString("daily_return") : "").append(",")
-                                .append(escapeCsv(rs.getString("drawdown"))).append(",")
-                                .append(escapeCsv(rs.getString("peak_equity"))).append(",")
-                                .append(escapeCsv(rs.getString("units"))).append(",")
-                                .append(escapeCsv(rs.getString("cost_basis"))).append(",")
-                                .append(escapeCsv(rs.getString("raw_close"))).append("\n");
+                        try {
+                            writer.write(escapeCsvText(rs.getString("series_type")) + ",");
+                            writer.write(formatNumeric(rs.getString("session_date")) + ",");
+                            writer.write(formatNumeric(rs.getString("cash")) + ",");
+                            writer.write(formatNumeric(rs.getString("holdings_value")) + ",");
+                            writer.write(formatNumeric(rs.getString("receivables")) + ",");
+                            writer.write(formatNumeric(rs.getString("total_equity")) + ",");
+                            writer.write((rs.getObject("daily_return") != null ? formatNumeric(rs.getString("daily_return")) : "") + ",");
+                            writer.write(formatNumeric(rs.getString("drawdown")) + ",");
+                            writer.write(formatNumeric(rs.getString("peak_equity")) + ",");
+                            writer.write(formatNumeric(rs.getString("units")) + ",");
+                            writer.write(formatNumeric(rs.getString("cost_basis")) + ",");
+                            writer.write(formatNumeric(rs.getString("raw_close")) + "\n");
+                        } catch (IOException e) {
+                            throw new UncheckedIOException(e);
+                        }
                     },
                     runId
             );
-            addZipEntry(zos, "equity_series.csv", eqCsv.toString());
+            writer.flush();
+            zos.closeEntry();
 
-            // 4. events.csv
-            StringBuilder evCsv = new StringBuilder();
-            evCsv.append("series_type,event_seq,event_type,event_date,event_time,description,cash_delta,units_delta,basis_delta,receivable_delta\n");
+            // 4. events.csv (streamed directly)
+            zos.putNextEntry(new ZipEntry("events.csv"));
+            writer.write("series_type,event_seq,event_type,event_date,event_time,description,cash_delta,units_delta,basis_delta,receivable_delta\n");
             jdbcTemplate.query(
                     "SELECT series_type, event_seq, event_type, event_date, event_time, description, " +
                             "cash_delta, units_delta, basis_delta, receivable_delta " +
                             "FROM backtest_events WHERE run_id = ? ORDER BY event_seq ASC, series_type ASC",
                     rs -> {
-                        evCsv.append(escapeCsv(rs.getString("series_type"))).append(",")
-                                .append(rs.getInt("event_seq")).append(",")
-                                .append(escapeCsv(rs.getString("event_type"))).append(",")
-                                .append(escapeCsv(rs.getString("event_date"))).append(",")
-                                .append(escapeCsv(rs.getString("event_time"))).append(",")
-                                .append(escapeCsv(rs.getString("description"))).append(",")
-                                .append(escapeCsv(rs.getString("cash_delta"))).append(",")
-                                .append(escapeCsv(rs.getString("units_delta"))).append(",")
-                                .append(escapeCsv(rs.getString("basis_delta"))).append(",")
-                                .append(escapeCsv(rs.getString("receivable_delta"))).append("\n");
+                        try {
+                            writer.write(escapeCsvText(rs.getString("series_type")) + ",");
+                            writer.write(rs.getInt("event_seq") + ",");
+                            writer.write(escapeCsvText(rs.getString("event_type")) + ",");
+                            writer.write(formatNumeric(rs.getString("event_date")) + ",");
+                            writer.write(escapeCsvText(rs.getString("event_time")) + ",");
+                            writer.write(escapeCsvText(rs.getString("description")) + ",");
+                            writer.write(formatNumeric(rs.getString("cash_delta")) + ",");
+                            writer.write(formatNumeric(rs.getString("units_delta")) + ",");
+                            writer.write(formatNumeric(rs.getString("basis_delta")) + ",");
+                            writer.write(formatNumeric(rs.getString("receivable_delta")) + "\n");
+                        } catch (IOException e) {
+                            throw new UncheckedIOException(e);
+                        }
                     },
                     runId
             );
-            addZipEntry(zos, "events.csv", evCsv.toString());
+            writer.flush();
+            zos.closeEntry();
 
-            // 5. orders.csv
-            StringBuilder ordCsv = new StringBuilder();
-            ordCsv.append("series_type,order_type,listing_id,session_date,requested_quantity,executed_quantity,raw_open,fill_price,commission,spread_cost,slippage_cost,status,skip_reason\n");
+            // 5. orders.csv (streamed directly)
+            zos.putNextEntry(new ZipEntry("orders.csv"));
+            writer.write("series_type,order_type,listing_id,session_date,requested_quantity,executed_quantity,raw_open,fill_price,commission,spread_cost,slippage_cost,status,skip_reason\n");
             jdbcTemplate.query(
                     "SELECT series_type, order_type, listing_id, session_date, requested_quantity, executed_quantity, " +
                             "raw_open, fill_price, commission, spread_cost, slippage_cost, status, skip_reason " +
                             "FROM backtest_orders WHERE run_id = ? ORDER BY session_date ASC, series_type ASC",
                     rs -> {
-                        ordCsv.append(escapeCsv(rs.getString("series_type"))).append(",")
-                                .append(escapeCsv(rs.getString("order_type"))).append(",")
-                                .append(escapeCsv(rs.getString("listing_id"))).append(",")
-                                .append(escapeCsv(rs.getString("session_date"))).append(",")
-                                .append(escapeCsv(rs.getString("requested_quantity"))).append(",")
-                                .append(escapeCsv(rs.getString("executed_quantity"))).append(",")
-                                .append(escapeCsv(rs.getString("raw_open"))).append(",")
-                                .append(escapeCsv(rs.getString("fill_price"))).append(",")
-                                .append(escapeCsv(rs.getString("commission"))).append(",")
-                                .append(escapeCsv(rs.getString("spread_cost"))).append(",")
-                                .append(escapeCsv(rs.getString("slippage_cost"))).append(",")
-                                .append(escapeCsv(rs.getString("status"))).append(",")
-                                .append(escapeCsv(rs.getString("skip_reason"))).append("\n");
+                        try {
+                            writer.write(escapeCsvText(rs.getString("series_type")) + ",");
+                            writer.write(escapeCsvText(rs.getString("order_type")) + ",");
+                            writer.write(escapeCsvText(rs.getString("listing_id")) + ",");
+                            writer.write(formatNumeric(rs.getString("session_date")) + ",");
+                            writer.write(formatNumeric(rs.getString("requested_quantity")) + ",");
+                            writer.write(formatNumeric(rs.getString("executed_quantity")) + ",");
+                            writer.write(formatNumeric(rs.getString("raw_open")) + ",");
+                            writer.write(formatNumeric(rs.getString("fill_price")) + ",");
+                            writer.write(formatNumeric(rs.getString("commission")) + ",");
+                            writer.write(formatNumeric(rs.getString("spread_cost")) + ",");
+                            writer.write(formatNumeric(rs.getString("slippage_cost")) + ",");
+                            writer.write(escapeCsvText(rs.getString("status")) + ",");
+                            writer.write(escapeCsvText(rs.getString("skip_reason")) + "\n");
+                        } catch (IOException e) {
+                            throw new UncheckedIOException(e);
+                        }
                     },
                     runId
             );
-            addZipEntry(zos, "orders.csv", ordCsv.toString());
+            writer.flush();
+            zos.closeEntry();
 
-            // 6. holdings.csv
-            StringBuilder holdCsv = new StringBuilder();
-            holdCsv.append("series_type,listing_id,units,total_cost_basis,average_cost,current_price,market_value,unrealized_gain\n");
+            // 6. holdings.csv (streamed directly)
+            zos.putNextEntry(new ZipEntry("holdings.csv"));
+            writer.write("series_type,listing_id,units,total_cost_basis,average_cost,current_price,market_value,unrealized_gain\n");
             jdbcTemplate.query(
                     "SELECT series_type, listing_id, units, total_cost_basis, average_cost, current_price, market_value, unrealized_gain " +
                             "FROM backtest_holdings WHERE run_id = ? ORDER BY series_type ASC",
                     rs -> {
-                        holdCsv.append(escapeCsv(rs.getString("series_type"))).append(",")
-                                .append(escapeCsv(rs.getString("listing_id"))).append(",")
-                                .append(escapeCsv(rs.getString("units"))).append(",")
-                                .append(escapeCsv(rs.getString("total_cost_basis"))).append(",")
-                                .append(escapeCsv(rs.getString("average_cost"))).append(",")
-                                .append(escapeCsv(rs.getString("current_price"))).append(",")
-                                .append(escapeCsv(rs.getString("market_value"))).append(",")
-                                .append(escapeCsv(rs.getString("unrealized_gain"))).append("\n");
+                        try {
+                            writer.write(escapeCsvText(rs.getString("series_type")) + ",");
+                            writer.write(escapeCsvText(rs.getString("listing_id")) + ",");
+                            writer.write(formatNumeric(rs.getString("units")) + ",");
+                            writer.write(formatNumeric(rs.getString("total_cost_basis")) + ",");
+                            writer.write(formatNumeric(rs.getString("average_cost")) + ",");
+                            writer.write(formatNumeric(rs.getString("current_price")) + ",");
+                            writer.write(formatNumeric(rs.getString("market_value")) + ",");
+                            writer.write(formatNumeric(rs.getString("unrealized_gain")) + "\n");
+                        } catch (IOException e) {
+                            throw new UncheckedIOException(e);
+                        }
                     },
                     runId
             );
-            addZipEntry(zos, "holdings.csv", holdCsv.toString());
+            writer.flush();
+            zos.closeEntry();
         }
+    }
 
+    public byte[] generateExportZip(String runId, String ownerId) throws IOException {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        streamExportZip(runId, ownerId, baos);
         return baos.toByteArray();
     }
 
-    private void addZipEntry(ZipOutputStream zos, String name, String content) throws IOException {
-        ZipEntry entry = new ZipEntry(name);
-        zos.putNextEntry(entry);
-        zos.write(content.getBytes(StandardCharsets.UTF_8));
-        zos.closeEntry();
+    private String formatNumeric(String val) {
+        if (val == null || val.isBlank()) return "";
+        return val.trim();
     }
 
-    private String escapeCsv(String val) {
+    private String escapeCsvText(String val) {
         if (val == null) return "";
-        // Prevent CSV injection if starting with formula characters
         String clean = val;
-        if (clean.startsWith("=") || clean.startsWith("+") || clean.startsWith("-") || clean.startsWith("@")) {
+        // Formula injection protection for spreadsheet software:
+        // Only escape if starting with =, +, -, @ and NOT a valid numeric decimal!
+        if ((clean.startsWith("=") || clean.startsWith("+") || clean.startsWith("-") || clean.startsWith("@"))
+                && !isNumeric(clean)) {
             clean = "'" + clean;
         }
         if (clean.contains(",") || clean.contains("\"") || clean.contains("\n") || clean.contains("\r")) {
             return "\"" + clean.replace("\"", "\"\"") + "\"";
         }
         return clean;
+    }
+
+    private boolean isNumeric(String str) {
+        if (str == null || str.isBlank()) return false;
+        try {
+            new BigDecimal(str.trim());
+            return true;
+        } catch (NumberFormatException e) {
+            return false;
+        }
     }
 }

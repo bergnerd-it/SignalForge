@@ -205,4 +205,63 @@ class BacktestEngineTest {
         assertEquals("INSUFFICIENT_CASH", order.skipReason());
         assertEquals("0.00", order.commission());
     }
+
+    @Test
+    @DisplayName("Day 0 initial funding point is injected at evaluation session and first-year return is exact 1.80%")
+    void testDay0InitialFundingPointAndFirstYearReturn() {
+        BacktestDataReader.SessionRecord evalSession = new BacktestDataReader.SessionRecord(
+                "2024-01-31", "2024-01-31T08:00:00Z", "2024-01-31T16:30:00Z", "TRADING"
+        );
+
+        List<BacktestDataReader.SessionRecord> sessions = List.of(
+                new BacktestDataReader.SessionRecord("2024-02-01", "2024-02-01T08:00:00Z", "2024-02-01T16:30:00Z", "TRADING"),
+                new BacktestDataReader.SessionRecord("2024-02-02", "2024-02-02T08:00:00Z", "2024-02-02T16:30:00Z", "TRADING"),
+                new BacktestDataReader.SessionRecord("2024-02-05", "2024-02-05T08:00:00Z", "2024-02-05T16:30:00Z", "TRADING"),
+                new BacktestDataReader.SessionRecord("2024-02-06", "2024-02-06T08:00:00Z", "2024-02-06T16:30:00Z", "TRADING"),
+                new BacktestDataReader.SessionRecord("2024-02-07", "2024-02-07T08:00:00Z", "2024-02-07T16:30:00Z", "TRADING")
+        );
+
+        Map<String, BacktestDataReader.BarRecord> bars = new HashMap<>();
+        bars.put("2024-02-01", new BacktestDataReader.BarRecord("listing-1", "2024-02-01", new BigDecimal("100.00"), new BigDecimal("101.00"), new BigDecimal("99.00"), new BigDecimal("100.00"), 10000L, "2024-02-01T18:00:00Z"));
+        bars.put("2024-02-02", new BacktestDataReader.BarRecord("listing-1", "2024-02-02", new BigDecimal("50.00"), new BigDecimal("51.00"), new BigDecimal("49.00"), new BigDecimal("50.00"), 20000L, "2024-02-02T18:00:00Z"));
+        bars.put("2024-02-05", new BacktestDataReader.BarRecord("listing-1", "2024-02-05", new BigDecimal("49.00"), new BigDecimal("50.00"), new BigDecimal("48.00"), new BigDecimal("49.00"), 15000L, "2024-02-05T18:00:00Z"));
+        bars.put("2024-02-06", new BacktestDataReader.BarRecord("listing-1", "2024-02-06", new BigDecimal("49.00"), new BigDecimal("50.00"), new BigDecimal("48.00"), new BigDecimal("49.00"), 15000L, "2024-02-06T18:00:00Z"));
+        bars.put("2024-02-07", new BacktestDataReader.BarRecord("listing-1", "2024-02-07", new BigDecimal("49.00"), new BigDecimal("50.00"), new BigDecimal("49.00"), new BigDecimal("50.00"), 25000L, "2024-02-07T18:00:00Z"));
+
+        List<BacktestDataReader.ActionRecord> actions = List.of(
+                new BacktestDataReader.ActionRecord("split-1", "listing-1", "SPLIT", "2024-02-02", "2024-02-01T20:00:00Z", 2, 1, null, null, null, null),
+                new BacktestDataReader.ActionRecord("div-1", "listing-1", "CASH_DISTRIBUTION", "2024-02-05", "2024-02-02T20:00:00Z", null, null, new BigDecimal("1.00"), "EUR", "2024-02-06", null)
+        );
+
+        BacktestEngine.SimulationResult res = engine.runS1(
+                "run-day0", BacktestDtos.SeriesType.CANDIDATE, "listing-1",
+                new BigDecimal("1000.00"), new BigDecimal("1.00"), BigDecimal.ZERO, BigDecimal.ZERO,
+                evalSession, sessions, bars, actions
+        );
+
+        // Daily equity series must have Day 0 at index 0
+        assertEquals(6, res.dailyEquity().size());
+        BacktestDtos.DailyEquityPoint day0 = res.dailyEquity().get(0);
+        assertEquals("2024-01-31", day0.sessionDate());
+        assertEquals("1000.00", day0.cash());
+        assertEquals("0.00", day0.holdingsValue());
+        assertEquals("0.00", day0.receivables());
+        assertEquals("1000.00", day0.totalEquity());
+        assertNull(day0.dailyReturn());
+        assertEquals("0.00000000", day0.units());
+
+        // Compute analytics summary
+        BacktestAnalyticsCalculator calculator = new BacktestAnalyticsCalculator();
+        BacktestDtos.BacktestAnalyticsSummary summary = calculator.calculateSummary(res, null);
+
+        assertEquals("1000.00", summary.initialEquity());
+        assertEquals("1018.00", summary.finalEquity());
+        assertEquals(0.018, summary.cumulativeReturn(), 0.00001);
+
+        // First year return must be exactly 1.80% (0.0180) because Day 0 initial funding is at 2024-01-31
+        assertEquals(1, summary.annualReturns().size());
+        BacktestDtos.AnnualReturn yr2024 = summary.annualReturns().get(0);
+        assertEquals(2024, yr2024.year());
+        assertEquals(0.018, yr2024.candidateReturn(), 0.00001);
+    }
 }

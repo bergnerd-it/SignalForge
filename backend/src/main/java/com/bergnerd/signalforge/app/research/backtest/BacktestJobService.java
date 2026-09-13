@@ -6,6 +6,8 @@ import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import com.bergnerd.signalforge.app.accounting.AccountingCore;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -13,6 +15,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.*;
@@ -94,7 +97,7 @@ public class BacktestJobService {
             }
 
             // Same intent replay
-            return new CreationResult(getBacktestDetail(existingId), false);
+            return new CreationResult(getBacktestDetail(existingId, uid), false);
         }
 
         // Validate basic numeric bounds
@@ -121,57 +124,199 @@ public class BacktestJobService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
         }
 
-        String runId = "run-" + UUID.randomUUID();
-        String now = Instant.now().toString();
-        String configJson;
+        // Preflight data validation to build complete normalized configuration snapshot
+        BacktestDataReader.PreflightValidationResult preflightData;
         try {
-            configJson = objectMapper.writeValueAsString(request);
-        } catch (JsonProcessingException e) {
-            throw new IllegalStateException("Failed to serialize config", e);
+            preflightData = dataReader.validatePreflight(
+                    request.datasetId(),
+                    request.candidateListingId(),
+                    request.benchmarkListingId(),
+                    request.evaluationCutoff(),
+                    request.requestedStartDate(),
+                    request.requestedEndDate()
+            );
+        } catch (IllegalArgumentException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
         }
 
-        jdbcTemplate.update(
-                "INSERT INTO backtest_runs (" +
-                        "id, owner_id, idempotency_key, canonical_hash, strategy_id, strategy_version, " +
-                        "dataset_id, candidate_listing_id, benchmark_listing_id, initial_cash, currency, " +
-                        "evaluation_cutoff, requested_start_date, requested_end_date, commission_per_fill, " +
-                        "spread_bps, slippage_bps, status, progress_pct, config_json, created_at, updated_at" +
-                        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'QUEUED', 0, ?, ?, ?)",
-                runId, uid, idempotencyKey, canonicalHash, request.strategyId(), request.strategyVersion(),
-                request.datasetId(), request.candidateListingId(), request.benchmarkListingId(),
-                request.initialCash(), request.currency(), request.evaluationCutoff(),
-                request.requestedStartDate(), request.requestedEndDate(), request.commissionPerFill(),
-                request.spreadBps(), request.slippageBps(), configJson, now, now
+        BigDecimal normCash = AccountingCore.normalizeStartingCash(new BigDecimal(request.initialCash()));
+        BigDecimal normComm = AccountingCore.normalizeCash(new BigDecimal(request.commissionPerFill()), "commission");
+        BigDecimal normSpread = new BigDecimal(request.spreadBps()).setScale(4, RoundingMode.HALF_EVEN);
+        BigDecimal normSlippage = new BigDecimal(request.slippageBps()).setScale(4, RoundingMode.HALF_EVEN);
+
+        BacktestDtos.BacktestNormalizedConfig configSnapshot = new BacktestDtos.BacktestNormalizedConfig(
+                request.strategyId(),
+                request.strategyVersion(),
+                request.datasetId(),
+                preflightData.inputChecksum(),
+                preflightData.contentChecksum(),
+                preflightData.parserVersion(),
+                preflightData.schemaVersion(),
+                preflightData.calendarId(),
+                preflightData.calendarTimezone(),
+                preflightData.coverageStart(),
+                preflightData.coverageEnd(),
+                request.candidateListingId(),
+                request.benchmarkListingId(),
+                request.currency(),
+                normCash.toPlainString(),
+                request.evaluationCutoff(),
+                preflightData.selectedEvaluationSession(),
+                preflightData.selectedEndSession(),
+                request.requestedStartDate(),
+                request.requestedEndDate(),
+                preflightData.effectiveStartDate(),
+                preflightData.effectiveEndDate(),
+                normComm.toPlainString(),
+                normSpread.toPlainString(),
+                normSlippage.toPlainString(),
+                "v1-basis-points-spread-slippage",
+                "v2-decimal-grammar-half-even",
+                "v1-open-auction-s1",
+                "2.0.0-M3",
+                "a13a5ad6423be4dac54e4d5e572eed41068b3f83",
+                true,
+                preflightData.classification(),
+                "SYNTHETIC_DATA_TESTS_SOFTWARE_BEHAVIOR_ONLY"
         );
+
+        String configJson;
+        try {
+            configJson = objectMapper.writeValueAsString(configSnapshot);
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("Failed to serialize normalized config", e);
+        }
+
+        String runId = "run-" + UUID.randomUUID();
+        String now = Instant.now().toString();
+
+        boolean inserted = false;
+        for (int attempt = 0; attempt < 5; attempt++) {
+            try {
+                // Check if another thread already inserted it
+                List<Map<String, Object>> existingCheck = jdbcTemplate.queryForList(
+                        "SELECT id, canonical_hash FROM backtest_runs WHERE owner_id = ? AND idempotency_key = ?",
+                        uid, idempotencyKey
+                );
+                if (!existingCheck.isEmpty()) {
+                    Map<String, Object> conflictRow = existingCheck.get(0);
+                    String conflictHash = (String) conflictRow.get("canonical_hash");
+                    String conflictId = (String) conflictRow.get("id");
+                    if (canonicalHash.equals(conflictHash)) {
+                        return new CreationResult(getBacktestDetail(conflictId, uid), false);
+                    } else {
+                        throw new ResponseStatusException(HttpStatus.CONFLICT, "Idempotency key '" + idempotencyKey + "' already exists with conflicting configuration");
+                    }
+                }
+
+                jdbcTemplate.update(
+                        "INSERT INTO backtest_runs (" +
+                                "id, owner_id, idempotency_key, canonical_hash, strategy_id, strategy_version, " +
+                                "dataset_id, candidate_listing_id, benchmark_listing_id, initial_cash, currency, " +
+                                "evaluation_cutoff, requested_start_date, requested_end_date, commission_per_fill, " +
+                                "spread_bps, slippage_bps, status, progress_pct, config_json, created_at, updated_at" +
+                                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'QUEUED', 0, ?, ?, ?)",
+                        runId, uid, idempotencyKey, canonicalHash, request.strategyId(), request.strategyVersion(),
+                        request.datasetId(), request.candidateListingId(), request.benchmarkListingId(),
+                        normCash.toPlainString(), request.currency(), request.evaluationCutoff(),
+                        request.requestedStartDate(), request.requestedEndDate(), normComm.toPlainString(),
+                        normSpread.toPlainString(), normSlippage.toPlainString(), configJson, now, now
+                );
+                inserted = true;
+                break;
+            } catch (org.springframework.dao.DataIntegrityViolationException e) {
+                // Concurrent creation race: another thread inserted (owner_id, idempotency_key)
+                List<Map<String, Object>> conflictRows = jdbcTemplate.queryForList(
+                        "SELECT id, canonical_hash FROM backtest_runs WHERE owner_id = ? AND idempotency_key = ?",
+                        uid, idempotencyKey
+                );
+                if (!conflictRows.isEmpty()) {
+                    Map<String, Object> conflictRow = conflictRows.get(0);
+                    String conflictHash = (String) conflictRow.get("canonical_hash");
+                    String conflictId = (String) conflictRow.get("id");
+                    if (canonicalHash.equals(conflictHash)) {
+                        return new CreationResult(getBacktestDetail(conflictId, uid), false);
+                    } else {
+                        throw new ResponseStatusException(HttpStatus.CONFLICT, "Idempotency key '" + idempotencyKey + "' already exists with conflicting configuration");
+                    }
+                }
+            } catch (org.springframework.dao.DataAccessException e) {
+                // SQLite busy or lock contention: check if another thread inserted
+                List<Map<String, Object>> conflictRows = jdbcTemplate.queryForList(
+                        "SELECT id, canonical_hash FROM backtest_runs WHERE owner_id = ? AND idempotency_key = ?",
+                        uid, idempotencyKey
+                );
+                if (!conflictRows.isEmpty()) {
+                    Map<String, Object> conflictRow = conflictRows.get(0);
+                    String conflictHash = (String) conflictRow.get("canonical_hash");
+                    String conflictId = (String) conflictRow.get("id");
+                    if (canonicalHash.equals(conflictHash)) {
+                        return new CreationResult(getBacktestDetail(conflictId, uid), false);
+                    } else {
+                        throw new ResponseStatusException(HttpStatus.CONFLICT, "Idempotency key '" + idempotencyKey + "' already exists with conflicting configuration");
+                    }
+                }
+                // Retry with brief backoff
+                try {
+                    Thread.sleep(30L * (attempt + 1));
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException("Interrupted during backtest reservation retry", ie);
+                }
+            }
+        }
+
+        if (!inserted) {
+            List<Map<String, Object>> conflictRows = jdbcTemplate.queryForList(
+                    "SELECT id, canonical_hash FROM backtest_runs WHERE owner_id = ? AND idempotency_key = ?",
+                    uid, idempotencyKey
+            );
+            if (!conflictRows.isEmpty()) {
+                Map<String, Object> conflictRow = conflictRows.get(0);
+                String conflictHash = (String) conflictRow.get("canonical_hash");
+                String conflictId = (String) conflictRow.get("id");
+                if (canonicalHash.equals(conflictHash)) {
+                    return new CreationResult(getBacktestDetail(conflictId, uid), false);
+                } else {
+                    throw new ResponseStatusException(HttpStatus.CONFLICT, "Idempotency key '" + idempotencyKey + "' already exists with conflicting configuration");
+                }
+            }
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Database is busy, please retry later");
+        }
 
         // Submit to bounded async calculation worker
         try {
             calculationExecutor.submit(() -> executeRun(runId, request));
         } catch (RejectedExecutionException e) {
             jdbcTemplate.update(
-                    "UPDATE backtest_runs SET status = 'FAILED', failure_reason = 'Calculation queue is full, please retry later', updated_at = ? WHERE id = ?",
+                    "UPDATE backtest_runs SET status = 'FAILED', failure_reason = 'Calculation queue is full, please retry later', updated_at = ? WHERE id = ? AND status = 'QUEUED'",
                     Instant.now().toString(), runId
             );
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Calculation queue is full, please retry later");
         }
 
-        return new CreationResult(getBacktestDetail(runId), true);
+        return new CreationResult(getBacktestDetail(runId, uid), true);
     }
 
     private void executeRun(String runId, BacktestDtos.CreateBacktestRequest request) {
         log.info("Starting backtest execution for run {}", runId);
         try {
+            List<String> statusList = jdbcTemplate.query(
+                    "SELECT status FROM backtest_runs WHERE id = ?",
+                    (rs, rowNum) -> rs.getString("status"),
+                    runId
+            );
+            if (statusList.isEmpty() || "CANCELLED".equalsIgnoreCase(statusList.get(0)) ||
+                    "FAILED".equalsIgnoreCase(statusList.get(0)) ||
+                    "COMPLETED".equalsIgnoreCase(statusList.get(0)) ||
+                    "INTERRUPTED".equalsIgnoreCase(statusList.get(0))) {
+                return;
+            }
             if (isCancelled(runId)) {
                 markCancelled(runId);
                 return;
             }
 
-            jdbcTemplate.update(
-                    "UPDATE backtest_runs SET status = 'RUNNING', progress_pct = 10, updated_at = ? WHERE id = ?",
-                    Instant.now().toString(), runId
-            );
-
-            // 1. Load and validate data
             BacktestDataReader.LoadedBacktestData data = dataReader.loadAndValidateData(
                     request.datasetId(),
                     request.candidateListingId(),
@@ -181,13 +326,24 @@ public class BacktestJobService {
                     request.requestedEndDate()
             );
 
+            int rowsUpdated = jdbcTemplate.update(
+                    "UPDATE backtest_runs SET status = 'RUNNING', progress_pct = 10, updated_at = ? WHERE id = ? AND status = 'QUEUED'",
+                    Instant.now().toString(), runId
+            );
+            if (rowsUpdated == 0) {
+                if (isCancelled(runId)) {
+                    markCancelled(runId);
+                }
+                return;
+            }
+
             if (isCancelled(runId)) {
                 markCancelled(runId);
                 return;
             }
 
             jdbcTemplate.update(
-                    "UPDATE backtest_runs SET progress_pct = 30, updated_at = ? WHERE id = ?",
+                    "UPDATE backtest_runs SET progress_pct = 30, updated_at = ? WHERE id = ? AND status = 'RUNNING'",
                     Instant.now().toString(), runId
             );
 
@@ -205,6 +361,7 @@ public class BacktestJobService {
                     commission,
                     spreadBps,
                     slippageBps,
+                    data.evaluationSession(),
                     data.tradingSessions(),
                     data.barsByListingAndDate().get(request.candidateListingId()),
                     data.actionsByListing().get(request.candidateListingId())
@@ -216,7 +373,7 @@ public class BacktestJobService {
             }
 
             jdbcTemplate.update(
-                    "UPDATE backtest_runs SET progress_pct = 60, updated_at = ? WHERE id = ?",
+                    "UPDATE backtest_runs SET progress_pct = 60, updated_at = ? WHERE id = ? AND status = 'RUNNING'",
                     Instant.now().toString(), runId
             );
 
@@ -229,6 +386,7 @@ public class BacktestJobService {
                     commission,
                     spreadBps,
                     slippageBps,
+                    data.evaluationSession(),
                     data.tradingSessions(),
                     data.barsByListingAndDate().get(request.benchmarkListingId()),
                     data.actionsByListing().get(request.benchmarkListingId())
@@ -240,7 +398,7 @@ public class BacktestJobService {
             }
 
             jdbcTemplate.update(
-                    "UPDATE backtest_runs SET progress_pct = 80, updated_at = ? WHERE id = ?",
+                    "UPDATE backtest_runs SET progress_pct = 80, updated_at = ? WHERE id = ? AND status = 'RUNNING'",
                     Instant.now().toString(), runId
             );
 
@@ -279,15 +437,19 @@ public class BacktestJobService {
                 persistHoldings(candidateResult.finalHoldings(), runId);
                 persistHoldings(benchmarkResult.finalHoldings(), runId);
 
-                // Update run to COMPLETED atomically
+                // Update run to COMPLETED atomically with conditional transition
                 String now = Instant.now().toString();
-                jdbcTemplate.update(
+                int completedRows = jdbcTemplate.update(
                         "UPDATE backtest_runs SET status = 'COMPLETED', progress_pct = 100, " +
                                 "effective_start_date = ?, effective_end_date = ?, " +
-                                "summary_json = ?, completed_at = ?, updated_at = ? WHERE id = ?",
+                                "summary_json = ?, completed_at = ?, updated_at = ? " +
+                                "WHERE id = ? AND status = 'RUNNING' AND cancel_requested = 0",
                         data.effectiveStartDate(), data.effectiveEndDate(),
                         summaryJson, now, now, runId
                 );
+                if (completedRows == 0) {
+                    throw new CancellationException("Run was cancelled before completion could be recorded");
+                }
             });
 
             log.info("Backtest run {} completed successfully", runId);
@@ -302,15 +464,17 @@ public class BacktestJobService {
     }
 
     private boolean isCancelled(String runId) {
-        Integer cancelRequested = jdbcTemplate.queryForObject(
-                "SELECT cancel_requested FROM backtest_runs WHERE id = ?", Integer.class, runId
+        List<Integer> list = jdbcTemplate.query(
+                "SELECT cancel_requested FROM backtest_runs WHERE id = ?",
+                (rs, rowNum) -> rs.getInt("cancel_requested"),
+                runId
         );
-        return cancelRequested != null && cancelRequested == 1;
+        return !list.isEmpty() && list.get(0) == 1;
     }
 
     private void markCancelled(String runId) {
         jdbcTemplate.update(
-                "UPDATE backtest_runs SET status = 'CANCELLED', updated_at = ? WHERE id = ? AND status != 'COMPLETED'",
+                "UPDATE backtest_runs SET status = 'CANCELLED', updated_at = ? WHERE id = ? AND status IN ('QUEUED', 'RUNNING')",
                 Instant.now().toString(), runId
         );
     }
@@ -318,7 +482,7 @@ public class BacktestJobService {
     private void markFailed(String runId, String error) {
         String now = Instant.now().toString();
         jdbcTemplate.update(
-                "UPDATE backtest_runs SET status = 'FAILED', failure_reason = ?, updated_at = ? WHERE id = ? AND status != 'COMPLETED'",
+                "UPDATE backtest_runs SET status = 'FAILED', failure_reason = ?, updated_at = ? WHERE id = ? AND status IN ('QUEUED', 'RUNNING')",
                 error, now, runId
         );
     }
@@ -377,9 +541,21 @@ public class BacktestJobService {
         );
     }
 
-    public BacktestDtos.BacktestSummaryResponse cancelBacktest(String runId) {
+    private void verifyOwnerAccess(String runId, String ownerId) {
+        String uid = (ownerId == null || ownerId.isBlank()) ? "default" : ownerId;
         List<Map<String, Object>> rows = jdbcTemplate.queryForList(
-                "SELECT status FROM backtest_runs WHERE id = ?", runId
+                "SELECT id FROM backtest_runs WHERE id = ? AND owner_id = ?",
+                runId, uid
+        );
+        if (rows.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Backtest run not found: " + runId);
+        }
+    }
+
+    public BacktestDtos.BacktestSummaryResponse cancelBacktest(String runId, String ownerId) {
+        String uid = (ownerId == null || ownerId.isBlank()) ? "default" : ownerId;
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList(
+                "SELECT status FROM backtest_runs WHERE id = ? AND owner_id = ?", runId, uid
         );
         if (rows.isEmpty()) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Backtest run not found: " + runId);
@@ -388,26 +564,28 @@ public class BacktestJobService {
         String currentStatus = (String) rows.get(0).get("status");
         if ("COMPLETED".equalsIgnoreCase(currentStatus) ||
                 "FAILED".equalsIgnoreCase(currentStatus) ||
+                "CANCELLED".equalsIgnoreCase(currentStatus) ||
                 "INTERRUPTED".equalsIgnoreCase(currentStatus)) {
             // Terminal - repeat safe no-op
-            return getBacktestDetail(runId);
+            return getBacktestDetail(runId, uid);
         }
 
-        // Mark cancel requested and transition if still queued
+        // Conditional durable transition
         String now = Instant.now().toString();
         jdbcTemplate.update(
                 "UPDATE backtest_runs SET cancel_requested = 1, " +
                         "status = CASE WHEN status = 'QUEUED' THEN 'CANCELLED' ELSE status END, " +
-                        "updated_at = ? WHERE id = ?",
-                now, runId
+                        "updated_at = ? WHERE id = ? AND owner_id = ? AND status IN ('QUEUED', 'RUNNING')",
+                now, runId, uid
         );
 
-        return getBacktestDetail(runId);
+        return getBacktestDetail(runId, uid);
     }
 
-    public BacktestDtos.BacktestSummaryResponse getBacktestDetail(String runId) {
+    public BacktestDtos.BacktestSummaryResponse getBacktestDetail(String runId, String ownerId) {
+        String uid = (ownerId == null || ownerId.isBlank()) ? "default" : ownerId;
         List<Map<String, Object>> rows = jdbcTemplate.queryForList(
-                "SELECT * FROM backtest_runs WHERE id = ?", runId
+                "SELECT * FROM backtest_runs WHERE id = ? AND owner_id = ?", runId, uid
         );
         if (rows.isEmpty()) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Backtest run not found: " + runId);
@@ -434,17 +612,22 @@ public class BacktestJobService {
         return new BacktestDtos.PagedResponse<>(items, total, limit, offset, offset + items.size() < total);
     }
 
-    public BacktestDtos.PagedResponse<BacktestDtos.DailyEquityPoint> getDailyEquity(String runId, String seriesType, int rawLimit, int rawOffset) {
+    public BacktestDtos.PagedResponse<BacktestDtos.DailyEquityPoint> getDailyEquity(String runId, String ownerId, String seriesType, int rawLimit, int rawOffset) {
+        verifyOwnerAccess(runId, ownerId);
         int limit = Math.max(1, Math.min(rawLimit <= 0 ? 500 : rawLimit, 5000));
         int offset = Math.max(0, rawOffset);
 
-        String typeFilter = seriesType != null && !seriesType.isBlank()
-                ? seriesType.trim().toUpperCase()
-                : "CANDIDATE";
+        BacktestDtos.SeriesType st;
+        try {
+            String typeStr = (seriesType != null && !seriesType.isBlank()) ? seriesType.trim().toUpperCase() : "CANDIDATE";
+            st = BacktestDtos.SeriesType.valueOf(typeStr);
+        } catch (IllegalArgumentException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid series: '" + seriesType + "'. Allowed values: CANDIDATE, BENCHMARK");
+        }
 
         Integer count = jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM backtest_daily_equity WHERE run_id = ? AND series_type = ?",
-                Integer.class, runId, typeFilter
+                Integer.class, runId, st.name()
         );
         int total = count != null ? count : 0;
 
@@ -467,91 +650,163 @@ public class BacktestJobService {
                         rs.getString("cost_basis"),
                         rs.getString("raw_close")
                 ),
-                runId, typeFilter, limit, offset
+                runId, st.name(), limit, offset
         );
 
         return new BacktestDtos.PagedResponse<>(items, total, limit, offset, offset + items.size() < total);
     }
 
-    public BacktestDtos.PagedResponse<BacktestDtos.BacktestOrderDto> getOrders(String runId, String seriesType, int rawLimit, int rawOffset) {
+    public BacktestDtos.PagedResponse<BacktestDtos.BacktestOrderDto> getOrders(String runId, String ownerId, String seriesType, int rawLimit, int rawOffset) {
+        verifyOwnerAccess(runId, ownerId);
         int limit = Math.max(1, Math.min(rawLimit <= 0 ? 100 : rawLimit, 1000));
         int offset = Math.max(0, rawOffset);
 
-        String sqlWhere = (seriesType != null && !seriesType.isBlank())
-                ? "WHERE run_id = ? AND series_type = '" + seriesType.trim().toUpperCase() + "'"
-                : "WHERE run_id = ?";
+        BacktestDtos.SeriesType st = null;
+        if (seriesType != null && !seriesType.isBlank()) {
+            try {
+                st = BacktestDtos.SeriesType.valueOf(seriesType.trim().toUpperCase());
+            } catch (IllegalArgumentException e) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid series: '" + seriesType + "'. Allowed values: CANDIDATE, BENCHMARK");
+            }
+        }
 
-        Integer count = jdbcTemplate.queryForObject(
-                "SELECT COUNT(*) FROM backtest_orders " + sqlWhere,
-                Integer.class, runId
-        );
+        Integer count;
+        List<BacktestDtos.BacktestOrderDto> items;
+        if (st != null) {
+            count = jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM backtest_orders WHERE run_id = ? AND series_type = ?",
+                    Integer.class, runId, st.name()
+            );
+            items = jdbcTemplate.query(
+                    "SELECT id, run_id, series_type, order_type, listing_id, session_date, requested_quantity, " +
+                            "executed_quantity, raw_open, fill_price, commission, spread_cost, slippage_cost, status, skip_reason, created_at " +
+                            "FROM backtest_orders WHERE run_id = ? AND series_type = ? ORDER BY session_date ASC, id ASC LIMIT ? OFFSET ?",
+                    (rs, rowNum) -> mapOrderDto(rs),
+                    runId, st.name(), limit, offset
+            );
+        } else {
+            count = jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM backtest_orders WHERE run_id = ?",
+                    Integer.class, runId
+            );
+            items = jdbcTemplate.query(
+                    "SELECT id, run_id, series_type, order_type, listing_id, session_date, requested_quantity, " +
+                            "executed_quantity, raw_open, fill_price, commission, spread_cost, slippage_cost, status, skip_reason, created_at " +
+                            "FROM backtest_orders WHERE run_id = ? ORDER BY session_date ASC, id ASC LIMIT ? OFFSET ?",
+                    (rs, rowNum) -> mapOrderDto(rs),
+                    runId, limit, offset
+            );
+        }
+
         int total = count != null ? count : 0;
-
-        List<BacktestDtos.BacktestOrderDto> items = jdbcTemplate.query(
-                "SELECT id, run_id, series_type, order_type, listing_id, session_date, requested_quantity, " +
-                        "executed_quantity, raw_open, fill_price, commission, spread_cost, slippage_cost, status, skip_reason, created_at " +
-                        "FROM backtest_orders " + sqlWhere + " ORDER BY session_date ASC, id ASC LIMIT ? OFFSET ?",
-                (rs, rowNum) -> new BacktestDtos.BacktestOrderDto(
-                        rs.getString("id"),
-                        rs.getString("run_id"),
-                        rs.getString("series_type"),
-                        rs.getString("order_type"),
-                        rs.getString("listing_id"),
-                        rs.getString("session_date"),
-                        rs.getString("requested_quantity"),
-                        rs.getString("executed_quantity"),
-                        rs.getString("raw_open"),
-                        rs.getString("fill_price"),
-                        rs.getString("commission"),
-                        rs.getString("spread_cost"),
-                        rs.getString("slippage_cost"),
-                        rs.getString("status"),
-                        rs.getString("skip_reason"),
-                        rs.getString("created_at")
-                ),
-                runId, limit, offset
-        );
-
         return new BacktestDtos.PagedResponse<>(items, total, limit, offset, offset + items.size() < total);
     }
 
-    public BacktestDtos.PagedResponse<BacktestDtos.BacktestEventDto> getEvents(String runId, String seriesType, int rawLimit, int rawOffset) {
+    private BacktestDtos.BacktestOrderDto mapOrderDto(java.sql.ResultSet rs) throws java.sql.SQLException {
+        String status = rs.getString("status");
+        String totalCashImpact = "0.00";
+        if ("FILLED".equals(status)) {
+            BigDecimal execQty = new BigDecimal(rs.getString("executed_quantity"));
+            BigDecimal fillPrice = new BigDecimal(rs.getString("fill_price"));
+            BigDecimal commission = new BigDecimal(rs.getString("commission"));
+            BigDecimal gross = AccountingCore.roundCash(execQty.multiply(fillPrice, AccountingCore.MATH_CONTEXT));
+            totalCashImpact = gross.add(commission).negate().toPlainString();
+        }
+
+        return new BacktestDtos.BacktestOrderDto(
+                rs.getString("id"),
+                rs.getString("run_id"),
+                rs.getString("series_type"),
+                rs.getString("order_type"),
+                rs.getString("listing_id"),
+                rs.getString("session_date"),
+                rs.getString("requested_quantity"),
+                rs.getString("executed_quantity"),
+                rs.getString("raw_open"),
+                rs.getString("fill_price"),
+                rs.getString("commission"),
+                rs.getString("spread_cost"),
+                rs.getString("slippage_cost"),
+                totalCashImpact,
+                status,
+                rs.getString("skip_reason"),
+                rs.getString("created_at")
+        );
+    }
+
+    public BacktestDtos.PagedResponse<BacktestDtos.BacktestEventDto> getEvents(String runId, String ownerId, String seriesType, int rawLimit, int rawOffset) {
+        verifyOwnerAccess(runId, ownerId);
         int limit = Math.max(1, Math.min(rawLimit <= 0 ? 100 : rawLimit, 1000));
         int offset = Math.max(0, rawOffset);
 
-        String sqlWhere = (seriesType != null && !seriesType.isBlank())
-                ? "WHERE run_id = ? AND series_type = '" + seriesType.trim().toUpperCase() + "'"
-                : "WHERE run_id = ?";
+        BacktestDtos.SeriesType st = null;
+        if (seriesType != null && !seriesType.isBlank()) {
+            try {
+                st = BacktestDtos.SeriesType.valueOf(seriesType.trim().toUpperCase());
+            } catch (IllegalArgumentException e) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid series: '" + seriesType + "'. Allowed values: CANDIDATE, BENCHMARK");
+            }
+        }
 
-        Integer count = jdbcTemplate.queryForObject(
-                "SELECT COUNT(*) FROM backtest_events " + sqlWhere,
-                Integer.class, runId
-        );
+        Integer count;
+        List<BacktestDtos.BacktestEventDto> items;
+        if (st != null) {
+            count = jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM backtest_events WHERE run_id = ? AND series_type = ?",
+                    Integer.class, runId, st.name()
+            );
+            items = jdbcTemplate.query(
+                    "SELECT id, run_id, series_type, event_seq, event_type, event_date, event_time, description, " +
+                            "details_json, cash_delta, units_delta, basis_delta, receivable_delta, created_at " +
+                            "FROM backtest_events WHERE run_id = ? AND series_type = ? ORDER BY event_seq ASC LIMIT ? OFFSET ?",
+                    (rs, rowNum) -> new BacktestDtos.BacktestEventDto(
+                            rs.getString("id"),
+                            rs.getString("run_id"),
+                            rs.getString("series_type"),
+                            rs.getInt("event_seq"),
+                            rs.getString("event_type"),
+                            rs.getString("event_date"),
+                            rs.getString("event_time"),
+                            rs.getString("description"),
+                            rs.getString("details_json"),
+                            rs.getString("cash_delta"),
+                            rs.getString("units_delta"),
+                            rs.getString("basis_delta"),
+                            rs.getString("receivable_delta"),
+                            rs.getString("created_at")
+                    ),
+                    runId, st.name(), limit, offset
+            );
+        } else {
+            count = jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM backtest_events WHERE run_id = ?",
+                    Integer.class, runId
+            );
+            items = jdbcTemplate.query(
+                    "SELECT id, run_id, series_type, event_seq, event_type, event_date, event_time, description, " +
+                            "details_json, cash_delta, units_delta, basis_delta, receivable_delta, created_at " +
+                            "FROM backtest_events WHERE run_id = ? ORDER BY event_seq ASC LIMIT ? OFFSET ?",
+                    (rs, rowNum) -> new BacktestDtos.BacktestEventDto(
+                            rs.getString("id"),
+                            rs.getString("run_id"),
+                            rs.getString("series_type"),
+                            rs.getInt("event_seq"),
+                            rs.getString("event_type"),
+                            rs.getString("event_date"),
+                            rs.getString("event_time"),
+                            rs.getString("description"),
+                            rs.getString("details_json"),
+                            rs.getString("cash_delta"),
+                            rs.getString("units_delta"),
+                            rs.getString("basis_delta"),
+                            rs.getString("receivable_delta"),
+                            rs.getString("created_at")
+                    ),
+                    runId, limit, offset
+            );
+        }
+
         int total = count != null ? count : 0;
-
-        List<BacktestDtos.BacktestEventDto> items = jdbcTemplate.query(
-                "SELECT id, run_id, series_type, event_seq, event_type, event_date, event_time, description, " +
-                        "details_json, cash_delta, units_delta, basis_delta, receivable_delta, created_at " +
-                        "FROM backtest_events " + sqlWhere + " ORDER BY event_seq ASC LIMIT ? OFFSET ?",
-                (rs, rowNum) -> new BacktestDtos.BacktestEventDto(
-                        rs.getString("id"),
-                        rs.getString("run_id"),
-                        rs.getString("series_type"),
-                        rs.getInt("event_seq"),
-                        rs.getString("event_type"),
-                        rs.getString("event_date"),
-                        rs.getString("event_time"),
-                        rs.getString("description"),
-                        rs.getString("details_json"),
-                        rs.getString("cash_delta"),
-                        rs.getString("units_delta"),
-                        rs.getString("basis_delta"),
-                        rs.getString("receivable_delta"),
-                        rs.getString("created_at")
-                ),
-                runId, limit, offset
-        );
-
         return new BacktestDtos.PagedResponse<>(items, total, limit, offset, offset + items.size() < total);
     }
 
@@ -570,6 +825,16 @@ public class BacktestJobService {
                 }
             } catch (Exception e) {
                 log.warn("Failed to parse summary_json for run {}: {}", r.get("id"), e.getMessage());
+            }
+        }
+
+        String configJson = (String) r.get("config_json");
+        BacktestDtos.BacktestNormalizedConfig normalizedConfig = null;
+        if (configJson != null && !configJson.isBlank()) {
+            try {
+                normalizedConfig = objectMapper.readValue(configJson, BacktestDtos.BacktestNormalizedConfig.class);
+            } catch (Exception e) {
+                log.warn("Failed to parse config_json for run {}: {}", r.get("id"), e.getMessage());
             }
         }
 
@@ -598,6 +863,7 @@ public class BacktestJobService {
                 (String) r.get("failure_reason"),
                 candSummary,
                 benchSummary,
+                normalizedConfig,
                 (String) r.get("created_at"),
                 (String) r.get("updated_at"),
                 (String) r.get("completed_at")

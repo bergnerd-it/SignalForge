@@ -91,8 +91,16 @@ public final class BacktestDtos {
                 MessageDigest md = MessageDigest.getInstance("SHA-256");
                 BigDecimal normCash = AccountingCore.normalizeStartingCash(new BigDecimal(initialCash));
                 BigDecimal normCommission = AccountingCore.normalizeCash(new BigDecimal(commissionPerFill), "commission");
-                BigDecimal normSpread = new BigDecimal(spreadBps).setScale(2, RoundingMode.HALF_EVEN);
-                BigDecimal normSlippage = new BigDecimal(slippageBps).setScale(2, RoundingMode.HALF_EVEN);
+                BigDecimal rawSpread = new BigDecimal(spreadBps);
+                if (rawSpread.scale() > 4) {
+                    throw new IllegalArgumentException("Spread precision exceeds maximum supported scale of 4: " + spreadBps);
+                }
+                BigDecimal rawSlippage = new BigDecimal(slippageBps);
+                if (rawSlippage.scale() > 4) {
+                    throw new IllegalArgumentException("Slippage precision exceeds maximum supported scale of 4: " + slippageBps);
+                }
+                BigDecimal normSpread = rawSpread.stripTrailingZeros();
+                BigDecimal normSlippage = rawSlippage.stripTrailingZeros();
 
                 String canonical = String.join("|",
                         strategyId.trim(),
@@ -120,6 +128,51 @@ public final class BacktestDtos {
             }
         }
     }
+
+    public record BacktestNormalizedConfig(
+            String strategyId,
+            String strategyVersion,
+            String datasetId,
+            String datasetInputChecksum,
+            String datasetContentChecksum,
+            String parserVersion,
+            String schemaVersion,
+            String calendarId,
+            String calendarTimezone,
+            String coverageStart,
+            String coverageEnd,
+            String candidateListingId,
+            String benchmarkListingId,
+            String quoteCurrency,
+            String initialCash,
+            String evaluationCutoff,
+            String selectedEvaluationSession,
+            String selectedEndSession,
+            String requestedStartDate,
+            String requestedEndDate,
+            String effectiveStartDate,
+            String effectiveEndDate,
+            String commissionPerFill,
+            String spreadBps,
+            String slippageBps,
+            String costModelVersion,
+            String accountingVersion,
+            String executionModelVersion,
+            String engineVersion,
+            String sourceCommit,
+            boolean dirtyFlag,
+            String classification,
+            String availabilityAssumptions
+    ) {}
+
+    public record UnpaidReceivableDto(
+            String actionId,
+            String amount,
+            String entitlementDate,
+            String entitlementTime,
+            String paymentDate,
+            String paymentInstant
+    ) {}
 
     public record AnnualReturn(
             int year,
@@ -154,7 +207,13 @@ public final class BacktestDtos {
             String endingHoldingsValue,
             String endingCostBasis,
             String endingUnits,
-            List<AnnualReturn> annualReturns
+            Double exposureWeight,
+            Double cashWeight,
+            Double receivablesWeight,
+            String turnoverFormula,
+            String receivableTreatment,
+            List<AnnualReturn> annualReturns,
+            List<UnpaidReceivableDto> unpaidReceivables
     ) {}
 
     @JsonInclude(JsonInclude.Include.NON_NULL)
@@ -183,6 +242,7 @@ public final class BacktestDtos {
             String failureReason,
             BacktestAnalyticsSummary candidateSummary,
             BacktestAnalyticsSummary benchmarkSummary,
+            BacktestNormalizedConfig normalizedConfig,
             String createdAt,
             String updatedAt,
             String completedAt
@@ -217,6 +277,7 @@ public final class BacktestDtos {
             String commission,
             String spreadCost,
             String slippageCost,
+            String totalCashImpact,
             String status,
             String skipReason,
             String createdAt
