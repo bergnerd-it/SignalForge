@@ -65,14 +65,32 @@ public class TotalReturnSignalIndexCalculator {
             Map<String, BacktestDataReader.BarRecord> bars,
             List<BacktestDataReader.ActionRecord> actions
     ) {
+        return calculateSeries(listingId, tradingSessions, bars, actions, null);
+    }
+
+    public ListingSignalIndexSeries calculateSeries(
+            String listingId,
+            List<BacktestDataReader.SessionRecord> tradingSessions,
+            Map<String, BacktestDataReader.BarRecord> bars,
+            List<BacktestDataReader.ActionRecord> actions,
+            java.time.Instant asOfInstant
+    ) {
         if (tradingSessions.isEmpty()) {
             return new ListingSignalIndexSeries(listingId, Map.of(), List.of(), Map.of(), List.of());
         }
 
-        // Group actions by effective date
+        // Group actions by effective date, strictly filtering out any actions unavailable at asOfInstant
         Map<String, List<BacktestDataReader.ActionRecord>> actionsByDate = new HashMap<>();
         if (actions != null) {
             for (BacktestDataReader.ActionRecord a : actions) {
+                if (asOfInstant != null) {
+                    if (a.availableAt() == null || a.availableAt().isBlank()) {
+                        throw new IllegalArgumentException("Action " + a.actionId() + " has no availability time");
+                    }
+                    if (java.time.Instant.parse(a.availableAt().trim()).isAfter(asOfInstant)) {
+                        continue;
+                    }
+                }
                 actionsByDate.computeIfAbsent(a.effectiveDate(), k -> new ArrayList<>()).add(a);
             }
         }
@@ -89,6 +107,14 @@ public class TotalReturnSignalIndexCalculator {
             BacktestDataReader.BarRecord bar = bars.get(sDate);
             if (bar == null) {
                 throw new IllegalStateException("Missing bar on session " + sDate + " for listing " + listingId);
+            }
+            if (asOfInstant != null) {
+                if (bar.availableAt() == null || bar.availableAt().isBlank()) {
+                    throw new IllegalArgumentException("Bar for " + listingId + " on " + sDate + " has no availability time");
+                }
+                if (java.time.Instant.parse(bar.availableAt().trim()).isAfter(asOfInstant)) {
+                    break;
+                }
             }
             BigDecimal close = bar.close();
 
@@ -151,9 +177,11 @@ public class TotalReturnSignalIndexCalculator {
 
             if (isLastTradingSessionOfMonth) {
                 DailyIndexPoint pt = dailyPoints.get(session.sessionDate());
-                MonthObservation obs = new MonthObservation(ym, session.sessionDate(), pt.rawClose(), pt.indexValue());
-                monthEndMap.put(ym, obs);
-                orderedMonthEnds.add(obs);
+                if (pt != null) {
+                    MonthObservation obs = new MonthObservation(ym, session.sessionDate(), pt.rawClose(), pt.indexValue());
+                    monthEndMap.put(ym, obs);
+                    orderedMonthEnds.add(obs);
+                }
             }
         }
 
@@ -182,4 +210,3 @@ public class TotalReturnSignalIndexCalculator {
         return monthEnds;
     }
 }
-

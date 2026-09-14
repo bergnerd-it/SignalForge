@@ -134,4 +134,17 @@ public class BacktestController {
             throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Could not prepare export", e);
         }
     }
+
+    @GetMapping(value = "/{id}/signals/export", produces = "text/csv")
+    public ResponseEntity<String> exportSignals(
+            @PathVariable("id") String id,
+            @RequestHeader(value = "X-User-Id", required = false, defaultValue = "default") String ownerId
+    ) {
+        String csv = jobService.exportSignalsAsCsv(id, ownerId);
+        String filename = "backtest-" + id.replaceAll("[^a-zA-Z0-9_-]", "_") + "-signals.csv";
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + filename + "\"")
+                .contentType(MediaType.parseMediaType("text/csv"))
+                .body(csv);
+    }
 }

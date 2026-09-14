@@ -127,6 +127,22 @@ public class StrategyEvaluator {
             List<String> universeListings,
             Map<String, TotalReturnSignalIndexCalculator.ListingSignalIndexSeries> indexSeriesMap
     ) {
+        return evaluateS2(runId, signalSeq, universeId, k, evalMonth, evalSession, nextTradingSession, universeListings, indexSeriesMap, null, null);
+    }
+
+    public EvaluatedSignal evaluateS2(
+            String runId,
+            int signalSeq,
+            String universeId,
+            int k,
+            YearMonth evalMonth,
+            BacktestDataReader.SessionRecord evalSession,
+            BacktestDataReader.SessionRecord nextTradingSession,
+            List<String> universeListings,
+            Map<String, TotalReturnSignalIndexCalculator.ListingSignalIndexSeries> indexSeriesMap,
+            String decisionInstant,
+            String reasonCodeOverride
+    ) {
         if (k < 1 || k > universeListings.size()) {
             throw new IllegalArgumentException("K must satisfy 1 <= K <= universe size (" + universeListings.size() + "), was: " + k);
         }
@@ -134,7 +150,8 @@ public class StrategyEvaluator {
         String signalId = runId + "-sig-" + String.format("%04d", signalSeq);
         String scheduledExecutionDate = nextTradingSession != null ? nextTradingSession.sessionDate() : null;
         String status = nextTradingSession != null ? "SCHEDULED" : "UNEXECUTED";
-        String reasonCode = nextTradingSession != null ? "MOMENTUM_12_1_MONTHLY_REBALANCE" : "UNEXECUTED_FINAL_SESSION";
+        String reasonCode = reasonCodeOverride != null ? reasonCodeOverride :
+                (nextTradingSession != null ? "MOMENTUM_12_1_MONTHLY_REBALANCE" : "UNEXECUTED_FINAL_SESSION");
 
         YearMonth mMinus1 = evalMonth.minusMonths(1);
         YearMonth mMinus12 = evalMonth.minusMonths(12);
@@ -235,7 +252,7 @@ public class StrategyEvaluator {
                 universeId,
                 evalSession.sessionDate(),
                 evalSession.closeTime(),
-                evalSession.closeTime(),
+                decisionInstant != null ? decisionInstant : evalSession.closeTime(),
                 scheduledExecutionDate,
                 "TOP_" + k + " (" + String.join(", ", selectedListingIds) + ")",
                 status,
@@ -261,6 +278,20 @@ public class StrategyEvaluator {
             BacktestDataReader.SessionRecord nextTradingSession,
             TotalReturnSignalIndexCalculator.ListingSignalIndexSeries indexSeries
     ) {
+        return evaluateS3(runId, signalSeq, candidateListingId, evalMonth, evalSession, nextTradingSession, indexSeries, null, null);
+    }
+
+    public EvaluatedSignal evaluateS3(
+            String runId,
+            int signalSeq,
+            String candidateListingId,
+            YearMonth evalMonth,
+            BacktestDataReader.SessionRecord evalSession,
+            BacktestDataReader.SessionRecord nextTradingSession,
+            TotalReturnSignalIndexCalculator.ListingSignalIndexSeries indexSeries,
+            String decisionInstant,
+            String reasonCodeOverride
+    ) {
         String signalId = runId + "-sig-" + String.format("%04d", signalSeq);
         String scheduledExecutionDate = nextTradingSession != null ? nextTradingSession.sessionDate() : null;
         String status = nextTradingSession != null ? "SCHEDULED" : "UNEXECUTED";
@@ -285,7 +316,9 @@ public class StrategyEvaluator {
         boolean isEtfSelected = currentT.compareTo(sma10) > 0;
         String targetAllocationSummary = isEtfSelected ? "100% ETF" : "100% CASH";
         String reasonCode;
-        if (nextTradingSession == null) {
+        if (reasonCodeOverride != null) {
+            reasonCode = reasonCodeOverride;
+        } else if (nextTradingSession == null) {
             reasonCode = "UNEXECUTED_FINAL_SESSION";
         } else if (isEtfSelected) {
             reasonCode = "TREND_ABOVE_SMA10_TARGET_ETF";
@@ -335,7 +368,7 @@ public class StrategyEvaluator {
                 null,
                 evalSession.sessionDate(),
                 evalSession.closeTime(),
-                evalSession.closeTime(),
+                decisionInstant != null ? decisionInstant : evalSession.closeTime(),
                 scheduledExecutionDate,
                 targetAllocationSummary,
                 status,

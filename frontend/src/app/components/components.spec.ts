@@ -632,7 +632,6 @@ describe('Component Unit Tests', () => {
       id: 'cmp-1',
       ownerId: 'default',
       name: 'Comparison Test',
-      comparisonBasis: 'MATCHED_CONDITIONS',
       status: 'MATCHED',
       runIds: ['run-1', 'run-2'],
       runs: mockRuns as any,

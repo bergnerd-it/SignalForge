@@ -40,7 +40,7 @@ public class MigrationRunner {
     private String datasourceUrl;
 
     public static final String CODE_VERSION = "2.0.0-M4";
-    public static final int CURRENT_SCHEMA_VERSION = 8;
+    public static final int CURRENT_SCHEMA_VERSION = 10;
 
     public static final List<String> DEFAULT_TICKERS = List.of(
             "AAPL", "GOOGL", "MSFT", "AMZN", "TSLA",
@@ -144,6 +144,8 @@ public class MigrationRunner {
         String v6Sql = loadResource("db/migration/V6__backtest_listing_integrity.sql");
         String v7Sql = loadResource("db/migration/V7__backtest_funded_observation.sql");
         String v8Sql = loadResource("db/migration/V8__strategy_versions_and_comparisons.sql");
+        String v9Sql = loadResource("db/migration/V9__fix_strategy_schema_and_integrity.sql");
+        String v10Sql = loadResource("db/migration/V10__restore_immutable_trend_version.sql");
         String v1Checksum = computeV1MigrationChecksum(v1Sql);
         String v2Checksum = computeSqlChecksum(v2Sql);
         String v3Checksum = computeSqlChecksum(v3Sql);
@@ -152,6 +154,8 @@ public class MigrationRunner {
         String v6Checksum = computeSqlChecksum(v6Sql);
         String v7Checksum = computeSqlChecksum(v7Sql);
         String v8Checksum = computeSqlChecksum(v8Sql);
+        String v9Checksum = computeSqlChecksum(v9Sql);
+        String v10Checksum = computeSqlChecksum(v10Sql);
 
         transactionTemplate.executeWithoutResult(status -> {
             executeSqlScript(v1Sql);
@@ -162,6 +166,8 @@ public class MigrationRunner {
             executeSqlScript(v6Sql);
             executeSqlScript(v7Sql);
             executeSqlScript(v8Sql);
+            executeSqlScript(v9Sql);
+            executeSqlScript(v10Sql);
 
             // Record migrations
             String now = Instant.now().toString();
@@ -197,6 +203,14 @@ public class MigrationRunner {
                     "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (8, 'M4 strategy versions and comparisons', ?, ?, ?)",
                     v8Checksum, now, CODE_VERSION
             );
+            jdbcTemplate.update(
+                    "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (9, 'M4 strategy schema and integrity fix', ?, ?, ?)",
+                    v9Checksum, now, CODE_VERSION
+            );
+            jdbcTemplate.update(
+                    "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (10, 'M4 immutable trend version restoration', ?, ?, ?)",
+                    v10Checksum, now, CODE_VERSION
+            );
 
             // Seed default user legacy demo portfolio and initial cash
             seedFreshDefaults(now);
@@ -222,6 +236,8 @@ public class MigrationRunner {
         String v6Sql = loadResource("db/migration/V6__backtest_listing_integrity.sql");
         String v7Sql = loadResource("db/migration/V7__backtest_funded_observation.sql");
         String v8Sql = loadResource("db/migration/V8__strategy_versions_and_comparisons.sql");
+        String v9Sql = loadResource("db/migration/V9__fix_strategy_schema_and_integrity.sql");
+        String v10Sql = loadResource("db/migration/V10__restore_immutable_trend_version.sql");
         String v1Checksum = computeV1MigrationChecksum(v1Sql);
         String v2Checksum = computeSqlChecksum(v2Sql);
         String v3Checksum = computeSqlChecksum(v3Sql);
@@ -230,6 +246,8 @@ public class MigrationRunner {
         String v6Checksum = computeSqlChecksum(v6Sql);
         String v7Checksum = computeSqlChecksum(v7Sql);
         String v8Checksum = computeSqlChecksum(v8Sql);
+        String v9Checksum = computeSqlChecksum(v9Sql);
+        String v10Checksum = computeSqlChecksum(v10Sql);
 
         transactionTemplate.executeWithoutResult(status -> {
             log.info("Renaming legacy tables to raw archive tables...");
@@ -250,6 +268,8 @@ public class MigrationRunner {
             executeSqlScript(v6Sql);
             executeSqlScript(v7Sql);
             executeSqlScript(v8Sql);
+            executeSqlScript(v9Sql);
+            executeSqlScript(v10Sql);
 
             // Sync legacy tables for backwards compatibility
             syncLegacyCompatibilityTables();
@@ -288,6 +308,14 @@ public class MigrationRunner {
                     "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (8, 'M4 strategy versions and comparisons', ?, ?, ?)",
                     v8Checksum, now, CODE_VERSION
             );
+            jdbcTemplate.update(
+                    "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (9, 'M4 strategy schema and integrity fix', ?, ?, ?)",
+                    v9Checksum, now, CODE_VERSION
+            );
+            jdbcTemplate.update(
+                    "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (10, 'M4 immutable trend version restoration', ?, ?, ?)",
+                    v10Checksum, now, CODE_VERSION
+            );
         });
         validateCurrentSchema();
 
@@ -303,6 +331,8 @@ public class MigrationRunner {
         String v6Sql = loadResource("db/migration/V6__backtest_listing_integrity.sql");
         String v7Sql = loadResource("db/migration/V7__backtest_funded_observation.sql");
         String v8Sql = loadResource("db/migration/V8__strategy_versions_and_comparisons.sql");
+        String v9Sql = loadResource("db/migration/V9__fix_strategy_schema_and_integrity.sql");
+        String v10Sql = loadResource("db/migration/V10__restore_immutable_trend_version.sql");
         String expectedV1Checksum = computeV1MigrationChecksum(v1Sql);
         String candidateV1Checksum = computeCandidateV1MigrationChecksum(v1Sql);
         String expectedV2Checksum = computeSqlChecksum(v2Sql);
@@ -312,6 +342,8 @@ public class MigrationRunner {
         String expectedV6Checksum = computeSqlChecksum(v6Sql);
         String expectedV7Checksum = computeSqlChecksum(v7Sql);
         String expectedV8Checksum = computeSqlChecksum(v8Sql);
+        String expectedV9Checksum = computeSqlChecksum(v9Sql);
+        String expectedV10Checksum = computeSqlChecksum(v10Sql);
 
         List<Map<String, Object>> migrations = jdbcTemplate.queryForList(
                 "SELECT version, checksum, description, applied_at FROM schema_migrations ORDER BY version ASC"
@@ -360,6 +392,14 @@ public class MigrationRunner {
             } else if (version == 8) {
                 if (!expectedV8Checksum.equals(recordedChecksum)) {
                     throw new IllegalStateException("Migration version 8 checksum mismatch! Recorded: " + recordedChecksum);
+                }
+            } else if (version == 9) {
+                if (!expectedV9Checksum.equals(recordedChecksum)) {
+                    throw new IllegalStateException("Migration version 9 checksum mismatch! Recorded: " + recordedChecksum);
+                }
+            } else if (version == 10) {
+                if (!expectedV10Checksum.equals(recordedChecksum)) {
+                    throw new IllegalStateException("Migration version 10 checksum mismatch! Recorded: " + recordedChecksum);
                 }
             } else {
                 throw new IllegalStateException("Unknown migration version found in database: " + version);
@@ -427,6 +467,16 @@ public class MigrationRunner {
         if (!versions.contains(8)) {
             executeMigrationWithFkToggle(v8Sql, 8, "M4 strategy versions and comparisons", expectedV8Checksum);
             versions.add(8);
+        }
+
+        if (!versions.contains(9)) {
+            executeMigrationWithFkToggle(v9Sql, 9, "M4 strategy schema and integrity fix", expectedV9Checksum);
+            versions.add(9);
+        }
+
+        if (!versions.contains(10)) {
+            executeMigrationWithFkToggle(v10Sql, 10, "M4 immutable trend version restoration", expectedV10Checksum);
+            versions.add(10);
         }
 
         validateCurrentSchema();

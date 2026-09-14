@@ -118,6 +118,7 @@ public class BacktestJobService {
         BacktestDataReader.PreflightValidationResult preflightData;
         try {
             preflightData = dataReader.validatePreflight(
+                    uid,
                     request.strategyId(),
                     request.universeId(),
                     request.datasetId(),
@@ -129,6 +130,91 @@ public class BacktestJobService {
             );
         } catch (IllegalArgumentException e) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+        }
+
+        // Validate strategy existence and version
+        List<Map<String, Object>> stratVersions = jdbcTemplate.queryForList(
+                "SELECT * FROM strategy_versions WHERE strategy_id = ? AND strategy_version = ?",
+                request.strategyId(), request.strategyVersion()
+        );
+        if (stratVersions.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Unknown strategy " + request.strategyId() + " version " + request.strategyVersion());
+        }
+
+        if (request.experimentId() != null && !request.experimentId().isBlank()) {
+            List<Map<String, Object>> experiments = jdbcTemplate.queryForList(
+                    "SELECT owner_id, strategy_id, strategy_version, dataset_id, universe_id, " +
+                            "candidate_listing_id, benchmark_listing_id, parameters_json FROM experiments WHERE id = ?",
+                    request.experimentId());
+            if (experiments.isEmpty()) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Experiment not found: " + request.experimentId());
+            }
+            Map<String, Object> experiment = experiments.get(0);
+            String experimentOwner = (String) experiment.get("owner_id");
+            if (!uid.equals(experimentOwner) && !"default".equals(experimentOwner)) {
+                throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Experiment belongs to another owner");
+            }
+            if (!request.strategyId().equals(experiment.get("strategy_id")) ||
+                    !request.strategyVersion().equals(experiment.get("strategy_version")) ||
+                    !request.datasetId().equals(experiment.get("dataset_id")) ||
+                    !java.util.Objects.equals(request.universeId(), experiment.get("universe_id")) ||
+                    !java.util.Objects.equals(request.candidateListingId(), experiment.get("candidate_listing_id")) ||
+                    !request.benchmarkListingId().equals(experiment.get("benchmark_listing_id")) ||
+                    !java.util.Objects.equals(request.parametersJson(), experiment.get("parameters_json"))) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Run configuration does not match frozen experiment identities");
+            }
+        }
+
+        // Validate strategy parameters against schema / constraints
+        Map<String, Object> params = new HashMap<>();
+        if (request.parametersJson() != null && !request.parametersJson().isBlank()) {
+            try {
+                params = objectMapper.readValue(request.parametersJson(), Map.class);
+            } catch (Exception e) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid parametersJson: " + e.getMessage());
+            }
+        }
+
+        if ("S1-BUY-AND-HOLD".equalsIgnoreCase(request.strategyId()) || "ETF_BUY_HOLD_V1".equalsIgnoreCase(request.strategyId())) {
+            if (!params.isEmpty()) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "S1 buy-and-hold does not accept parameters");
+            }
+        } else if ("S2-MOMENTUM-TOP-K".equalsIgnoreCase(request.strategyId()) || "ETF_MOMENTUM_12_1_V1".equalsIgnoreCase(request.strategyId())) {
+            if (request.universeId() == null || request.universeId().isBlank()) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "universeId is required for S2 momentum strategy");
+            }
+            if (params.size() > 1) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Unrecognized parameter for S2 momentum strategy");
+            }
+            if (!params.isEmpty() && !params.containsKey("k")) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Unrecognized parameter for S2 momentum strategy");
+            }
+            int kVal = params.containsKey("k") ? parseIntegerParameter(params.get("k"), "k") : 3;
+            Integer universeSize = jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM universe_listings WHERE universe_id = ?", Integer.class, request.universeId()
+            );
+            int uSize = universeSize != null ? universeSize : 0;
+            if (kVal < 1 || kVal > uSize) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "Parameter 'k' must be between 1 and " + uSize + ", but was: " + kVal);
+            }
+        } else if ("S3-DUAL-MOMENTUM-CASH-FILTER".equalsIgnoreCase(request.strategyId()) || "ETF_TREND_10M_V1".equalsIgnoreCase(request.strategyId())) {
+            if ("1.0.1".equals(request.strategyVersion()) && !params.isEmpty()) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "S3 version 1.0.1 has a fixed ten-month rule and accepts no parameters");
+            }
+            if (params.containsKey("lookbackMonths")) {
+                int lbVal = parseIntegerParameter(params.get("lookbackMonths"), "lookbackMonths");
+                if (lbVal != 10) {
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                            "Lookback months for S3 trend strategy is fixed at 10, got: " + lbVal);
+                }
+            }
+            for (String key : params.keySet()) {
+                if (!"lookbackMonths".equals(key)) {
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Unrecognized parameter for S3 trend strategy: " + key);
+                }
+            }
         }
 
         BigDecimal normCash = AccountingCore.normalizeStartingCash(new BigDecimal(request.initialCash()));
@@ -300,6 +386,8 @@ public class BacktestJobService {
     private void executeRun(String runId, BacktestDtos.CreateBacktestRequest request) {
         log.info("Starting backtest execution for run {}", runId);
         try {
+            String ownerId = jdbcTemplate.queryForObject(
+                    "SELECT owner_id FROM backtest_runs WHERE id = ?", String.class, runId);
             List<String> statusList = jdbcTemplate.query(
                     "SELECT status FROM backtest_runs WHERE id = ?",
                     (rs, rowNum) -> rs.getString("status"),
@@ -317,6 +405,7 @@ public class BacktestJobService {
             }
 
             BacktestDataReader.LoadedBacktestData data = dataReader.loadAndValidateData(
+                    ownerId,
                     request.strategyId(),
                     request.universeId(),
                     request.datasetId(),
@@ -623,17 +712,13 @@ public class BacktestJobService {
         }
     }
 
-    private void recordHoldoutExposure(String runId, String ownerId, String accessType) {
-        try {
-            List<Map<String, Object>> rows = jdbcTemplate.queryForList(
-                    "SELECT experiment_id FROM backtest_runs WHERE id = ?", runId
-            );
-            if (!rows.isEmpty() && rows.get(0).get("experiment_id") != null) {
-                String expId = (String) rows.get(0).get("experiment_id");
-                experimentService.recordExposure(expId, runId, accessType, ownerId, "{\"runId\":\"" + runId + "\"}");
-            }
-        } catch (Exception e) {
-            log.warn("Failed to record exposure for run {}: {}", runId, e.getMessage());
+    void recordHoldoutExposure(String runId, String ownerId, String accessType) {
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList(
+                "SELECT experiment_id FROM backtest_runs WHERE id = ?", runId
+        );
+        if (!rows.isEmpty() && rows.get(0).get("experiment_id") != null) {
+            String expId = (String) rows.get(0).get("experiment_id");
+            experimentService.recordExposure(expId, runId, accessType, ownerId, "{\"runId\":\"" + runId + "\"}");
         }
     }
 
@@ -704,6 +789,12 @@ public class BacktestJobService {
                 "SELECT * FROM backtest_runs WHERE owner_id = ? ORDER BY created_at DESC, id ASC LIMIT ? OFFSET ?",
                 uid, limit, offset
         );
+
+        for (Map<String, Object> r : rows) {
+            if (r.get("experiment_id") != null) {
+                recordHoldoutExposure((String) r.get("id"), uid, "SUMMARY_VIEW");
+            }
+        }
 
         List<BacktestDtos.BacktestSummaryResponse> items = rows.stream().map(this::mapRunRow).toList();
         return new BacktestDtos.PagedResponse<>(items, total, limit, offset, offset + items.size() < total);
@@ -981,7 +1072,7 @@ public class BacktestJobService {
         return new BacktestDtos.PagedResponse<>(items, total, limit, offset, offset + items.size() < total);
     }
 
-    private BacktestDtos.BacktestSummaryResponse mapRunRow(Map<String, Object> r) {
+    BacktestDtos.BacktestSummaryResponse mapRunRow(Map<String, Object> r) {
         String summaryJson = (String) r.get("summary_json");
         BacktestDtos.BacktestAnalyticsSummary candSummary = null;
         BacktestDtos.BacktestAnalyticsSummary benchSummary = null;
@@ -1060,5 +1151,83 @@ public class BacktestJobService {
                 (String) r.get("updated_at"),
                 (String) r.get("completed_at")
         );
+    }
+
+    public String exportSignalsAsCsv(String runId, String ownerId) {
+        verifyOwnerAccess(runId, ownerId);
+        Integer rowCount = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM backtest_signals s LEFT JOIN backtest_signal_items i ON s.id = i.signal_id WHERE s.run_id = ?",
+                Integer.class, runId);
+        final int maxRows = 10_000;
+        final int maxChars = 5_000_000;
+        if (rowCount != null && rowCount > maxRows) {
+            throw new ResponseStatusException(HttpStatus.PAYLOAD_TOO_LARGE, "Signals CSV exceeds the 10,000-row limit");
+        }
+        String uid = (ownerId == null || ownerId.isBlank()) ? "default" : ownerId;
+        recordHoldoutExposure(runId, uid, "EXPORT_DOWNLOAD");
+
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList(
+                "SELECT s.evaluation_date, s.strategy_id, s.universe_id, i.listing_id, i.score, i.index_value, i.sma_value, " +
+                        "i.rank, i.eligible, i.selected, i.target_weight, i.reason_code, s.scheduled_execution_date, s.status " +
+                        "FROM backtest_signals s " +
+                        "LEFT JOIN backtest_signal_items i ON s.id = i.signal_id " +
+                        "WHERE s.run_id = ? " +
+                        "ORDER BY s.evaluation_date ASC, i.rank ASC, i.listing_id ASC LIMIT ?",
+                runId, maxRows
+        );
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("evaluation_date,strategy_id,universe_id,listing_id,score,index_value,sma_value,rank,eligible,selected,target_weight,reason_code,scheduled_execution_date,status\r\n");
+        for (Map<String, Object> r : rows) {
+            sb.append(csvVal(r.get("evaluation_date"))).append(",");
+            sb.append(csvVal(r.get("strategy_id"))).append(",");
+            sb.append(csvVal(r.get("universe_id"))).append(",");
+            sb.append(csvVal(r.get("listing_id"))).append(",");
+            sb.append(csvVal(r.get("score"))).append(",");
+            sb.append(csvVal(r.get("index_value"))).append(",");
+            sb.append(csvVal(r.get("sma_value"))).append(",");
+            sb.append(csvVal(r.get("rank"))).append(",");
+            Object elig = r.get("eligible");
+            sb.append(elig == null ? "" : (((Number) elig).intValue() == 1 ? "true" : "false")).append(",");
+            Object sel = r.get("selected");
+            sb.append(sel == null ? "" : (((Number) sel).intValue() == 1 ? "true" : "false")).append(",");
+            sb.append(csvVal(r.get("target_weight"))).append(",");
+            sb.append(csvVal(r.get("reason_code"))).append(",");
+            sb.append(csvVal(r.get("scheduled_execution_date"))).append(",");
+            sb.append(csvVal(r.get("status"))).append("\r\n");
+            if (sb.length() > maxChars) {
+                throw new ResponseStatusException(HttpStatus.PAYLOAD_TOO_LARGE, "Signals CSV exceeds the 5,000,000-character limit");
+            }
+        }
+        return sb.toString();
+    }
+
+    private String csvVal(Object obj) {
+        if (obj == null) {
+            return "";
+        }
+        String s = obj.toString();
+        if (!s.isEmpty() && "=+-@".indexOf(s.charAt(0)) >= 0) {
+            try {
+                new BigDecimal(s);
+            } catch (NumberFormatException e) {
+                s = "'" + s;
+            }
+        }
+        if (s.contains(",") || s.contains("\"") || s.contains("\n") || s.contains("\r")) {
+            return "\"" + s.replace("\"", "\"\"") + "\"";
+        }
+        return s;
+    }
+
+    private int parseIntegerParameter(Object value, String name) {
+        if (!(value instanceof Number)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Parameter '" + name + "' must be an integer");
+        }
+        try {
+            return new BigDecimal(value.toString()).intValueExact();
+        } catch (ArithmeticException | NumberFormatException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Parameter '" + name + "' must be an integer");
+        }
     }
 }

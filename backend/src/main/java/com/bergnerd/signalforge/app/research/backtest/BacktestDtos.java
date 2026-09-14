@@ -519,16 +519,53 @@ public final class BacktestDtos {
             List<String> listingIds
     ) {}
 
+    public record StrategyParameterDefinitionDto(
+            String name,
+            String type,
+            Object defaultValue,
+            boolean required,
+            String description
+    ) {}
+
     public record StrategyVersionDto(
             String strategyId,
             String strategyVersion,
             String name,
+            String strategyFamily,
+            String status,
             String description,
+            String rebalanceFrequency,
+            String executionModel,
             String parametersSchemaJson,
+            List<StrategyParameterDefinitionDto> parameters,
+            List<String> supportedCalendars,
+            List<String> supportedCurrencies,
             String calculationPolicyVersion,
             String decisionSchedule,
             String createdAt
-    ) {}
+    ) {
+        public StrategyVersionDto(
+                String strategyId,
+                String strategyVersion,
+                String name,
+                String description,
+                String parametersSchemaJson,
+                String calculationPolicyVersion,
+                String decisionSchedule,
+                String createdAt
+        ) {
+            this(strategyId, strategyVersion, name,
+                    strategyId != null && strategyId.contains("MOMENTUM") ? "CROSS_SECTIONAL_MOMENTUM" :
+                            (strategyId != null && strategyId.contains("TREND") ? "TIME_SERIES_TREND" : "BUY_AND_HOLD"),
+                    "ACTIVE", description,
+                    strategyId != null && (strategyId.contains("MOMENTUM") || strategyId.contains("TREND")) ? "MONTHLY" : "BUY_AND_HOLD",
+                    strategyId != null && strategyId.contains("MOMENTUM") ? "TARGET_WEIGHT_REBALANCE" :
+                            (strategyId != null && strategyId.contains("TREND") ? "ALLOCATION_SWITCH" : "OPEN_AUCTION_REINVEST"),
+                    parametersSchemaJson,
+                    List.of(), List.of("XETR"), List.of("EUR"),
+                    calculationPolicyVersion, decisionSchedule, createdAt);
+        }
+    }
 
     public record BacktestSignalItemDto(
             String id,
@@ -570,10 +607,29 @@ public final class BacktestDtos {
             String startingEquity,
             String endingEquity,
             Double compoundedReturn,
+            String compoundedReturnExact,
             int observationCount,
             boolean isComplete,
             String incompleteReason
-    ) {}
+    ) {
+        public RollingWindowDto(
+                int windowIndex,
+                String startDate,
+                String targetEndDate,
+                String actualEndDate,
+                String startingEquity,
+                String endingEquity,
+                Double compoundedReturn,
+                int observationCount,
+                boolean isComplete,
+                String incompleteReason
+        ) {
+            this(windowIndex, startDate, targetEndDate, actualEndDate, startingEquity, endingEquity,
+                    compoundedReturn,
+                    compoundedReturn != null ? BigDecimal.valueOf(compoundedReturn).setScale(8, RoundingMode.HALF_EVEN).toPlainString() : null,
+                    observationCount, isComplete, incompleteReason);
+        }
+    }
 
     public record RollingWindowSummaryDto(
             int totalWindows,
@@ -643,12 +699,42 @@ public final class BacktestDtos {
             String initialCash,
             String currency,
             String status,
+            List<String> runIds,
+            List<BacktestSummaryResponse> runs,
             List<ComparisonMismatchReason> mismatchReasons,
             List<BacktestComparisonItemDto> items,
             ComparisonSummaryDto summary,
+            Map<String, RollingWindowSummaryDto> rollingWindowsByRun,
             String createdAt,
             String updatedAt
-    ) {}
+    ) {
+        public BacktestComparisonDto(
+                String id,
+                String ownerId,
+                String idempotencyKey,
+                String name,
+                String benchmarkListingId,
+                String datasetId,
+                String effectiveStartDate,
+                String effectiveEndDate,
+                String initialCash,
+                String currency,
+                String status,
+                List<ComparisonMismatchReason> mismatchReasons,
+                List<BacktestComparisonItemDto> items,
+                ComparisonSummaryDto summary,
+                String createdAt,
+                String updatedAt
+        ) {
+            this(id, ownerId, idempotencyKey, name, benchmarkListingId, datasetId,
+                    effectiveStartDate, effectiveEndDate, initialCash, currency, status,
+                    items != null ? items.stream().map(BacktestComparisonItemDto::runId).toList() : List.of(),
+                    List.of(),
+                    mismatchReasons, items, summary,
+                    summary != null && summary.rollingWindowsByRunId() != null ? summary.rollingWindowsByRunId() : Map.of(),
+                    createdAt, updatedAt);
+        }
+    }
 
     public record CreateComparisonRequest(
             String name,

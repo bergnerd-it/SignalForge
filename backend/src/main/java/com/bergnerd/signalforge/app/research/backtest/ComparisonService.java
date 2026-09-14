@@ -23,6 +23,7 @@ public class ComparisonService {
     private final ObjectMapper objectMapper;
     private final BacktestAnalyticsCalculator analyticsCalculator;
     private final ExperimentService experimentService;
+    private final BacktestJobService jobService;
 
     public BacktestDtos.BacktestComparisonDto createComparison(
             String ownerId,
@@ -99,6 +100,78 @@ public class ComparisonService {
             checkMatch(mismatches, "spreadBps", baseConfig.spreadBps(), c.spreadBps(), runIdA, runIdB);
             checkMatch(mismatches, "slippageBps", baseConfig.slippageBps(), c.slippageBps(), runIdA, runIdB);
             checkMatch(mismatches, "engineVersion", baseConfig.engineVersion(), c.engineVersion(), runIdA, runIdB);
+            checkMatch(mismatches, "evaluationCutoff", baseConfig.evaluationCutoff(), c.evaluationCutoff(), runIdA, runIdB);
+            checkMatch(mismatches, "costModelVersion", baseConfig.costModelVersion(), c.costModelVersion(), runIdA, runIdB);
+            checkMatch(mismatches, "accountingVersion", baseConfig.accountingVersion(), c.accountingVersion(), runIdA, runIdB);
+            checkMatch(mismatches, "executionModelVersion", baseConfig.executionModelVersion(), c.executionModelVersion(), runIdA, runIdB);
+
+            String baseFunding = jdbcTemplate.queryForObject(
+                    "SELECT MIN(event_time) FROM backtest_events WHERE run_id = ? AND series_type = 'CANDIDATE' AND event_type = 'FUNDING'",
+                    String.class, runIdA);
+            String otherFunding = jdbcTemplate.queryForObject(
+                    "SELECT MIN(event_time) FROM backtest_events WHERE run_id = ? AND series_type = 'CANDIDATE' AND event_type = 'FUNDING'",
+                    String.class, runIdB);
+            if (baseFunding == null || otherFunding == null) {
+                mismatches.add(new BacktestDtos.ComparisonMismatchReason(
+                        "fundingInstant", String.valueOf(baseFunding), String.valueOf(otherFunding),
+                        "A recorded funding instant is required for both runs"));
+            } else {
+                checkMatch(mismatches, "fundingInstant", baseFunding, otherFunding, runIdA, runIdB);
+            }
+
+            // Reporting sessions sequence match
+            List<String> baseSessions = jdbcTemplate.queryForList(
+                    "SELECT session_date FROM backtest_daily_equity WHERE run_id = ? AND series_type = 'CANDIDATE' ORDER BY session_date ASC",
+                    String.class, runIdA
+            );
+            List<String> otherSessions = jdbcTemplate.queryForList(
+                    "SELECT session_date FROM backtest_daily_equity WHERE run_id = ? AND series_type = 'CANDIDATE' ORDER BY session_date ASC",
+                    String.class, runIdB
+            );
+            if (!baseSessions.equals(otherSessions)) {
+                mismatches.add(new BacktestDtos.ComparisonMismatchReason(
+                        "reportingSessions",
+                        "sessions=" + baseSessions.size(),
+                        "sessions=" + otherSessions.size(),
+                        "Reporting session sequence mismatch between " + runIdA + " and " + runIdB
+                ));
+            }
+
+            List<Map<String, Object>> baseBenchmark = jdbcTemplate.queryForList(
+                    "SELECT session_date, point_kind, total_equity, cash, holdings_value, receivables " +
+                            "FROM backtest_daily_equity WHERE run_id = ? AND series_type = 'BENCHMARK' ORDER BY session_date, point_kind",
+                    runIdA);
+            List<Map<String, Object>> otherBenchmark = jdbcTemplate.queryForList(
+                    "SELECT session_date, point_kind, total_equity, cash, holdings_value, receivables " +
+                            "FROM backtest_daily_equity WHERE run_id = ? AND series_type = 'BENCHMARK' ORDER BY session_date, point_kind",
+                    runIdB);
+            if (baseBenchmark.isEmpty() || otherBenchmark.isEmpty() || !baseBenchmark.equals(otherBenchmark)) {
+                mismatches.add(new BacktestDtos.ComparisonMismatchReason(
+                        "benchmarkSeries", String.valueOf(baseBenchmark.size()), String.valueOf(otherBenchmark.size()),
+                        "Benchmark equity/accounting series differ between " + runIdA + " and " + runIdB));
+            }
+
+            // Benchmark summary matching
+            String baseSummaryJson = (String) baseRun.get("summary_json");
+            String otherSummaryJson = (String) r.get("summary_json");
+            if (baseSummaryJson != null && otherSummaryJson != null) {
+                try {
+                    Map<String, Object> baseMap = objectMapper.readValue(baseSummaryJson, Map.class);
+                    Map<String, Object> otherMap = objectMapper.readValue(otherSummaryJson, Map.class);
+                    Object baseBench = baseMap.get("benchmark");
+                    Object otherBench = otherMap.get("benchmark");
+                    if (!Objects.equals(baseBench, otherBench)) {
+                        mismatches.add(new BacktestDtos.ComparisonMismatchReason(
+                                "benchmarkSummary",
+                                String.valueOf(baseBench),
+                                String.valueOf(otherBench),
+                                "Benchmark summary mismatch between " + runIdA + " and " + runIdB
+                        ));
+                    }
+                } catch (Exception e) {
+                    log.warn("Failed to compare benchmark summaries: {}", e.getMessage());
+                }
+            }
         }
 
         String compStatus = mismatches.isEmpty() ? "MATCHED" : "MISMATCHED";
@@ -199,6 +272,16 @@ public class ComparisonService {
             }
         }
 
+        List<BacktestDtos.BacktestSummaryResponse> runs = new ArrayList<>();
+        for (String rid : runIds) {
+            List<Map<String, Object>> rRows = jdbcTemplate.queryForList("SELECT * FROM backtest_runs WHERE id = ?", rid);
+            if (!rRows.isEmpty()) {
+                runs.add(jobService.mapRunRow(rRows.get(0)));
+            }
+        }
+        Map<String, BacktestDtos.RollingWindowSummaryDto> rollingWindows = summary != null && summary.rollingWindowsByRunId() != null
+                ? summary.rollingWindowsByRunId() : Map.of();
+
         return new BacktestDtos.BacktestComparisonDto(
                 (String) r.get("id"),
                 (String) r.get("owner_id"),
@@ -211,9 +294,12 @@ public class ComparisonService {
                 (String) r.get("initial_cash"),
                 (String) r.get("currency"),
                 (String) r.get("status"),
+                runIds,
+                runs,
                 mismatches,
                 items,
                 summary,
+                rollingWindows,
                 (String) r.get("created_at"),
                 (String) r.get("updated_at")
         );

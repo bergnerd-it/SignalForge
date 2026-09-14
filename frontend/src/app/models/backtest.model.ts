@@ -209,7 +209,7 @@ export interface BacktestEventDto {
 export interface StrategyParameterDefinitionDto {
   name: string;
   type: string;
-  defaultValue: any;
+  defaultValue: string | number | boolean | null;
   description: string;
   required: boolean;
 }
@@ -239,9 +239,16 @@ export interface UniverseDto {
   currency: string;
   provenance: string;
   listingCount: number;
-  listings: string[];
+  listings: UniverseListingDto[];
   createdAt: string;
-  updatedAt: string;
+}
+
+export interface UniverseListingDto {
+  listingId: string;
+  ordinal: number;
+  symbol: string;
+  venue: string;
+  quoteCurrency: string;
 }
 
 export interface CreateUniverseRequest {
@@ -303,8 +310,9 @@ export interface CreateExperimentRequest {
 
 export interface ComparisonMismatchReason {
   field: string;
+  expected: string;
+  actual: string;
   message: string;
-  valuesByRun: Record<string, any>;
 }
 
 export interface RollingWindowDto {
@@ -333,8 +341,7 @@ export interface BacktestComparisonDto {
   id: string;
   ownerId: string;
   name: string;
-  comparisonBasis: string;
-  status: 'MATCHED' | 'MISMATCHED';
+  status: 'MATCHED' | 'MISMATCHED' | 'ERROR';
   runIds: string[];
   runs: BacktestSummaryResponse[];
   mismatchReasons: ComparisonMismatchReason[];

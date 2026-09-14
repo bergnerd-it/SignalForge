@@ -200,7 +200,7 @@
           <h3 class="section-heading font-mono">CONSTITUENT LISTINGS ({{ selectedUniverse.listings?.length || 0 }})</h3>
           <div class="tags-cloud font-mono">
             <span *ngFor="let l of selectedUniverse.listings" class="listing-tag">
-              {{ l }}
+              {{ l.listingId }}
             </span>
           </div>
         </div>

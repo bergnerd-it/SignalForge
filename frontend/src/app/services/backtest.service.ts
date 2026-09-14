@@ -332,7 +332,17 @@ export class BacktestService {
   }
 
   public getSignals(runId: string): Observable<SignalDto[]> {
-    return this.http.get<SignalDto[]>(`/api/research/backtests/${runId}/signals`);
+    const readPage = (offset: number): Observable<SignalDto[]> =>
+      this.http.get<PagedResponse<SignalDto>>(`/api/research/backtests/${runId}/signals`, {
+        params: { limit: '500', offset: String(offset) },
+      }).pipe(switchMap((page) => page.hasMore
+        ? readPage(offset + page.items.length).pipe(switchMap((rest) => of([...page.items, ...rest])))
+        : of(page.items)));
+    return readPage(0);
+  }
+
+  public getSignalsExportUrl(id: string): string {
+    return `/api/research/backtests/${id}/signals/export`;
   }
 
   public getStrategies(): Observable<StrategyVersionDto[]> {
@@ -368,15 +378,26 @@ export class BacktestService {
   }
 
   public getComparisons(): Observable<BacktestComparisonDto[]> {
-    return this.http.get<BacktestComparisonDto[]>('/api/research/comparisons');
+    const readPage = (offset: number): Observable<BacktestComparisonDto[]> =>
+      this.http.get<PagedResponse<BacktestComparisonDto>>('/api/research/comparisons', {
+        params: { limit: '100', offset: String(offset) },
+      }).pipe(switchMap((page) => page.hasMore
+        ? readPage(offset + page.items.length).pipe(switchMap((rest) => of([...page.items, ...rest])))
+        : of(page.items)));
+    return readPage(0);
   }
 
   public getComparison(id: string): Observable<BacktestComparisonDto> {
     return this.http.get<BacktestComparisonDto>(`/api/research/comparisons/${id}`);
   }
 
-  public createComparison(req: CreateComparisonRequest): Observable<BacktestComparisonDto> {
-    return this.http.post<BacktestComparisonDto>('/api/research/comparisons', req);
+  public createComparison(req: CreateComparisonRequest, idempotencyKey?: string): Observable<BacktestComparisonDto> {
+    const key = idempotencyKey || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : 'comp-' + Date.now());
+    const headers = new HttpHeaders({
+      'Content-Type': 'application/json',
+      'Idempotency-Key': key,
+    });
+    return this.http.post<BacktestComparisonDto>('/api/research/comparisons', req, { headers });
   }
 
   public getComparisonExportUrl(id: string): string {

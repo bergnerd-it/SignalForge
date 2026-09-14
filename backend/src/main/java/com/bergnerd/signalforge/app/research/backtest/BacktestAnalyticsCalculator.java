@@ -348,11 +348,34 @@ public class BacktestAnalyticsCalculator {
             LocalDate targetEndDate = firstDate.plusYears(5);
             String targetEndStr = targetEndDate.toString();
 
+            LocalDate maxCalendarDate = allSessions != null && !allSessions.isEmpty()
+                    ? LocalDate.parse(allSessions.get(allSessions.size() - 1).sessionDate())
+                    : null;
+
+            BacktestDataReader.SessionRecord expectedEndingSession = null;
+            if (allSessions != null) {
+                for (BacktestDataReader.SessionRecord s : allSessions) {
+                    if (s.isTrading()) {
+                        LocalDate sd = LocalDate.parse(s.sessionDate());
+                        if (!sd.isAfter(targetEndDate)) {
+                            expectedEndingSession = s;
+                        }
+                    }
+                }
+            }
+
             String lastRunSessionDate = tradingPoints.get(tradingPoints.size() - 1).sessionDate();
-            boolean coveredInRun = !targetEndDate.isAfter(LocalDate.parse(lastRunSessionDate));
+            LocalDate lastRunDate = LocalDate.parse(lastRunSessionDate);
+
+            boolean hasCalendarCoverage = maxCalendarDate == null || !targetEndDate.isAfter(maxCalendarDate);
+            boolean coveredInRun = hasCalendarCoverage && expectedEndingSession != null
+                    && !LocalDate.parse(expectedEndingSession.sessionDate()).isAfter(lastRunDate);
 
             if (!coveredInRun) {
                 windowIdx++;
+                String reason = !hasCalendarCoverage
+                        ? "INSUFFICIENT_CALENDAR_COVERAGE: Calendar ends on " + maxCalendarDate + ", before 5-year anniversary " + targetEndStr
+                        : "INSUFFICIENT_HISTORY: Backtest ends on " + lastRunSessionDate + ", before 5-year anniversary " + targetEndStr;
                 windowList.add(new BacktestDtos.RollingWindowDto(
                         windowIdx,
                         startSessionDate,
@@ -361,17 +384,21 @@ public class BacktestAnalyticsCalculator {
                         startingEquityStr,
                         null,
                         null,
+                        null,
                         0,
                         false,
-                        "INSUFFICIENT_HISTORY: Backtest ends on " + lastRunSessionDate + ", before 5-year anniversary " + targetEndStr
+                        reason
                 ));
             } else {
+                String expectedEndDate = expectedEndingSession.sessionDate();
                 BacktestDtos.DailyEquityPoint endingPt = null;
                 int obsCount = 0;
                 for (BacktestDtos.DailyEquityPoint pt : tradingPoints) {
                     LocalDate d = LocalDate.parse(pt.sessionDate());
                     if (!d.isBefore(firstDate) && !d.isAfter(targetEndDate)) {
                         obsCount++;
+                    }
+                    if (pt.sessionDate().equals(expectedEndDate)) {
                         endingPt = pt;
                     }
                 }
@@ -381,8 +408,10 @@ public class BacktestAnalyticsCalculator {
                     completeCount++;
                     BigDecimal startEq = new BigDecimal(startingEquityStr);
                     BigDecimal endEq = new BigDecimal(endingPt.totalEquity());
-                    double compoundedReturn = endEq.subtract(startEq)
-                            .divide(startEq, 8, RoundingMode.HALF_EVEN).doubleValue();
+                    BigDecimal exactReturn = endEq.subtract(startEq)
+                            .divide(startEq, 8, RoundingMode.HALF_EVEN);
+                    double compoundedReturn = exactReturn.doubleValue();
+                    String compoundedReturnExact = exactReturn.toPlainString();
                     if (compoundedReturn > 0.0) {
                         positiveCount++;
                     }
@@ -395,10 +424,17 @@ public class BacktestAnalyticsCalculator {
                             startingEquityStr,
                             endingPt.totalEquity(),
                             compoundedReturn,
+                            compoundedReturnExact,
                             obsCount,
                             true,
                             null
                     ));
+                } else {
+                    windowIdx++;
+                    windowList.add(new BacktestDtos.RollingWindowDto(
+                            windowIdx, startSessionDate, targetEndStr, expectedEndDate,
+                            startingEquityStr, null, null, null, obsCount, false,
+                            "MISSING_END_EQUITY: No portfolio equity at the declared anniversary session " + expectedEndDate));
                 }
             }
 

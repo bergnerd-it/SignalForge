@@ -7,6 +7,8 @@ import org.springframework.stereotype.Component;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.util.*;
 
 @Slf4j
@@ -705,16 +707,6 @@ public class BacktestEngine {
                 .filter(BacktestDataReader.SessionRecord::isTrading)
                 .toList();
 
-        Map<String, TotalReturnSignalIndexCalculator.ListingSignalIndexSeries> indexSeriesMap = new HashMap<>();
-        for (String lid : targetListingIds) {
-            indexSeriesMap.put(lid, indexCalculator.calculateSeries(
-                    lid,
-                    allTradingSessions,
-                    barsByListingAndDate.get(lid),
-                    actionsByListing.getOrDefault(lid, List.of())
-            ));
-        }
-
         List<String> monthEndDates = TotalReturnSignalIndexCalculator.extractMonthEndSessions(allSessions);
 
         boolean isS2 = "ETF_MOMENTUM_12_1_V1".equalsIgnoreCase(strategyId);
@@ -723,8 +715,9 @@ public class BacktestEngine {
         int k = 3;
         if (isS2 && parameters != null && parameters.containsKey("k")) {
             k = ((Number) parameters.get("k")).intValue();
-            if (k < 1) k = 1;
-            if (k > targetListingIds.size()) k = targetListingIds.size();
+            if (k < 1 || k > targetListingIds.size()) {
+                throw new IllegalArgumentException("Parameter 'k' must be between 1 and " + targetListingIds.size() + ", but was: " + k);
+            }
         }
 
         BigDecimal prevSessionEquity = cash;
@@ -776,15 +769,19 @@ public class BacktestEngine {
                     fundingTime
             ));
 
-            java.time.YearMonth evalYm = java.time.YearMonth.parse(evalSession.sessionDate().substring(0, 7));
-            if (isS2) {
-                pendingSignal = strategyEvaluator.evaluateS2(
-                        runId, ++signalSeq, universeId, k, evalYm, evalSession, firstSession, targetListingIds, indexSeriesMap
-                );
-            } else if (isS3) {
-                pendingSignal = strategyEvaluator.evaluateS3(
-                        runId, ++signalSeq, candidateListingId, evalYm, evalSession, firstSession, indexSeriesMap.get(candidateListingId)
-                );
+            ScheduledSignalResult res = createAndScheduleSignal(
+                    runId, ++signalSeq, strategyVersion, isS2, isS3, universeId, k, candidateListingId,
+                    evalSession, 0, sessions, targetListingIds, barsByListingAndDate, actionsByListing, allTradingSessions
+            );
+            if (res != null) {
+                if (!res.isPending() || !firstSession.sessionDate().equals(res.signal().scheduledExecutionDate())) {
+                    throw new IllegalArgumentException("Initial strategy observations are unavailable before the common candidate/benchmark funding open");
+                }
+                if (res.isPending()) {
+                    pendingSignal = res.signal();
+                } else {
+                    signalsList.add(toSignalDto(res.signal(), "UNEXECUTED", "DATA_UNAVAILABLE_BEFORE_EXECUTION"));
+                }
             }
         }
 
@@ -799,15 +796,19 @@ public class BacktestEngine {
             if (i > 0) {
                 BacktestDataReader.SessionRecord prevSession = sessions.get(i - 1);
                 if (monthEndDates.contains(prevSession.sessionDate())) {
-                    java.time.YearMonth ym = java.time.YearMonth.parse(prevSession.sessionDate().substring(0, 7));
-                    if (isS2) {
-                        pendingSignal = strategyEvaluator.evaluateS2(
-                                runId, ++signalSeq, universeId, k, ym, prevSession, session, targetListingIds, indexSeriesMap
-                        );
-                    } else if (isS3) {
-                        pendingSignal = strategyEvaluator.evaluateS3(
-                                runId, ++signalSeq, candidateListingId, ym, prevSession, session, indexSeriesMap.get(candidateListingId)
-                        );
+                    ScheduledSignalResult res = createAndScheduleSignal(
+                            runId, ++signalSeq, strategyVersion, isS2, isS3, universeId, k, candidateListingId,
+                            prevSession, i, sessions, targetListingIds, barsByListingAndDate, actionsByListing, allTradingSessions
+                    );
+                    if (res != null) {
+                        if (res.isPending()) {
+                            if (pendingSignal != null) {
+                                signalsList.add(toSignalDto(pendingSignal, "UNEXECUTED", "SUPERSEDED_BEFORE_EXECUTION"));
+                            }
+                            pendingSignal = res.signal();
+                        } else {
+                            signalsList.add(toSignalDto(res.signal(), "UNEXECUTED", "DATA_UNAVAILABLE_BEFORE_EXECUTION"));
+                        }
                     }
                 }
             }
@@ -924,21 +925,21 @@ public class BacktestEngine {
             }
 
             // 3. Executions at Session Open (09:00)
+            BigDecimal holdingsValAtOpen = BigDecimal.ZERO;
+            Map<String, BigDecimal> opens = new HashMap<>();
+            for (String lid : targetListingIds) {
+                BacktestDataReader.BarRecord bar = barsByListingAndDate.get(lid).get(sDate);
+                BigDecimal rawOpen = bar != null ? bar.open() : BigDecimal.ZERO;
+                opens.put(lid, rawOpen);
+                holdingsValAtOpen = holdingsValAtOpen.add(
+                        currentUnits.get(lid).multiply(rawOpen, AccountingCore.MATH_CONTEXT)
+                );
+            }
+            BigDecimal preTradeEquity = cash.add(receivables).add(holdingsValAtOpen);
+
             if (pendingSignal != null && sDate.equals(pendingSignal.scheduledExecutionDate())) {
                 StrategyEvaluator.EvaluatedSignal sig = pendingSignal;
                 pendingSignal = null;
-
-                BigDecimal holdingsValAtOpen = BigDecimal.ZERO;
-                Map<String, BigDecimal> opens = new HashMap<>();
-                for (String lid : targetListingIds) {
-                    BacktestDataReader.BarRecord bar = barsByListingAndDate.get(lid).get(sDate);
-                    BigDecimal rawOpen = bar != null ? bar.open() : BigDecimal.ZERO;
-                    opens.put(lid, rawOpen);
-                    holdingsValAtOpen = holdingsValAtOpen.add(
-                            currentUnits.get(lid).multiply(rawOpen, AccountingCore.MATH_CONTEXT)
-                    );
-                }
-                BigDecimal preTradeEquity = cash.add(receivables).add(holdingsValAtOpen);
 
                 Map<String, BigDecimal> targetUnitsMap = new HashMap<>();
                 boolean skipDueToS3ChurnSuppression = false;
@@ -947,60 +948,17 @@ public class BacktestEngine {
                     BigDecimal s3Weight = sig.targetWeights().getOrDefault(candidateListingId, BigDecimal.ZERO);
                     if (prevS3TargetWeight.compareTo(BigDecimal.ONE) == 0 && s3Weight.compareTo(BigDecimal.ONE) == 0) {
                         skipDueToS3ChurnSuppression = true;
-                        if (s3HasSettledReinvestment) {
-                            s3HasSettledReinvestment = false;
-                            BigDecimal rawOpen = opens.get(candidateListingId);
-                            BigDecimal fillPrice = rawOpen.multiply(buyPriceMultiplier, AccountingCore.MATH_CONTEXT);
-                            BigDecimal availableForReinvest = cash.subtract(commission);
-                            if (availableForReinvest.compareTo(BigDecimal.ZERO) > 0) {
-                                int addUnits = availableForReinvest.divide(fillPrice, 0, RoundingMode.FLOOR).intValue();
-                                if (addUnits > 0) {
-                                    BigDecimal tradeGross = AccountingCore.roundCash(BigDecimal.valueOf(addUnits).multiply(fillPrice, AccountingCore.MATH_CONTEXT));
-                                    BigDecimal totalTradeCost = tradeGross.add(commission);
-                                    if (totalTradeCost.compareTo(cash) <= 0) {
-                                        cash = cash.subtract(totalTradeCost);
-                                        totalCommissions = totalCommissions.add(commission);
-                                        BigDecimal spreadSlip = AccountingCore.roundCash(BigDecimal.valueOf(addUnits).multiply(rawOpen, AccountingCore.MATH_CONTEXT).multiply(halfSpreadFraction.add(slippageFraction), AccountingCore.MATH_CONTEXT));
-                                        totalSpreadSlippage = totalSpreadSlippage.add(spreadSlip);
-                                        currentUnits.put(candidateListingId, currentUnits.get(candidateListingId).add(BigDecimal.valueOf(addUnits)));
-                                        currentBasis.put(candidateListingId, currentBasis.get(candidateListingId).add(totalTradeCost));
-                                        fillCount++;
-
-                                        orderSeq++;
-                                        ordersList.add(new BacktestDtos.BacktestOrderDto(
-                                                runId + "-ord-" + String.format("%04d", orderSeq),
-                                                runId, seriesType.name(), "REINVEST", candidateListingId, sDate,
-                                                String.valueOf(addUnits), String.valueOf(addUnits),
-                                                rawOpen.toPlainString(), fillPrice.setScale(AccountingCore.PRICE_SCALE, AccountingCore.CASH_ROUNDING).toPlainString(),
-                                                commission.toPlainString(), "0.00", spreadSlip.toPlainString(),
-                                                totalTradeCost.negate().toPlainString(), "FILLED", null, session.openTime()
-                                        ));
-
-                                        eventSeq++;
-                                        eventsList.add(new BacktestDtos.BacktestEventDto(
-                                                runId + "-" + seriesType.name().toLowerCase() + "-evt-" + String.format("%04d", eventSeq),
-                                                runId, seriesType.name(), eventSeq,
-                                                BacktestDtos.EventType.EXECUTION.name(), sDate, session.openTime(),
-                                                "Reinvested " + addUnits + " units of " + candidateListingId,
-                                                "{\"listingId\":\"" + candidateListingId + "\",\"units\":" + addUnits + "}",
-                                                totalTradeCost.negate().toPlainString(), String.valueOf(addUnits), totalTradeCost.toPlainString(), "0.00", session.openTime()
-                                        ));
-                                    }
-                                }
-                            }
-                        }
                     } else {
                         prevS3TargetWeight = s3Weight;
-                        s3HasSettledReinvestment = false;
                         if (s3Weight.compareTo(BigDecimal.ONE) == 0) {
                             BigDecimal rawOpen = opens.get(candidateListingId);
-                            BigDecimal fillPrice = rawOpen.multiply(buyPriceMultiplier, AccountingCore.MATH_CONTEXT);
-                            BigDecimal spendable = cash.subtract(commission);
-                            int tu = spendable.compareTo(BigDecimal.ZERO) > 0
-                                    ? spendable.divide(fillPrice, 0, RoundingMode.FLOOR).intValue() : 0;
-                            targetUnitsMap.put(candidateListingId, BigDecimal.valueOf(tu));
+                            BigDecimal targetUnits = (rawOpen != null && rawOpen.compareTo(BigDecimal.ZERO) > 0)
+                                    ? preTradeEquity.multiply(s3Weight, AccountingCore.MATH_CONTEXT).divide(rawOpen, 0, RoundingMode.FLOOR)
+                                    : BigDecimal.ZERO;
+                            targetUnitsMap.put(candidateListingId, targetUnits);
                         } else {
                             targetUnitsMap.put(candidateListingId, BigDecimal.ZERO);
+                            s3HasSettledReinvestment = false;
                         }
                     }
                 } else if (isS2) {
@@ -1009,7 +967,9 @@ public class BacktestEngine {
                         if (w.compareTo(BigDecimal.ZERO) > 0) {
                             BigDecimal rawOpen = opens.get(lid);
                             BigDecimal targetDollar = preTradeEquity.multiply(w, AccountingCore.MATH_CONTEXT);
-                            BigDecimal targetUnits = targetDollar.divide(rawOpen, 0, RoundingMode.FLOOR);
+                            BigDecimal targetUnits = (rawOpen != null && rawOpen.compareTo(BigDecimal.ZERO) > 0)
+                                    ? targetDollar.divide(rawOpen, 0, RoundingMode.FLOOR)
+                                    : BigDecimal.ZERO;
                             targetUnitsMap.put(lid, targetUnits);
                         } else {
                             targetUnitsMap.put(lid, BigDecimal.ZERO);
@@ -1030,15 +990,8 @@ public class BacktestEngine {
                             BigDecimal netProceeds = grossProceeds.subtract(commission);
 
                             if (cash.add(netProceeds).compareTo(BigDecimal.ZERO) < 0) {
-                                orderSeq++;
-                                ordersList.add(new BacktestDtos.BacktestOrderDto(
-                                        runId + "-ord-" + String.format("%04d", orderSeq),
-                                        runId, seriesType.name(), "REBALANCE_SELL", lid, sDate,
-                                        sellQty.toPlainString(), "0",
-                                        rawOpen.toPlainString(), fillPrice.toPlainString(),
-                                        "0.00", "0.00", "0.00", "0.00",
-                                        "REJECTED", "INSUFFICIENT_CASH_FOR_COSTS", session.openTime()
-                                ));
+                                throw new IllegalStateException("Cannot book sale of " + lid + " on " + sDate +
+                                        " without negative cash after costs");
                             } else {
                                 cash = cash.add(netProceeds);
                                 totalCommissions = totalCommissions.add(commission);
@@ -1159,7 +1112,7 @@ public class BacktestEngine {
                                 fillCount++;
 
                                 String orderType = (i == 0) ? "INITIAL_BUY" : "REBALANCE_BUY";
-                                String orderStatus = (q == reqQ.intValue()) ? "FILLED" : "PARTIALLY_FILLED";
+                                String orderStatus = "FILLED";
 
                                 orderSeq++;
                                 ordersList.add(new BacktestDtos.BacktestOrderDto(
@@ -1168,7 +1121,8 @@ public class BacktestEngine {
                                         reqQ.toPlainString(), String.valueOf(q),
                                         rawOpen.toPlainString(), fillPrice.setScale(AccountingCore.PRICE_SCALE, AccountingCore.CASH_ROUNDING).toPlainString(),
                                         commission.toPlainString(), "0.00", spreadSlip.toPlainString(),
-                                        totalCost.negate().toPlainString(), orderStatus, null, session.openTime()
+                                        totalCost.negate().toPlainString(), orderStatus,
+                                        q == reqQ.intValue() ? null : "CASH_SHORTFALL", session.openTime()
                                 ));
 
                                 eventSeq++;
@@ -1195,7 +1149,53 @@ public class BacktestEngine {
                     }
                 }
 
-                signalsList.add(toSignalDto(sig, "EXECUTED"));
+                signalsList.add(toSignalDto(sig, "EXECUTED", null));
+            }
+
+            // S3 Interim Dividend Reinvestment (while in ETF state)
+            if (isS3 && prevS3TargetWeight.compareTo(BigDecimal.ONE) == 0 && s3HasSettledReinvestment) {
+                s3HasSettledReinvestment = false;
+                BigDecimal rawOpen = opens.get(candidateListingId);
+                if (rawOpen != null && rawOpen.compareTo(BigDecimal.ZERO) > 0) {
+                    BigDecimal fillPrice = rawOpen.multiply(buyPriceMultiplier, AccountingCore.MATH_CONTEXT);
+                    BigDecimal availableForReinvest = cash.subtract(commission);
+                    if (availableForReinvest.compareTo(BigDecimal.ZERO) > 0) {
+                        int addUnits = availableForReinvest.divide(fillPrice, 0, RoundingMode.FLOOR).intValue();
+                        if (addUnits > 0) {
+                            BigDecimal tradeGross = AccountingCore.roundCash(BigDecimal.valueOf(addUnits).multiply(fillPrice, AccountingCore.MATH_CONTEXT));
+                            BigDecimal totalTradeCost = tradeGross.add(commission);
+                            if (totalTradeCost.compareTo(cash) <= 0) {
+                                cash = cash.subtract(totalTradeCost);
+                                totalCommissions = totalCommissions.add(commission);
+                                BigDecimal spreadSlip = AccountingCore.roundCash(BigDecimal.valueOf(addUnits).multiply(rawOpen, AccountingCore.MATH_CONTEXT).multiply(halfSpreadFraction.add(slippageFraction), AccountingCore.MATH_CONTEXT));
+                                totalSpreadSlippage = totalSpreadSlippage.add(spreadSlip);
+                                currentUnits.put(candidateListingId, currentUnits.get(candidateListingId).add(BigDecimal.valueOf(addUnits)));
+                                currentBasis.put(candidateListingId, currentBasis.get(candidateListingId).add(totalTradeCost));
+                                fillCount++;
+
+                                orderSeq++;
+                                ordersList.add(new BacktestDtos.BacktestOrderDto(
+                                        runId + "-ord-" + String.format("%04d", orderSeq),
+                                        runId, seriesType.name(), "REINVEST", candidateListingId, sDate,
+                                        String.valueOf(addUnits), String.valueOf(addUnits),
+                                        rawOpen.toPlainString(), fillPrice.setScale(AccountingCore.PRICE_SCALE, AccountingCore.CASH_ROUNDING).toPlainString(),
+                                        commission.toPlainString(), "0.00", spreadSlip.toPlainString(),
+                                        totalTradeCost.negate().toPlainString(), "FILLED", null, session.openTime()
+                                ));
+
+                                eventSeq++;
+                                eventsList.add(new BacktestDtos.BacktestEventDto(
+                                        runId + "-" + seriesType.name().toLowerCase() + "-evt-" + String.format("%04d", eventSeq),
+                                        runId, seriesType.name(), eventSeq,
+                                        BacktestDtos.EventType.EXECUTION.name(), sDate, session.openTime(),
+                                        "Reinvested " + addUnits + " units of " + candidateListingId,
+                                        "{\"listingId\":\"" + candidateListingId + "\",\"units\":" + addUnits + "}",
+                                        totalTradeCost.negate().toPlainString(), String.valueOf(addUnits), totalTradeCost.toPlainString(), "0.00", session.openTime()
+                                ));
+                            }
+                        }
+                    }
+                }
             }
 
             // 4. Intraday Corporate Actions (settling after open)
@@ -1212,6 +1212,9 @@ public class BacktestEngine {
                 if (settlesToday) {
                     cash = cash.add(p.amount);
                     receivables = receivables.subtract(p.amount);
+                    if (isS3 && prevS3TargetWeight.compareTo(BigDecimal.ONE) == 0) {
+                        s3HasSettledReinvestment = true;
+                    }
 
                     eventSeq++;
                     String eventId = runId + "-" + seriesType.name().toLowerCase() + "-evt-" + String.format("%04d", eventSeq);
@@ -1247,11 +1250,9 @@ public class BacktestEngine {
             if (totalEquity.compareTo(peakEquity) > 0) {
                 peakEquity = totalEquity;
             }
-            Double drawdown = 0.0;
-            if (peakEquity.compareTo(BigDecimal.ZERO) > 0) {
-                drawdown = totalEquity.subtract(peakEquity)
-                        .divide(peakEquity, 8, RoundingMode.HALF_EVEN).doubleValue();
-            }
+            double drawdown = peakEquity.compareTo(BigDecimal.ZERO) > 0
+                    ? totalEquity.subtract(peakEquity).divide(peakEquity, 8, RoundingMode.HALF_EVEN).doubleValue()
+                    : 0.0;
 
             BigDecimal totalHeldUnits = BigDecimal.ZERO;
             BigDecimal totalHeldBasis = BigDecimal.ZERO;
@@ -1263,9 +1264,9 @@ public class BacktestEngine {
             dailyEquityList.add(new BacktestDtos.DailyEquityPoint(
                     sDate,
                     seriesType.name(),
-                    cash.toPlainString(),
+                    cash.setScale(AccountingCore.CASH_SCALE, AccountingCore.CASH_ROUNDING).toPlainString(),
                     holdingsValAtClose.setScale(AccountingCore.CASH_SCALE, AccountingCore.CASH_ROUNDING).toPlainString(),
-                    receivables.toPlainString(),
+                    receivables.setScale(AccountingCore.CASH_SCALE, AccountingCore.CASH_ROUNDING).toPlainString(),
                     totalEquity.setScale(AccountingCore.CASH_SCALE, AccountingCore.CASH_ROUNDING).toPlainString(),
                     dailyReturn,
                     drawdown,
@@ -1281,21 +1282,19 @@ public class BacktestEngine {
 
             // Final session check
             if (i == sessions.size() - 1 && monthEndDates.contains(sDate)) {
-                java.time.YearMonth ym = java.time.YearMonth.parse(sDate.substring(0, 7));
-                StrategyEvaluator.EvaluatedSignal finalSig = null;
-                if (isS2) {
-                    finalSig = strategyEvaluator.evaluateS2(
-                            runId, ++signalSeq, universeId, k, ym, session, null, targetListingIds, indexSeriesMap
-                    );
-                } else if (isS3) {
-                    finalSig = strategyEvaluator.evaluateS3(
-                            runId, ++signalSeq, candidateListingId, ym, session, null, indexSeriesMap.get(candidateListingId)
-                    );
-                }
-                if (finalSig != null) {
-                    signalsList.add(toSignalDto(finalSig, "UNEXECUTED"));
+                ScheduledSignalResult res = createAndScheduleSignal(
+                        runId, ++signalSeq, strategyVersion, isS2, isS3, universeId, k, candidateListingId,
+                        session, sessions.size(), sessions, targetListingIds, barsByListingAndDate, actionsByListing, allTradingSessions
+                );
+                if (res != null) {
+                    signalsList.add(toSignalDto(res.signal(), "UNEXECUTED", "FINAL_SESSION_EVALUATION"));
                 }
             }
+        }
+
+        if (pendingSignal != null) {
+            signalsList.add(toSignalDto(pendingSignal, "UNEXECUTED", pendingSignal.reasonCode() != null ? pendingSignal.reasonCode() : "BACKTEST_WINDOW_ENDED"));
+            pendingSignal = null;
         }
 
         List<BacktestDtos.BacktestHoldingsDto> allHoldings = new ArrayList<>();
@@ -1339,6 +1338,10 @@ public class BacktestEngine {
     }
 
     private BacktestDtos.BacktestSignalDto toSignalDto(StrategyEvaluator.EvaluatedSignal sig, String statusOverride) {
+        return toSignalDto(sig, statusOverride, null);
+    }
+
+    private BacktestDtos.BacktestSignalDto toSignalDto(StrategyEvaluator.EvaluatedSignal sig, String statusOverride, String reasonCodeOverride) {
         List<BacktestDtos.BacktestSignalItemDto> itemDtos = new ArrayList<>();
         if (sig.items() != null) {
             for (StrategyEvaluator.EvaluatedSignalItem item : sig.items()) {
@@ -1369,10 +1372,152 @@ public class BacktestEngine {
                 sig.scheduledExecutionDate(),
                 sig.targetAllocationSummary(),
                 statusOverride != null ? statusOverride : sig.status(),
-                sig.reasonCode(),
+                reasonCodeOverride != null ? reasonCodeOverride : sig.reasonCode(),
                 sig.detailsJson(),
                 itemDtos,
                 sig.evaluationTime()
         );
+    }
+
+    private Instant computeDecisionInstant(
+            BacktestDataReader.SessionRecord evalSession,
+            List<String> listingsToInspect,
+            Map<String, Map<String, BacktestDataReader.BarRecord>> barsByListingAndDate,
+            Map<String, List<BacktestDataReader.ActionRecord>> actionsByListing) {
+        Instant maxInstant = evalSession.closeTime() != null
+                ? Instant.parse(evalSession.closeTime())
+                : LocalDate.parse(evalSession.sessionDate()).atTime(17, 30, 0).atZone(ZoneOffset.UTC).toInstant();
+
+        for (String lid : listingsToInspect) {
+            Map<String, BacktestDataReader.BarRecord> barMap = barsByListingAndDate.get(lid);
+            if (barMap != null) {
+                for (BacktestDataReader.BarRecord bar : barMap.values()) {
+                    if (bar.sessionDate().compareTo(evalSession.sessionDate()) <= 0 && bar.availableAt() != null && !bar.availableAt().isBlank()) {
+                        try {
+                            Instant bInst = Instant.parse(bar.availableAt().trim());
+                            if (bInst.isAfter(maxInstant)) {
+                                maxInstant = bInst;
+                            }
+                        } catch (Exception ignored) {}
+                    }
+                }
+            }
+            List<BacktestDataReader.ActionRecord> acts = actionsByListing.get(lid);
+            if (acts != null) {
+                for (BacktestDataReader.ActionRecord act : acts) {
+                    if (act.effectiveDate().compareTo(evalSession.sessionDate()) <= 0 && act.availableAt() != null && !act.availableAt().isBlank()) {
+                        try {
+                            Instant aInst = Instant.parse(act.availableAt().trim());
+                            if (aInst.isAfter(maxInstant)) {
+                                maxInstant = aInst;
+                            }
+                        } catch (Exception ignored) {}
+                    }
+                }
+            }
+        }
+        return maxInstant;
+    }
+
+    private record ScheduledSignalResult(
+            StrategyEvaluator.EvaluatedSignal signal,
+            boolean isPending
+    ) {}
+
+    private ScheduledSignalResult createAndScheduleSignal(
+            String runId,
+            int signalSeq,
+            String strategyVersion,
+            boolean isS2,
+            boolean isS3,
+            String universeId,
+            int k,
+            String candidateListingId,
+            BacktestDataReader.SessionRecord evalSession,
+            int nextSessionIndex,
+            List<BacktestDataReader.SessionRecord> sessions,
+            List<String> targetListingIds,
+            Map<String, Map<String, BacktestDataReader.BarRecord>> barsByListingAndDate,
+            Map<String, List<BacktestDataReader.ActionRecord>> actionsByListing,
+            List<BacktestDataReader.SessionRecord> allTradingSessions
+    ) {
+        java.time.YearMonth ym = java.time.YearMonth.parse(evalSession.sessionDate().substring(0, 7));
+        Instant decisionInstant = computeDecisionInstant(evalSession, targetListingIds, barsByListingAndDate, actionsByListing);
+
+        // Find scheduled session
+        BacktestDataReader.SessionRecord scheduledSession = null;
+        String reasonCodeOverride = null;
+
+        if (nextSessionIndex < sessions.size()) {
+            BacktestDataReader.SessionRecord nextSession = sessions.get(nextSessionIndex);
+            Instant nextOpen = nextSession.openTime() != null
+                    ? Instant.parse(nextSession.openTime())
+                    : LocalDate.parse(nextSession.sessionDate()).atTime(9, 0, 0).atZone(ZoneOffset.UTC).toInstant();
+
+            if (!decisionInstant.isAfter(nextOpen)) {
+                scheduledSession = nextSession;
+            } else {
+                reasonCodeOverride = "DATA_DELAYED_EXECUTION";
+                for (int j = nextSessionIndex; j < sessions.size(); j++) {
+                    BacktestDataReader.SessionRecord candidate = sessions.get(j);
+                    Instant candOpen = candidate.openTime() != null
+                            ? Instant.parse(candidate.openTime())
+                            : LocalDate.parse(candidate.sessionDate()).atTime(9, 0, 0).atZone(ZoneOffset.UTC).toInstant();
+                    if (candOpen.isAfter(decisionInstant)) {
+                        scheduledSession = candidate;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (scheduledSession == null) {
+            reasonCodeOverride = "DATA_UNAVAILABLE_BEFORE_EXECUTION";
+        }
+
+        // Only loaded, completed sessions can participate in this decision.
+        String firstLoadedDate = barsByListingAndDate.get(targetListingIds.get(0)).keySet()
+                .stream().min(String::compareTo).orElseThrow();
+        List<BacktestDataReader.SessionRecord> observationSessions = allTradingSessions.stream()
+                .filter(s -> s.sessionDate().compareTo(firstLoadedDate) >= 0 &&
+                        s.sessionDate().compareTo(evalSession.sessionDate()) <= 0)
+                .toList();
+
+        // Build indexSeriesMap with asOfInstant = decisionInstant
+        Map<String, TotalReturnSignalIndexCalculator.ListingSignalIndexSeries> evalIndexSeriesMap = new HashMap<>();
+        for (String lid : targetListingIds) {
+            evalIndexSeriesMap.put(lid, indexCalculator.calculateSeries(
+                    lid,
+                    observationSessions,
+                    barsByListingAndDate.get(lid),
+                    actionsByListing.getOrDefault(lid, List.of()),
+                    decisionInstant
+            ));
+        }
+
+        StrategyEvaluator.EvaluatedSignal sig;
+        if (isS2) {
+            sig = strategyEvaluator.evaluateS2(
+                    runId, signalSeq, universeId, k, ym, evalSession, scheduledSession, targetListingIds, evalIndexSeriesMap,
+                    decisionInstant.toString(), reasonCodeOverride
+            );
+        } else if (isS3) {
+            sig = strategyEvaluator.evaluateS3(
+                    runId, signalSeq, candidateListingId, ym, evalSession, scheduledSession, evalIndexSeriesMap.get(candidateListingId),
+                    decisionInstant.toString(), reasonCodeOverride
+            );
+        } else {
+            return null;
+        }
+
+        if (!strategyVersion.equals(sig.strategyVersion())) {
+            sig = new StrategyEvaluator.EvaluatedSignal(
+                    sig.id(), sig.runId(), sig.strategyId(), strategyVersion, sig.universeId(),
+                    sig.evaluationDate(), sig.evaluationTime(), sig.decisionInstant(), sig.scheduledExecutionDate(),
+                    sig.targetAllocationSummary(), sig.status(), sig.reasonCode(), sig.detailsJson(),
+                    sig.items(), sig.targetWeights());
+        }
+
+        return new ScheduledSignalResult(sig, scheduledSession != null);
     }
 }

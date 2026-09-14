@@ -132,9 +132,8 @@
                 <td class="cell-highlight">{{ m.field }}</td>
                 <td>{{ m.message }}</td>
                 <td>
-                  <span *ngFor="let entry of m.valuesByRun | keyvalue" class="run-val-tag">
-                    {{ entry.key }}: <b>{{ entry.value }}</b>
-                  </span>
+                  <span class="run-val-tag">Expected: <b>{{ m.expected }}</b></span>
+                  <span class="run-val-tag">Actual: <b>{{ m.actual }}</b></span>
                 </td>
               </tr>
             </tbody>
@@ -153,7 +152,7 @@
             >
               {{ activeComparison.status }}
             </span>
-            <span class="badge badge-outline">Basis: {{ activeComparison.comparisonBasis }}</span>
+            <span class="badge badge-outline">After modeled costs, before personal taxes</span>
             <span class="badge badge-info">{{ activeComparison.runs?.length || 0 }} Runs Matched</span>
           </div>
         </div>

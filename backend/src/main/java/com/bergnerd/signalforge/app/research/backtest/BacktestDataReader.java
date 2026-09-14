@@ -177,6 +177,21 @@ public class BacktestDataReader {
             String requestedStartDate,
             String requestedEndDate
     ) {
+        return validatePreflight(null, strategyId, universeId, datasetId, candidateListingId, benchmarkListingId,
+                evaluationCutoff, requestedStartDate, requestedEndDate);
+    }
+
+    public PreflightValidationResult validatePreflight(
+            String ownerId,
+            String strategyId,
+            String universeId,
+            String datasetId,
+            String candidateListingId,
+            String benchmarkListingId,
+            String evaluationCutoff,
+            String requestedStartDate,
+            String requestedEndDate
+    ) {
         // 1. Verify dataset exists and is validated
         List<Map<String, Object>> dsRows = jdbcTemplate.queryForList(
                 "SELECT id, validation_status, quality_label, classification, schema_version, parser_version, " +
@@ -200,25 +215,7 @@ public class BacktestDataReader {
         String coverageStart = (String) dsRow.get("coverage_start");
         String coverageEnd = (String) dsRow.get("coverage_end");
 
-        // 2. Resolve target listings (from universe if provided, else single candidate listing)
-        List<String> targetListings = new ArrayList<>();
-        if (universeId != null && !universeId.isBlank()) {
-            List<String> uListings = jdbcTemplate.queryForList(
-                    "SELECT listing_id FROM universe_listings WHERE universe_id = ? ORDER BY listing_id ASC",
-                    String.class,
-                    universeId
-            );
-            if (uListings.isEmpty()) {
-                throw new IllegalArgumentException("Universe " + universeId + " has no listings configured");
-            }
-            targetListings.addAll(uListings);
-        } else if (candidateListingId != null && !candidateListingId.isBlank()) {
-            targetListings.add(candidateListingId);
-        } else {
-            throw new IllegalArgumentException("Either candidateListingId or universeId must be provided");
-        }
-
-        // Verify benchmark listing exists
+        // 2. Resolve benchmark listing first to know benchmark calendar
         if (benchmarkListingId == null || benchmarkListingId.isBlank()) {
             throw new IllegalArgumentException("benchmarkListingId must be provided");
         }
@@ -233,6 +230,51 @@ public class BacktestDataReader {
         String benchCurr = (String) benchmarkRows.get(0).get("quote_currency");
         if (!"EUR".equalsIgnoreCase(benchCurr)) {
             throw new IllegalArgumentException("Unsupported currency: benchmark must quote in EUR (got: " + benchCurr + ")");
+        }
+
+        // 3. Resolve target listings (from universe if provided, else single candidate listing)
+        List<String> targetListings = new ArrayList<>();
+        if (universeId != null && !universeId.isBlank()) {
+            List<Map<String, Object>> uRows = jdbcTemplate.queryForList(
+                    "SELECT * FROM universes WHERE id = ?", universeId
+            );
+            if (uRows.isEmpty()) {
+                throw new IllegalArgumentException("Universe not found: " + universeId);
+            }
+            Map<String, Object> uRow = uRows.get(0);
+            String uOwner = (String) uRow.get("owner_id");
+            if (ownerId != null && !ownerId.isBlank() &&
+                    !ownerId.equals(uOwner) && !"default".equals(uOwner)) {
+                throw new IllegalArgumentException("Access denied: Universe " + universeId + " belongs to another owner");
+            }
+            String uDatasetId = (String) uRow.get("dataset_id");
+            if (uDatasetId != null && !uDatasetId.equals(datasetId)) {
+                throw new IllegalArgumentException("Universe " + universeId + " is declared for dataset " + uDatasetId +
+                        ", which does not match backtest dataset " + datasetId);
+            }
+            String uCal = (String) uRow.get("calendar_id");
+            if (uCal != null && !uCal.equalsIgnoreCase(benchCal)) {
+                throw new IllegalArgumentException("Universe " + universeId + " calendar " + uCal +
+                        " does not match benchmark calendar " + benchCal);
+            }
+            String uCurr = (String) uRow.get("currency");
+            if (uCurr != null && !"EUR".equalsIgnoreCase(uCurr)) {
+                throw new IllegalArgumentException("Universe " + universeId + " currency must be EUR, found: " + uCurr);
+            }
+
+            List<String> uListings = jdbcTemplate.queryForList(
+                    "SELECT listing_id FROM universe_listings WHERE universe_id = ? ORDER BY listing_id ASC",
+                    String.class,
+                    universeId
+            );
+            if (uListings.isEmpty()) {
+                throw new IllegalArgumentException("Universe " + universeId + " has no listings configured");
+            }
+            targetListings.addAll(uListings);
+        } else if (candidateListingId != null && !candidateListingId.isBlank()) {
+            targetListings.add(candidateListingId);
+        } else {
+            throw new IllegalArgumentException("Either candidateListingId or universeId must be provided");
         }
 
         // Verify all target listings exist in this dataset, share benchmark calendar, and quote in EUR
@@ -422,6 +464,48 @@ public class BacktestDataReader {
             lookbackStartDate = monthEndDates.get(evalIdx - 9);
         }
 
+        if (!lookbackStartDate.equals(evalSession.sessionDate())) {
+            String firstEndpoint = lookbackStartDate;
+            List<String> preceding = allSessions.stream()
+                    .filter(SessionRecord::isTrading)
+                    .map(SessionRecord::sessionDate)
+                    .filter(date -> date.compareTo(firstEndpoint) < 0)
+                    .toList();
+            if (preceding.isEmpty()) {
+                throw new IllegalArgumentException("A prior observation is required before " + firstEndpoint);
+            }
+            lookbackStartDate = preceding.get(preceding.size() - 1);
+        }
+
+        // Initial decisions must be fully known by the selected cutoff. Later decisions may
+        // delay execution; rejecting late initial data keeps candidate and benchmark funding aligned.
+        Set<String> requiredListings = new LinkedHashSet<>(targetListings);
+        requiredListings.add(benchmarkListingId);
+        for (String listingId : requiredListings) {
+            List<Map<String, Object>> requiredBars = jdbcTemplate.queryForList(
+                    "SELECT session_date, available_at FROM historical_bars WHERE dataset_id = ? AND listing_id = ? " +
+                            "AND session_date >= ? AND session_date <= ?",
+                    datasetId, listingId, lookbackStartDate, evalSession.sessionDate());
+            for (Map<String, Object> bar : requiredBars) {
+                String availableAt = (String) bar.get("available_at");
+                if (availableAt == null || java.time.Instant.parse(availableAt).isAfter(cutoffInstant)) {
+                    throw new IllegalArgumentException("Required bar for " + listingId + " on " + bar.get("session_date") +
+                            " was unavailable at initial evaluation cutoff");
+                }
+            }
+            List<Map<String, Object>> requiredActions = jdbcTemplate.queryForList(
+                    "SELECT action_id, available_at FROM historical_actions WHERE dataset_id = ? AND listing_id = ? " +
+                            "AND effective_date >= ? AND effective_date <= ?",
+                    datasetId, listingId, lookbackStartDate, evalSession.sessionDate());
+            for (Map<String, Object> action : requiredActions) {
+                String availableAt = (String) action.get("available_at");
+                if (availableAt == null || java.time.Instant.parse(availableAt).isAfter(cutoffInstant)) {
+                    throw new IllegalArgumentException("Required action " + action.get("action_id") +
+                            " was unavailable at initial evaluation cutoff");
+                }
+            }
+        }
+
         String effectiveStartDate = effectiveStartSession.sessionDate();
         String effectiveEndDate = endSession.sessionDate();
 
@@ -471,7 +555,23 @@ public class BacktestDataReader {
             String requestedStartDate,
             String requestedEndDate
     ) {
+        return loadAndValidateData(null, strategyId, universeId, datasetId, candidateListingId,
+                benchmarkListingId, evaluationCutoff, requestedStartDate, requestedEndDate);
+    }
+
+    public LoadedBacktestData loadAndValidateData(
+            String ownerId,
+            String strategyId,
+            String universeId,
+            String datasetId,
+            String candidateListingId,
+            String benchmarkListingId,
+            String evaluationCutoff,
+            String requestedStartDate,
+            String requestedEndDate
+    ) {
         PreflightValidationResult preflight = validatePreflight(
+                ownerId,
                 strategyId,
                 universeId,
                 datasetId,

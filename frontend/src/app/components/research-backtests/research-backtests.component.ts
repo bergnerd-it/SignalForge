@@ -298,6 +298,7 @@ export class ResearchBacktestsComponent implements OnInit {
 
   public onStrategyChange(stratId: string): void {
     this.newRun.strategyId = stratId;
+    this.newRun.strategyVersion = stratId === 'ETF_TREND_10M_V1' ? '1.0.1' : '1.0.0';
     if (stratId === 'ETF_MOMENTUM_12_1_V1') {
       if (this.universes.length > 0 && !this.newRun.universeId) {
         this.onUniverseSelect(this.universes[0].id);
@@ -310,14 +311,14 @@ export class ResearchBacktestsComponent implements OnInit {
     this.newRun.universeId = uniId;
     const uni = this.universes.find((u) => u.id === uniId);
     if (uni && uni.listings?.length > 0) {
-      this.newRun.candidateListingId = uni.listings[0];
+      this.newRun.candidateListingId = uni.listings[0].listingId;
       this.newRun.currency = uni.currency || 'EUR';
     }
     this.cdr.markForCheck();
   }
 
   public getSignalsExportUrl(id: string): string {
-    return `/api/research/backtests/${id}/signals`;
+    return this.backtestService.getSignalsExportUrl(id);
   }
 
   public submitNewRun(): void {

@@ -338,7 +338,7 @@ class BacktestM4IntegrationTest {
     void testListStrategies() throws Exception {
         mockMvc.perform(get("/api/research/strategies"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.length()").value(3))
+                .andExpect(jsonPath("$.length()").value(4))
                 .andExpect(jsonPath("$[0].strategyId").value("ETF_BUY_HOLD_V1"))
                 .andExpect(jsonPath("$[1].strategyId").value("ETF_MOMENTUM_12_1_V1"))
                 .andExpect(jsonPath("$[2].strategyId").value("ETF_TREND_10M_V1"));
@@ -360,21 +360,27 @@ class BacktestM4IntegrationTest {
                 "INSERT OR IGNORE INTO dataset_listings (dataset_id, listing_id, instrument_id, symbol, quote_currency, calendar_id) " +
                         "VALUES ('ds-m4-test', 'EUNL.DE', 'inst-EUNL', 'EUNL', 'EUR', 'XETR')"
         );
+        for (String date : List.of("2020-01-02", "2022-12-30", "2023-01-02", "2024-12-30")) {
+            jdbcTemplate.update(
+                    "INSERT OR IGNORE INTO dataset_sessions (dataset_id, calendar_id, session_date, open_time, close_time, session_type) " +
+                            "VALUES ('ds-m4-test', 'XETR', ?, ?, ?, 'TRADING')",
+                    date, date + "T08:00:00Z", date + "T16:30:00Z");
+        }
 
         String expPayload = """
                 {
-                  "name": "Momentum Lookback Study",
+                  "name": "Buy Hold Holdout Study",
                   "version": 1,
-                  "strategyId": "ETF_MOMENTUM_12_1_V1",
+                  "strategyId": "ETF_BUY_HOLD_V1",
                   "strategyVersion": "1.0.0",
                   "datasetId": "ds-m4-test",
+                  "candidateListingId": "EUNL.DE",
                   "benchmarkListingId": "EUNL.DE",
-                  "developmentStartDate": "2020-01-01",
-                  "developmentEndDate": "2022-12-31",
-                  "holdoutStartDate": "2023-01-01",
-                  "holdoutEndDate": "2024-12-31",
-                  "declaredHoldoutStatus": "UNEXAMINED",
-                  "parametersJson": "{\\"k\\":2}"
+                  "developmentStartDate": "2020-01-02",
+                  "developmentEndDate": "2022-12-30",
+                  "holdoutStartDate": "2023-01-02",
+                  "holdoutEndDate": "2024-12-30",
+                  "declaredHoldoutStatus": "UNEXAMINED"
                 }
                 """;
 
@@ -399,6 +405,27 @@ class BacktestM4IntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.totalExposures").value(1))
                 .andExpect(jsonPath("$.exposureEvents[0].accessType").value("VIEW_DETAIL"));
+
+        String exposedRunId = "run-holdout-" + UUID.randomUUID();
+        String now = java.time.Instant.now().toString();
+        jdbcTemplate.update("INSERT INTO backtest_runs (id, owner_id, idempotency_key, canonical_hash, strategy_id, strategy_version, " +
+                        "dataset_id, candidate_listing_id, benchmark_listing_id, initial_cash, currency, evaluation_cutoff, " +
+                        "requested_start_date, requested_end_date, commission_per_fill, spread_bps, slippage_bps, " +
+                        "experiment_id, status, progress_pct, config_json, created_at, updated_at) " +
+                        "VALUES (?, 'exp-tester', ?, 'holdout-hash', 'ETF_BUY_HOLD_V1', '1.0.0', 'ds-m4-test', " +
+                        "'EUNL.DE', 'EUNL.DE', '1000.00', 'EUR', '2020-01-02T17:00:00Z', " +
+                        "'2020-01-02', '2024-12-30', '1.00', '10', '5', ?, 'COMPLETED', 100, '{}', ?, ?)",
+                exposedRunId, UUID.randomUUID().toString(), exp.id(), now, now);
+        mockMvc.perform(get("/api/research/backtests").header("X-User-Id", "exp-tester"))
+                .andExpect(status().isOk());
+        mockMvc.perform(get("/api/research/backtests/" + exposedRunId + "/signals/export")
+                        .header("X-User-Id", "exp-tester"))
+                .andExpect(status().isOk());
+        List<String> accessTypes = jdbcTemplate.queryForList(
+                "SELECT access_type FROM experiment_exposure_events WHERE experiment_id = ? ORDER BY exposed_at",
+                String.class, exp.id());
+        assertTrue(accessTypes.contains("SUMMARY_VIEW"));
+        assertTrue(accessTypes.contains("EXPORT_DOWNLOAD"));
 
         // Verify that exposure events are append-only (attempting to delete throws exception via trigger)
         assertThrows(Exception.class, () -> {
@@ -458,5 +485,313 @@ class BacktestM4IntegrationTest {
         assertFalse(comparison.mismatchReasons().isEmpty());
         // Verify mismatch is specifically identified as initialCash
         assertTrue(comparison.mismatchReasons().stream().anyMatch(m -> "initialCash".equals(m.field())));
+    }
+
+    // --- 9. Strategy Parameter & Version Validation Rejection ---
+
+    @Test
+    @DisplayName("Strategy validation rejects S1 with parameters, S2 with out-of-range K, S3 with invalid lookback, and invalid versions")
+    void testStrategyParameterAndVersionValidation() throws Exception {
+        // Ensure dataset and universe exist
+        jdbcTemplate.update(
+                "INSERT OR IGNORE INTO datasets (id, name, source, classification, schema_version, parser_version, " +
+                        "input_checksum, content_checksum, manifest_json, coverage_start, coverage_end, " +
+                        "validation_status, validation_findings_json, quality_label, imported_at, created_at) " +
+                        "VALUES ('ds-val-test', 'Val Test Dataset', 'TEST_RUNNER', 'SYNTHETIC', '1.0.0', '1.0.0', 'cs-in', 'cs-out', '{}', " +
+                        "'2020-01-01', '2025-12-31', 'VALID', '[]', 'SYNTHETIC', '2026-09-14T00:00:00Z', '2026-09-14T00:00:00Z')"
+        );
+        jdbcTemplate.update(
+                "INSERT OR IGNORE INTO dataset_listings (dataset_id, listing_id, instrument_id, symbol, quote_currency, calendar_id) " +
+                        "VALUES ('ds-val-test', 'EUNL.DE', 'inst-EUNL', 'EUNL', 'EUR', 'XETR')"
+        );
+        jdbcTemplate.update(
+                "INSERT OR IGNORE INTO dataset_listings (dataset_id, listing_id, instrument_id, symbol, quote_currency, calendar_id) " +
+                        "VALUES ('ds-val-test', 'EXXT.DE', 'inst-EXXT', 'EXXT', 'EUR', 'XETR')"
+        );
+
+        // Create universe with 2 listings
+        String uniPayload = """
+                {
+                  "name": "Validation Test Universe",
+                  "version": "1.0.0",
+                  "description": "Validation testing",
+                  "datasetId": "ds-val-test",
+                  "calendarId": "XETR",
+                  "currency": "EUR",
+                  "provenance": "TEST",
+                  "listingIds": ["EUNL.DE", "EXXT.DE"]
+                }
+                """;
+        MvcResult uniRes = mockMvc.perform(post("/api/research/universes")
+                        .header("X-User-Id", "val-tester")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(uniPayload))
+                .andExpect(status().isCreated())
+                .andReturn();
+        BacktestDtos.UniverseDto uni = objectMapper.readValue(uniRes.getResponse().getContentAsString(), BacktestDtos.UniverseDto.class);
+
+        // 1. S1 with parameters => 400 Bad Request
+        String s1WithParams = String.format("""
+                {
+                  "strategyId": "ETF_BUY_HOLD_V1",
+                  "strategyVersion": "1.0.0",
+                  "datasetId": "ds-val-test",
+                  "benchmarkListingId": "EUNL.DE",
+                  "candidateListingId": "EUNL.DE",
+                  "initialCash": "1000.00",
+                  "requestedStartDate": "2020-01-02",
+                  "requestedEndDate": "2021-12-30",
+                  "commissionPerFill": "1.00",
+                  "spreadBps": "10",
+                  "slippageBps": "5",
+                  "parametersJson": "{\\"k\\":1}"
+                }
+                """);
+        mockMvc.perform(post("/api/research/backtests")
+                        .header("X-User-Id", "val-tester")
+                        .header("Idempotency-Key", UUID.randomUUID().toString())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(s1WithParams))
+                .andExpect(status().isBadRequest());
+
+        // 2. S2 with k = 3 (universe has 2) => 400 Bad Request
+        String s2KTooBig = String.format("""
+                {
+                  "strategyId": "ETF_MOMENTUM_12_1_V1",
+                  "strategyVersion": "1.0.0",
+                  "datasetId": "ds-val-test",
+                  "universeId": "%s",
+                  "benchmarkListingId": "EUNL.DE",
+                  "initialCash": "1000.00",
+                  "requestedStartDate": "2020-01-02",
+                  "requestedEndDate": "2021-12-30",
+                  "commissionPerFill": "1.00",
+                  "spreadBps": "10",
+                  "slippageBps": "5",
+                  "parametersJson": "{\\"k\\":3}"
+                }
+                """, uni.id());
+        mockMvc.perform(post("/api/research/backtests")
+                        .header("X-User-Id", "val-tester")
+                        .header("Idempotency-Key", UUID.randomUUID().toString())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(s2KTooBig))
+                .andExpect(status().isBadRequest());
+
+        // 3. S3 with lookbackMonths = 12 (must be 10) => 400 Bad Request
+        String s3BadLookback = """
+                {
+                  "strategyId": "ETF_TREND_10M_V1",
+                  "strategyVersion": "1.0.0",
+                  "datasetId": "ds-val-test",
+                  "benchmarkListingId": "EUNL.DE",
+                  "candidateListingId": "EUNL.DE",
+                  "initialCash": "1000.00",
+                  "requestedStartDate": "2020-01-02",
+                  "requestedEndDate": "2021-12-30",
+                  "commissionPerFill": "1.00",
+                  "spreadBps": "10",
+                  "slippageBps": "5",
+                  "parametersJson": "{\\"lookbackMonths\\":12}"
+                }
+                """;
+        mockMvc.perform(post("/api/research/backtests")
+                        .header("X-User-Id", "val-tester")
+                        .header("Idempotency-Key", UUID.randomUUID().toString())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(s3BadLookback))
+                .andExpect(status().isBadRequest());
+
+        // 4. Invalid strategy version => 400 Bad Request
+        String invalidVersion = """
+                {
+                  "strategyId": "ETF_BUY_HOLD_V1",
+                  "strategyVersion": "9.9.9",
+                  "datasetId": "ds-val-test",
+                  "benchmarkListingId": "EUNL.DE",
+                  "candidateListingId": "EUNL.DE",
+                  "initialCash": "1000.00",
+                  "requestedStartDate": "2020-01-02",
+                  "requestedEndDate": "2021-12-30",
+                  "commissionPerFill": "1.00",
+                  "spreadBps": "10",
+                  "slippageBps": "5"
+                }
+                """;
+        mockMvc.perform(post("/api/research/backtests")
+                        .header("X-User-Id", "val-tester")
+                        .header("Idempotency-Key", UUID.randomUUID().toString())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(invalidVersion))
+                .andExpect(status().isBadRequest());
+    }
+
+    // --- 10. Strategy Detail & Signals CSV Export Endpoints ---
+
+    @Test
+    @DisplayName("Strategy detail endpoint returns single strategy metadata and parameter definitions")
+    void testStrategyDetailEndpoint() throws Exception {
+        mockMvc.perform(get("/api/research/strategies/ETF_TREND_10M_V1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.strategyId").value("ETF_TREND_10M_V1"))
+                .andExpect(jsonPath("$.strategyVersion").value("1.0.1"))
+                .andExpect(jsonPath("$.parameters.length()").value(0));
+    }
+
+    @Test
+    @DisplayName("Signals CSV export produces valid RFC-4180 CSV with required columns")
+    void testSignalCsvExportEndpoint() throws Exception {
+        String runId = "run-csv-" + UUID.randomUUID();
+        String now = java.time.Instant.now().toString();
+
+        jdbcTemplate.update("INSERT INTO backtest_runs (id, owner_id, idempotency_key, canonical_hash, strategy_id, strategy_version, dataset_id, candidate_listing_id, benchmark_listing_id, initial_cash, currency, evaluation_cutoff, requested_start_date, requested_end_date, commission_per_fill, spread_bps, slippage_bps, status, progress_pct, config_json, created_at, updated_at) " +
+                "VALUES (?, 'csv-user', ?, 'hashCsv', 'ETF_BUY_HOLD_V1', '1.0.0', 'ds-m4-test', 'EUNL.DE', 'EUNL.DE', '1000.00', 'EUR', '2020-01-01T22:00:00Z', '2020-01-02', '2020-01-05', '1.00', '10', '5', 'RUNNING', 50, '{}', ?, ?)",
+                runId, UUID.randomUUID().toString(), now, now);
+
+        jdbcTemplate.update("INSERT INTO backtest_signals (id, run_id, strategy_id, strategy_version, universe_id, evaluation_date, evaluation_time, decision_instant, scheduled_execution_date, target_allocation_summary, status, reason_code, details_json, created_at) " +
+                "VALUES (?, ?, 'ETF_BUY_HOLD_V1', '1.0.0', NULL, '2020-01-02', '17:30:00', '2020-01-02T16:30:00Z', '2020-01-03', '100% EUNL.DE', 'EXECUTED', 'INITIAL_ALLOCATION', '{}', ?)",
+                "sig-1", runId, now);
+
+        jdbcTemplate.update("INSERT INTO backtest_signal_items (id, signal_id, listing_id, score, index_value, sma_value, rank, eligible, selected, target_weight, reason_code) " +
+                "VALUES (?, ?, 'EUNL.DE', '1.00000000', '100.00000000', NULL, 1, 1, 1, '1.00000000', 'INITIAL_ALLOCATION')",
+                "item-1", "sig-1");
+
+        jdbcTemplate.update("UPDATE backtest_runs SET status = 'COMPLETED', progress_pct = 100 WHERE id = ?", runId);
+
+        mockMvc.perform(get("/api/research/backtests/" + runId + "/signals/export")
+                        .header("X-User-Id", "csv-user"))
+                .andExpect(status().isOk())
+                .andExpect(content().contentTypeCompatibleWith("text/csv"))
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("evaluation_date,strategy_id,universe_id,listing_id,score,index_value,sma_value,rank,eligible,selected,target_weight,reason_code,scheduled_execution_date,status")))
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("2020-01-02,ETF_BUY_HOLD_V1,,EUNL.DE,1.00000000,100.00000000,,1,true,true,1.00000000,INITIAL_ALLOCATION,2020-01-03,EXECUTED")));
+    }
+
+    // --- 11. Point-in-Time Availability Filtering ---
+
+    @Test
+    @DisplayName("Total return index calculation strictly filters bars and actions by asOfInstant")
+    void testTotalReturnIndexStrictAvailabilityFiltering() {
+        List<BacktestDataReader.SessionRecord> sessions = List.of(
+                new BacktestDataReader.SessionRecord("2025-01-02", "09:00:00", "17:30:00", "TRADING"),
+                new BacktestDataReader.SessionRecord("2025-01-03", "09:00:00", "17:30:00", "TRADING")
+        );
+        Map<String, BacktestDataReader.BarRecord> bars = Map.of(
+                "2025-01-02", new BacktestDataReader.BarRecord("ETF1", "2025-01-02", new BigDecimal("100.00"), new BigDecimal("101.00"), new BigDecimal("99.00"), new BigDecimal("100.00"), 1000L, "2025-01-02T16:30:00Z"),
+                "2025-01-03", new BacktestDataReader.BarRecord("ETF1", "2025-01-03", new BigDecimal("105.00"), new BigDecimal("106.00"), new BigDecimal("104.00"), new BigDecimal("105.00"), 1000L, "2025-01-03T18:00:00Z") // Late-arriving
+        );
+        List<BacktestDataReader.ActionRecord> actions = List.of();
+
+        // As of 2025-01-03T17:00:00Z (before bar on 2025-01-03 arrived at 18:00:00Z)
+        java.time.Instant asOf = java.time.Instant.parse("2025-01-03T17:00:00Z");
+        TotalReturnSignalIndexCalculator.ListingSignalIndexSeries series =
+                indexCalculator.calculateSeries("ETF1", sessions, bars, actions, asOf);
+
+        assertNotNull(series);
+        assertNotNull(series.getPoint("2025-01-02"));
+        // 2025-01-03 bar was available at 18:00, so as of 17:00 it must NOT be in the index series
+        assertNull(series.getPoint("2025-01-03"));
+
+        Map<String, BacktestDataReader.BarRecord> missingAvailability = Map.of(
+                "2025-01-02", new BacktestDataReader.BarRecord("ETF1", "2025-01-02", new BigDecimal("100.00"), new BigDecimal("101.00"), new BigDecimal("99.00"), new BigDecimal("100.00"), 1000L, null));
+        assertThrows(IllegalArgumentException.class, () -> indexCalculator.calculateSeries(
+                "ETF1", sessions.subList(0, 1), missingAvailability, actions, asOf));
+    }
+
+    @Test
+    @DisplayName("A valid S2 request reaches execution, while invalid K and foreign universes are rejected")
+    void testValidS2RunAndOwnerScope() throws Exception {
+        String datasetId = "ds-s2-" + UUID.randomUUID();
+        String now = java.time.Instant.now().toString();
+        jdbcTemplate.update(
+                "INSERT INTO datasets (id, name, source, classification, schema_version, parser_version, " +
+                        "input_checksum, content_checksum, manifest_json, coverage_start, coverage_end, " +
+                        "validation_status, validation_findings_json, quality_label, imported_at, created_at) " +
+                        "VALUES (?, 'S2 acceptance', 'TEST_RUNNER', 'SYNTHETIC', '1.0.0', '1.0.0', 's2-in', 's2-out', '{}', " +
+                        "'2023-12-31', '2025-03-31', 'VALID', '[]', 'SYNTHETIC', ?, ?)", datasetId, now, now);
+        for (String listingId : List.of("ETF-A", "ETF-B")) {
+            jdbcTemplate.update("INSERT INTO dataset_listings (dataset_id, listing_id, instrument_id, symbol, quote_currency, calendar_id) " +
+                    "VALUES (?, ?, ?, ?, 'EUR', 'XETR')", datasetId, listingId, "inst-" + listingId, listingId);
+        }
+        for (int month = 0; month < 15; month++) {
+            String date = YearMonth.of(2023, 12).plusMonths(month).atEndOfMonth().toString();
+            jdbcTemplate.update("INSERT INTO dataset_sessions (dataset_id, calendar_id, session_date, open_time, close_time, session_type) " +
+                            "VALUES (?, 'XETR', ?, ?, ?, 'TRADING')",
+                    datasetId, date, date + "T08:00:00Z", date + "T16:30:00Z");
+            for (String listingId : List.of("ETF-A", "ETF-B")) {
+                jdbcTemplate.update("INSERT INTO historical_bars (dataset_id, listing_id, session_date, open, high, low, close, volume, available_at) " +
+                                "VALUES (?, ?, ?, '100.00', '100.00', '100.00', '100.00', 1000, ?)",
+                        datasetId, listingId, date,
+                        month == 14 && "ETF-B".equals(listingId) ? "2025-03-05T12:00:00Z" : date + "T16:35:00Z");
+            }
+        }
+        for (String date : List.of("2025-03-03", "2025-03-31")) {
+            jdbcTemplate.update("INSERT INTO dataset_sessions (dataset_id, calendar_id, session_date, open_time, close_time, session_type) " +
+                            "VALUES (?, 'XETR', ?, ?, ?, 'TRADING')",
+                    datasetId, date, date + "T08:00:00Z", date + "T16:30:00Z");
+            for (String listingId : List.of("ETF-A", "ETF-B")) {
+                jdbcTemplate.update("INSERT INTO historical_bars (dataset_id, listing_id, session_date, open, high, low, close, volume, available_at) " +
+                                "VALUES (?, ?, ?, '100.00', '100.00', '100.00', '100.00', 1000, ?)",
+                        datasetId, listingId, date, date + "T16:35:00Z");
+            }
+        }
+        BacktestDtos.UniverseDto universe = universeService.createUniverse("s2-owner",
+                new BacktestDtos.CreateUniverseRequest("S2 universe", "1.0.0", "Synthetic",
+                        datasetId, "XETR", "EUR", "SYNTHETIC", List.of("ETF-A", "ETF-B")));
+
+        BacktestDtos.CreateBacktestRequest valid = new BacktestDtos.CreateBacktestRequest(
+                datasetId, "ETF-A", "ETF-A", "2025-01-31T17:00:00Z", "2025-01-31", "2025-02-28",
+                "1000.00", "EUR", "1.00", "0", "0", "ETF_MOMENTUM_12_1_V1", "1.0.0",
+                universe.id(), "{\"k\":2}", null);
+        MvcResult created = mockMvc.perform(post("/api/research/backtests")
+                        .header("X-User-Id", "s2-owner")
+                        .header("Idempotency-Key", UUID.randomUUID().toString())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(valid)))
+                .andExpect(status().isAccepted()).andReturn();
+        String runId = objectMapper.readTree(created.getResponse().getContentAsString()).get("id").asText();
+        String runStatus = "QUEUED";
+        for (int attempt = 0; attempt < 100; attempt++) {
+            runStatus = jdbcTemplate.queryForObject("SELECT status FROM backtest_runs WHERE id = ?", String.class, runId);
+            if ("COMPLETED".equals(runStatus) || "FAILED".equals(runStatus)) break;
+            Thread.sleep(25);
+        }
+        assertEquals("COMPLETED", runStatus, () -> jdbcTemplate.queryForObject(
+                "SELECT failure_reason FROM backtest_runs WHERE id = ?", String.class, runId));
+
+        BacktestDtos.CreateBacktestRequest delayed = new BacktestDtos.CreateBacktestRequest(
+                datasetId, "ETF-A", "ETF-A", "2025-01-31T17:00:00Z", "2025-01-31", "2025-03-31",
+                "1000.00", "EUR", "1.00", "0", "0", "ETF_MOMENTUM_12_1_V1", "1.0.0",
+                universe.id(), "{\"k\":2}", null);
+        MvcResult delayedCreated = mockMvc.perform(post("/api/research/backtests")
+                        .header("X-User-Id", "s2-owner")
+                        .header("Idempotency-Key", UUID.randomUUID().toString())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(delayed)))
+                .andExpect(status().isAccepted()).andReturn();
+        String delayedRunId = objectMapper.readTree(delayedCreated.getResponse().getContentAsString()).get("id").asText();
+        String delayedStatus = "QUEUED";
+        for (int attempt = 0; attempt < 100; attempt++) {
+            delayedStatus = jdbcTemplate.queryForObject("SELECT status FROM backtest_runs WHERE id = ?", String.class, delayedRunId);
+            if ("COMPLETED".equals(delayedStatus) || "FAILED".equals(delayedStatus)) break;
+            Thread.sleep(25);
+        }
+        assertEquals("COMPLETED", delayedStatus, () -> jdbcTemplate.queryForObject(
+                "SELECT failure_reason FROM backtest_runs WHERE id = ?", String.class, delayedRunId));
+        assertEquals("2025-03-31", jdbcTemplate.queryForObject(
+                "SELECT scheduled_execution_date FROM backtest_signals WHERE run_id = ? AND evaluation_date = '2025-02-28'",
+                String.class, delayedRunId));
+
+        BacktestDtos.CreateBacktestRequest badK = new BacktestDtos.CreateBacktestRequest(
+                datasetId, "ETF-A", "ETF-A", "2025-01-31T17:00:00Z", "2025-01-31", "2025-02-28",
+                "1000.00", "EUR", "1.00", "0", "0", "ETF_MOMENTUM_12_1_V1", "1.0.0",
+                universe.id(), "{\"k\":2.5}", null);
+        mockMvc.perform(post("/api/research/backtests")
+                        .header("X-User-Id", "s2-owner").header("Idempotency-Key", UUID.randomUUID().toString())
+                        .contentType(MediaType.APPLICATION_JSON).content(objectMapper.writeValueAsString(badK)))
+                .andExpect(status().isBadRequest());
+        mockMvc.perform(post("/api/research/backtests")
+                        .header("X-User-Id", "other-owner").header("Idempotency-Key", UUID.randomUUID().toString())
+                        .contentType(MediaType.APPLICATION_JSON).content(objectMapper.writeValueAsString(valid)))
+                .andExpect(status().isBadRequest());
     }
 }

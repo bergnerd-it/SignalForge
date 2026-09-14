@@ -784,7 +784,8 @@ describe('BacktestService', () => {
       offset: 0,
       hasMore: false,
     });
-    httpTesting.expectOne('/api/research/backtests/bt-run-1/signals').flush([]);
+    httpTesting.expectOne('/api/research/backtests/bt-run-1/signals?limit=500&offset=0')
+      .flush({ items: [], total: 0, limit: 500, offset: 0, hasMore: false });
 
     service.dailyEquity$.subscribe((pts: DailyEquityPoint[]) => {
       expect(pts.length).toBe(3); // 2 candidate + 1 benchmark
@@ -818,7 +819,8 @@ describe('BacktestService', () => {
     httpTesting.expectOne('/api/research/backtests/bt-run-2/equity?series=BENCHMARK&limit=5000&offset=0').flush({ items: [], total: 0, limit: 5000, offset: 0, hasMore: false });
     httpTesting.expectOne('/api/research/backtests/bt-run-2/orders?limit=200&offset=0').flush({ items: [], total: 0, limit: 200, offset: 0, hasMore: false });
     httpTesting.expectOne('/api/research/backtests/bt-run-2/events?limit=200&offset=0').flush({ items: [], total: 0, limit: 200, offset: 0, hasMore: false });
-    httpTesting.expectOne('/api/research/backtests/bt-run-2/signals').flush([]);
+    httpTesting.expectOne('/api/research/backtests/bt-run-2/signals?limit=500&offset=0')
+      .flush({ items: [], total: 0, limit: 500, offset: 0, hasMore: false });
 
     // Now Run A finally resolves late
     reqA.flush(mockRun);
