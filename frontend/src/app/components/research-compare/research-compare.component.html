@@ -1,0 +1,309 @@
+<div class="compare-container">
+  <!-- Top Control Bar -->
+  <div class="top-nav-bar">
+    <div class="brand-title font-mono">
+      <span class="logo-icon">⚖️</span>
+      <span class="heading-text">STRATEGY COMPARISON & REPLAY AUDIT</span>
+    </div>
+
+    <div class="action-buttons" *ngIf="activeComparison">
+      <a
+        [href]="getExportUrl(activeComparison.id)"
+        class="btn btn-outline font-mono"
+        download
+        id="btn-export-comparison"
+      >
+        📥 EXPORT COMPARISON ZIP
+      </a>
+    </div>
+  </div>
+
+  <!-- Alert Banner -->
+  <div *ngIf="error" class="alert-banner alert-error font-mono">
+    <span>⚠️ {{ error }}</span>
+    <button class="alert-close" (click)="error = null">&times;</button>
+  </div>
+  <div *ngIf="successMsg" class="alert-banner alert-success font-mono">
+    <span>✓ {{ successMsg }}</span>
+    <button class="alert-close" (click)="successMsg = null">&times;</button>
+  </div>
+
+  <div class="compare-grid">
+    <!-- Left Sidebar: Saved Comparisons & Run Picker -->
+    <div class="sidebar-panel">
+      <!-- Section A: New Comparison Picker -->
+      <div class="new-comp-box">
+        <div class="panel-header">
+          <span class="panel-title font-mono">MATCH & COMPARE RUNS</span>
+          <span class="badge badge-info font-mono">{{ selectedRunIds.size }} Selected</span>
+        </div>
+        <div class="comp-form">
+          <input
+            type="text"
+            class="form-input font-mono"
+            placeholder="Comparison Title..."
+            [(ngModel)]="comparisonName"
+          />
+          <div class="runs-select-list">
+            <div
+              *ngFor="let run of completedRuns"
+              class="run-select-item"
+              [class.checked]="isRunSelected(run.id)"
+              (click)="toggleRunSelection(run.id)"
+              [id]="'select-run-' + run.id"
+            >
+              <input
+                type="checkbox"
+                [checked]="isRunSelected(run.id)"
+                (click)="$event.stopPropagation()"
+                (change)="toggleRunSelection(run.id)"
+              />
+              <div class="run-info">
+                <span class="run-strat font-mono">{{ run.strategyId }}</span>
+                <span class="run-sub font-mono">{{ run.candidateListingId }} · {{ run.initialCash }} {{ run.currency }}</span>
+                <span class="run-date font-mono">{{ run.requestedStartDate }} → {{ run.requestedEndDate }}</span>
+              </div>
+            </div>
+          </div>
+          <button
+            class="btn btn-primary font-mono btn-block"
+            [disabled]="selectedRunIds.size < 2 || loading"
+            (click)="createComparison()"
+            id="btn-run-comparison"
+          >
+            COMPARE RUNS ({{ selectedRunIds.size }})
+          </button>
+        </div>
+      </div>
+
+      <!-- Section B: Saved Comparisons History -->
+      <div class="saved-comps-box">
+        <div class="panel-header">
+          <span class="panel-title font-mono">COMPARISON HISTORY</span>
+        </div>
+        <div class="saved-list">
+          <div
+            *ngFor="let c of comparisons"
+            class="comp-item-card"
+            [class.selected]="activeComparison?.id === c.id"
+            (click)="selectComparison(c)"
+            [id]="'comp-card-' + c.id"
+          >
+            <div class="comp-card-top">
+              <span class="comp-title font-mono">{{ c.name }}</span>
+              <span
+                class="badge font-mono"
+                [ngClass]="c.status === 'MATCHED' ? 'badge-success' : 'badge-danger'"
+              >
+                {{ c.status }}
+              </span>
+            </div>
+            <div class="comp-meta font-mono">
+              <span>Runs: {{ c.runIds?.length || 0 }}</span>
+              <span>{{ c.createdAt | date:'short' }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right Workspace: Comparison View -->
+    <div class="workspace-panel" *ngIf="activeComparison">
+      <!-- Mismatch Warning Banner if Rejected -->
+      <div *ngIf="activeComparison.status === 'MISMATCHED'" class="mismatch-banner">
+        <div class="mismatch-banner-header font-mono">
+          <span class="alert-icon">🚫</span>
+          <span class="alert-title">COMPARISON REJECTED: EXPERIMENTAL BASIS MISMATCH DETECTED</span>
+        </div>
+        <p class="mismatch-desc">
+          SignalForge enforces strict comparability. Backtests cannot be authoritatively compared unless their underlying universe, initial cash, date range, calendar, cost models, and accounting versions are identical.
+        </p>
+        <div class="mismatch-table-wrapper">
+          <table class="mismatch-table font-mono">
+            <thead>
+              <tr>
+                <th>FIELD</th>
+                <th>VALIDATION ERROR</th>
+                <th>VALUES PER RUN</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr *ngFor="let m of activeComparison.mismatchReasons">
+                <td class="cell-highlight">{{ m.field }}</td>
+                <td>{{ m.message }}</td>
+                <td>
+                  <span *ngFor="let entry of m.valuesByRun | keyvalue" class="run-val-tag">
+                    {{ entry.key }}: <b>{{ entry.value }}</b>
+                  </span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Comparison Header -->
+      <div class="comp-header">
+        <div class="comp-header-left">
+          <h2 class="comp-main-title">{{ activeComparison.name }}</h2>
+          <div class="comp-badges font-mono">
+            <span
+              class="badge"
+              [ngClass]="activeComparison.status === 'MATCHED' ? 'badge-success' : 'badge-danger'"
+            >
+              {{ activeComparison.status }}
+            </span>
+            <span class="badge badge-outline">Basis: {{ activeComparison.comparisonBasis }}</span>
+            <span class="badge badge-info">{{ activeComparison.runs?.length || 0 }} Runs Matched</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Comparative Side-by-Side KPI Matrix -->
+      <div class="section-container">
+        <h3 class="section-title font-mono">SIDE-BY-SIDE PERFORMANCE MATRIX</h3>
+        <div class="table-card">
+          <table class="matrix-table font-mono">
+            <thead>
+              <tr>
+                <th>METRIC</th>
+                <th *ngFor="let r of activeComparison.runs" class="run-col-header">
+                  <div class="run-hdr-strat">{{ r.strategyId }}</div>
+                  <div class="run-hdr-sub">{{ r.candidateListingId }} ({{ r.id.substring(0, 8) }})</div>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="metric-name">Cumulative Return</td>
+                <td *ngFor="let r of activeComparison.runs" class="metric-val" [ngClass]="(r.candidateSummary?.cumulativeReturn ?? 0) >= 0 ? 'text-green' : 'text-red'">
+                  {{ ((r.candidateSummary?.cumulativeReturn ?? 0) * 100) | number:'1.2-2' }}%
+                </td>
+              </tr>
+              <tr>
+                <td class="metric-name">CAGR</td>
+                <td *ngFor="let r of activeComparison.runs" class="metric-val">
+                  {{ r.candidateSummary?.cagr !== null && r.candidateSummary?.cagr !== undefined ? (((r.candidateSummary?.cagr ?? 0) * 100) | number:'1.2-2') + '%' : 'N/A' }}
+                </td>
+              </tr>
+              <tr>
+                <td class="metric-name">Ending Equity</td>
+                <td *ngFor="let r of activeComparison.runs" class="metric-val font-bold">
+                  {{ r.candidateSummary?.finalEquity | currency:r.currency:'symbol':'1.2-2' }}
+                </td>
+              </tr>
+              <tr>
+                <td class="metric-name">Maximum Drawdown</td>
+                <td *ngFor="let r of activeComparison.runs" class="metric-val text-red">
+                  {{ ((r.candidateSummary?.maxDrawdown ?? 0) * 100) | number:'1.2-2' }}%
+                </td>
+              </tr>
+              <tr>
+                <td class="metric-name">Annualized Volatility</td>
+                <td *ngFor="let r of activeComparison.runs" class="metric-val">
+                  {{ r.candidateSummary?.annualizedVolatility !== null && r.candidateSummary?.annualizedVolatility !== undefined ? (((r.candidateSummary?.annualizedVolatility ?? 0) * 100) | number:'1.2-2') + '%' : 'N/A' }}
+                </td>
+              </tr>
+              <tr>
+                <td class="metric-name">Turnover</td>
+                <td *ngFor="let r of activeComparison.runs" class="metric-val">
+                  {{ (r.candidateSummary?.turnover ?? 0) | number:'1.2-2' }}x
+                </td>
+              </tr>
+              <tr>
+                <td class="metric-name">Total Executions (Fills)</td>
+                <td *ngFor="let r of activeComparison.runs" class="metric-val">
+                  {{ r.candidateSummary?.fillCount ?? 0 }}
+                </td>
+              </tr>
+              <tr>
+                <td class="metric-name">Total Commission Fees</td>
+                <td *ngFor="let r of activeComparison.runs" class="metric-val">
+                  {{ r.candidateSummary?.totalCommissions | currency:r.currency:'symbol':'1.2-2' }}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Rolling 5-Year Compounded Return Windows -->
+      <div class="section-container" *ngIf="activeComparison.rollingWindowsByRun">
+        <div class="section-header-flex">
+          <h3 class="section-title font-mono">ROLLING 5-YEAR COMPOUNDED RETURN WINDOWS</h3>
+          <span class="badge badge-outline font-mono">Overlapping Compounded Windows</span>
+        </div>
+
+        <!-- Mandatory Disclaimer Notice -->
+        <div class="disclaimer-callout font-mono">
+          <span class="disclaimer-icon">ℹ️</span>
+          <span class="disclaimer-text">
+            Rolling 5-year historical compounded-return windows are descriptive statistics and not predictive of future performance. Overlapping windows introduce serial correlation.
+          </span>
+        </div>
+
+        <div *ngFor="let r of activeComparison.runs" class="rolling-run-card">
+          <div class="rolling-card-header font-mono">
+            <span class="rolling-run-title">{{ r.strategyId }} ({{ r.candidateListingId }})</span>
+            <div class="rolling-stats" *ngIf="getRollingWindowsForRun(r.id) as rws">
+              <span>Total Windows: <b>{{ rws.totalWindows }}</b></span>
+              <span>Complete (5Y): <b>{{ rws.completeWindows }}</b></span>
+              <span>Positive Windows: <b>{{ rws.positiveWindows }}</b></span>
+              <span class="badge badge-success" *ngIf="rws.positiveWindowShare !== null && rws.positiveWindowShare !== undefined">
+                Positive Share: {{ (rws.positiveWindowShare! * 100) | number:'1.1-1' }}%
+              </span>
+            </div>
+          </div>
+
+          <div class="rolling-table-wrapper" *ngIf="getRollingWindowsForRun(r.id) as rws">
+            <div *ngIf="rws.windows.length === 0" class="empty-hint font-mono">
+              No rolling 5-year windows available (backtest span is under 5 years).
+            </div>
+            <table *ngIf="rws.windows.length > 0" class="mini-table font-mono">
+              <thead>
+                <tr>
+                  <th>WINDOW #</th>
+                  <th>START DATE</th>
+                  <th>TARGET 5Y DATE</th>
+                  <th>ACTUAL END</th>
+                  <th>START EQUITY</th>
+                  <th>END EQUITY</th>
+                  <th>5Y RETURN</th>
+                  <th>STATUS</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr *ngFor="let w of rws.windows">
+                  <td>{{ w.windowIndex }}</td>
+                  <td>{{ w.startDate }}</td>
+                  <td>{{ w.targetEndDate }}</td>
+                  <td>{{ w.actualEndDate || '—' }}</td>
+                  <td>{{ w.startingEquity | currency:r.currency:'symbol':'1.0-0' }}</td>
+                  <td>{{ w.endingEquity ? (w.endingEquity | currency:r.currency:'symbol':'1.0-0') : '—' }}</td>
+                  <td [ngClass]="(w.compoundedReturn ?? 0) >= 0 ? 'text-green' : 'text-red'">
+                    {{ w.compoundedReturn !== null && w.compoundedReturn !== undefined ? (((w.compoundedReturn ?? 0) * 100) | number:'1.2-2') + '%' : '—' }}
+                  </td>
+                  <td>
+                    <span *ngIf="w.isComplete" class="badge badge-success">COMPLETE</span>
+                    <span *ngIf="!w.isComplete" class="badge badge-warning" [title]="w.incompleteReason || ''">INCOMPLETE</span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Empty Workspace State -->
+    <div class="empty-workspace font-mono" *ngIf="!activeComparison">
+      <div class="empty-box">
+        <span class="empty-icon">📊</span>
+        <h3 class="empty-title">SELECT OR CREATE A COMPARISON</h3>
+        <p class="empty-sub">
+          Choose at least two completed backtests from the left panel and click "Compare Runs" to perform side-by-side verification and metric analysis.
+        </p>
+      </div>
+    </div>
+  </div>
+</div>

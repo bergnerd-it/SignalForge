@@ -51,6 +51,22 @@ import { ConnectionStatus } from '../../services/price-stream.service';
           >
             BACKTESTS
           </button>
+          <button
+            class="nav-tab-btn"
+            [class.active]="currentView === 'research-strategies'"
+            (click)="selectView('research-strategies')"
+            id="tab-research-strategies"
+          >
+            STRATEGIES
+          </button>
+          <button
+            class="nav-tab-btn"
+            [class.active]="currentView === 'research-compare'"
+            (click)="selectView('research-compare')"
+            id="tab-research-compare"
+          >
+            COMPARE
+          </button>
         </nav>
       </div>
 
@@ -228,10 +244,10 @@ import { ConnectionStatus } from '../../services/price-stream.service';
 export class HeaderComponent {
   @Input() portfolio: Portfolio | null = null;
   @Input() status: ConnectionStatus = 'disconnected';
-  @Input() currentView: 'demo' | 'research' | 'research-data' | 'research-backtests' = 'demo';
-  @Output() viewChange = new EventEmitter<'demo' | 'research' | 'research-data' | 'research-backtests'>();
+  @Input() currentView: 'demo' | 'research' | 'research-data' | 'research-backtests' | 'research-strategies' | 'research-compare' = 'demo';
+  @Output() viewChange = new EventEmitter<'demo' | 'research' | 'research-data' | 'research-backtests' | 'research-strategies' | 'research-compare'>();
 
-  selectView(view: 'demo' | 'research' | 'research-data' | 'research-backtests'): void {
+  selectView(view: 'demo' | 'research' | 'research-data' | 'research-backtests' | 'research-strategies' | 'research-compare'): void {
     this.viewChange.emit(view);
   }
 }

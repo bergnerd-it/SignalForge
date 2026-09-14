@@ -32,6 +32,7 @@ public class BacktestJobService {
     private final BacktestEngine backtestEngine;
     private final BacktestAnalyticsCalculator analyticsCalculator;
     private final BuildIdentityResolver buildIdentityResolver;
+    private final ExperimentService experimentService;
 
     private final ExecutorService calculationExecutor = new ThreadPoolExecutor(
             1, 1,
@@ -117,6 +118,8 @@ public class BacktestJobService {
         BacktestDataReader.PreflightValidationResult preflightData;
         try {
             preflightData = dataReader.validatePreflight(
+                    request.strategyId(),
+                    request.universeId(),
                     request.datasetId(),
                     request.candidateListingId(),
                     request.benchmarkListingId(),
@@ -167,7 +170,10 @@ public class BacktestJobService {
                 buildIdentityResolver.isDirty(),
                 buildIdentityResolver.getCodeFingerprint(),
                 preflightData.classification(),
-                "SYNTHETIC_DATA_TESTS_SOFTWARE_BEHAVIOR_ONLY"
+                "SYNTHETIC_DATA_TESTS_SOFTWARE_BEHAVIOR_ONLY",
+                request.universeId(),
+                request.parametersJson(),
+                request.experimentId()
         );
 
         String canonicalHash = configSnapshot.canonicalHash();
@@ -199,13 +205,16 @@ public class BacktestJobService {
                                 "id, owner_id, idempotency_key, canonical_hash, strategy_id, strategy_version, " +
                                 "dataset_id, candidate_listing_id, benchmark_listing_id, initial_cash, currency, " +
                                 "evaluation_cutoff, requested_start_date, requested_end_date, commission_per_fill, " +
-                                "spread_bps, slippage_bps, status, progress_pct, config_json, created_at, updated_at" +
-                                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'QUEUED', 0, ?, ?, ?)",
+                                "spread_bps, slippage_bps, universe_id, parameters_json, experiment_id, " +
+                                "status, progress_pct, config_json, created_at, updated_at" +
+                                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'QUEUED', 0, ?, ?, ?)",
                         runId, uid, idempotencyKey, canonicalHash, request.strategyId(), request.strategyVersion(),
                         request.datasetId(), request.candidateListingId(), request.benchmarkListingId(),
                         normCash.toPlainString(), request.currency(), request.evaluationCutoff(),
                         request.requestedStartDate(), request.requestedEndDate(), normComm.toPlainString(),
-                        normSpread.toPlainString(), normSlippage.toPlainString(), configJson, now, now
+                        normSpread.toPlainString(), normSlippage.toPlainString(),
+                        request.universeId(), request.parametersJson(), request.experimentId(),
+                        configJson, now, now
                 );
                 inserted = true;
                 break;
@@ -276,7 +285,10 @@ public class BacktestJobService {
                 (String) stored.get("spread_bps"),
                 (String) stored.get("slippage_bps"),
                 (String) stored.get("strategy_id"),
-                (String) stored.get("strategy_version")
+                (String) stored.get("strategy_version"),
+                (String) stored.get("universe_id"),
+                (String) stored.get("parameters_json"),
+                (String) stored.get("experiment_id")
         );
         if (!intentHash.equals(originalIntent.canonicalHash())) {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
@@ -305,6 +317,8 @@ public class BacktestJobService {
             }
 
             BacktestDataReader.LoadedBacktestData data = dataReader.loadAndValidateData(
+                    request.strategyId(),
+                    request.universeId(),
                     request.datasetId(),
                     request.candidateListingId(),
                     request.benchmarkListingId(),
@@ -340,19 +354,52 @@ public class BacktestJobService {
             BigDecimal spreadBps = new BigDecimal(request.spreadBps());
             BigDecimal slippageBps = new BigDecimal(request.slippageBps());
 
-            BacktestEngine.SimulationResult candidateResult = backtestEngine.runS1(
-                    runId,
-                    BacktestDtos.SeriesType.CANDIDATE,
-                    request.candidateListingId(),
-                    initialCash,
-                    commission,
-                    spreadBps,
-                    slippageBps,
-                    data.evaluationSession(),
-                    data.tradingSessions(),
-                    data.barsByListingAndDate().get(request.candidateListingId()),
-                    data.actionsByListing().get(request.candidateListingId())
-            );
+            BacktestEngine.SimulationResult candidateResult;
+            String stratId = (request.strategyId() != null && !request.strategyId().isBlank())
+                    ? request.strategyId().trim() : "ETF_BUY_HOLD_V1";
+            if ("ETF_BUY_HOLD_V1".equalsIgnoreCase(stratId)) {
+                candidateResult = backtestEngine.runS1(
+                        runId,
+                        BacktestDtos.SeriesType.CANDIDATE,
+                        request.candidateListingId(),
+                        initialCash,
+                        commission,
+                        spreadBps,
+                        slippageBps,
+                        data.evaluationSession(),
+                        data.tradingSessions(),
+                        data.barsByListingAndDate().get(request.candidateListingId()),
+                        data.actionsByListing().get(request.candidateListingId())
+                );
+            } else {
+                Map<String, Object> params = new LinkedHashMap<>();
+                if (request.parametersJson() != null && !request.parametersJson().isBlank()) {
+                    try {
+                        params = objectMapper.readValue(request.parametersJson(), Map.class);
+                    } catch (Exception e) {
+                        log.warn("Failed to parse parametersJson for run {}: {}", runId, e.getMessage());
+                    }
+                }
+                candidateResult = backtestEngine.runStrategy(
+                        runId,
+                        BacktestDtos.SeriesType.CANDIDATE,
+                        stratId,
+                        request.strategyVersion() != null ? request.strategyVersion() : "1.0.0",
+                        request.universeId(),
+                        data.targetListingIds(),
+                        request.candidateListingId(),
+                        initialCash,
+                        commission,
+                        spreadBps,
+                        slippageBps,
+                        data.evaluationSession(),
+                        data.tradingSessions(),
+                        data.calendarSessions(),
+                        data.barsByListingAndDate(),
+                        data.actionsByListing(),
+                        params
+                );
+            }
 
             if (isCancelled(runId)) {
                 markCancelled(runId);
@@ -420,9 +467,26 @@ public class BacktestJobService {
                 persistEvents(candidateResult.events());
                 persistEvents(benchmarkResult.events());
 
-                // Write final holdings
-                persistHoldings(candidateResult.finalHoldings(), runId);
-                persistHoldings(benchmarkResult.finalHoldings(), runId);
+                // Write holdings
+                if (candidateResult.allHoldings() != null && !candidateResult.allHoldings().isEmpty()) {
+                    for (BacktestDtos.BacktestHoldingsDto h : candidateResult.allHoldings()) {
+                        persistHoldings(h, runId);
+                    }
+                } else if (candidateResult.finalHoldings() != null) {
+                    persistHoldings(candidateResult.finalHoldings(), runId);
+                }
+                if (benchmarkResult.allHoldings() != null && !benchmarkResult.allHoldings().isEmpty()) {
+                    for (BacktestDtos.BacktestHoldingsDto h : benchmarkResult.allHoldings()) {
+                        persistHoldings(h, runId);
+                    }
+                } else if (benchmarkResult.finalHoldings() != null) {
+                    persistHoldings(benchmarkResult.finalHoldings(), runId);
+                }
+
+                // Write signals
+                if (candidateResult.signals() != null && !candidateResult.signals().isEmpty()) {
+                    persistSignals(candidateResult.signals(), runId);
+                }
 
                 // Update run to COMPLETED atomically with conditional transition
                 String now = Instant.now().toString();
@@ -529,6 +593,50 @@ public class BacktestJobService {
         );
     }
 
+    private void persistSignals(List<BacktestDtos.BacktestSignalDto> signals, String runId) {
+        for (BacktestDtos.BacktestSignalDto sig : signals) {
+            String sigId = (sig.id() != null && !sig.id().isBlank()) ? sig.id() : "sig-" + UUID.randomUUID();
+            jdbcTemplate.update(
+                    "INSERT INTO backtest_signals (" +
+                            "id, run_id, strategy_id, strategy_version, universe_id, " +
+                            "evaluation_date, evaluation_time, decision_instant, scheduled_execution_date, " +
+                            "target_allocation_summary, status, reason_code, details_json, created_at" +
+                            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    sigId, runId, sig.strategyId(), sig.strategyVersion(), sig.universeId(),
+                    sig.evaluationDate(), sig.evaluationTime(), sig.decisionInstant(), sig.scheduledExecutionDate(),
+                    sig.targetAllocationSummary(), sig.status(), sig.reasonCode(), sig.detailsJson(), sig.createdAt()
+            );
+
+            if (sig.items() != null) {
+                for (BacktestDtos.BacktestSignalItemDto item : sig.items()) {
+                    String itemId = (item.id() != null && !item.id().isBlank()) ? item.id() : "sigi-" + UUID.randomUUID();
+                    jdbcTemplate.update(
+                            "INSERT INTO backtest_signal_items (" +
+                                    "id, signal_id, listing_id, score, index_value, sma_value, " +
+                                    "rank, eligible, selected, target_weight, reason_code" +
+                                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            itemId, sigId, item.listingId(), item.score(), item.indexValue(), item.smaValue(),
+                            item.rank(), item.eligible() ? 1 : 0, item.selected() ? 1 : 0, item.targetWeight(), item.reasonCode()
+                    );
+                }
+            }
+        }
+    }
+
+    private void recordHoldoutExposure(String runId, String ownerId, String accessType) {
+        try {
+            List<Map<String, Object>> rows = jdbcTemplate.queryForList(
+                    "SELECT experiment_id FROM backtest_runs WHERE id = ?", runId
+            );
+            if (!rows.isEmpty() && rows.get(0).get("experiment_id") != null) {
+                String expId = (String) rows.get(0).get("experiment_id");
+                experimentService.recordExposure(expId, runId, accessType, ownerId, "{\"runId\":\"" + runId + "\"}");
+            }
+        } catch (Exception e) {
+            log.warn("Failed to record exposure for run {}: {}", runId, e.getMessage());
+        }
+    }
+
     private void verifyOwnerAccess(String runId, String ownerId) {
         String uid = (ownerId == null || ownerId.isBlank()) ? "default" : ownerId;
         List<Map<String, Object>> rows = jdbcTemplate.queryForList(
@@ -578,6 +686,7 @@ public class BacktestJobService {
         if (rows.isEmpty()) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Backtest run not found: " + runId);
         }
+        recordHoldoutExposure(runId, uid, "VIEW_DETAIL");
         return mapRunRow(rows.get(0));
     }
 
@@ -602,6 +711,9 @@ public class BacktestJobService {
 
     public BacktestDtos.PagedResponse<BacktestDtos.DailyEquityPoint> getDailyEquity(String runId, String ownerId, String seriesType, int rawLimit, int rawOffset) {
         verifyOwnerAccess(runId, ownerId);
+        String uid = (ownerId == null || ownerId.isBlank()) ? "default" : ownerId;
+        recordHoldoutExposure(runId, uid, "VIEW_DETAIL");
+
         int limit = Math.max(1, Math.min(rawLimit <= 0 ? 500 : rawLimit, 5000));
         int offset = Math.max(0, rawOffset);
 
@@ -648,6 +760,9 @@ public class BacktestJobService {
 
     public BacktestDtos.PagedResponse<BacktestDtos.BacktestOrderDto> getOrders(String runId, String ownerId, String seriesType, int rawLimit, int rawOffset) {
         verifyOwnerAccess(runId, ownerId);
+        String uid = (ownerId == null || ownerId.isBlank()) ? "default" : ownerId;
+        recordHoldoutExposure(runId, uid, "VIEW_DETAIL");
+
         int limit = Math.max(1, Math.min(rawLimit <= 0 ? 100 : rawLimit, 1000));
         int offset = Math.max(0, rawOffset);
 
@@ -726,6 +841,9 @@ public class BacktestJobService {
 
     public BacktestDtos.PagedResponse<BacktestDtos.BacktestEventDto> getEvents(String runId, String ownerId, String seriesType, int rawLimit, int rawOffset) {
         verifyOwnerAccess(runId, ownerId);
+        String uid = (ownerId == null || ownerId.isBlank()) ? "default" : ownerId;
+        recordHoldoutExposure(runId, uid, "VIEW_DETAIL");
+
         int limit = Math.max(1, Math.min(rawLimit <= 0 ? 100 : rawLimit, 1000));
         int offset = Math.max(0, rawOffset);
 
@@ -800,6 +918,69 @@ public class BacktestJobService {
         return new BacktestDtos.PagedResponse<>(items, total, limit, offset, offset + items.size() < total);
     }
 
+    public BacktestDtos.PagedResponse<BacktestDtos.BacktestSignalDto> getBacktestSignals(String runId, String ownerId, int rawLimit, int rawOffset) {
+        verifyOwnerAccess(runId, ownerId);
+        int limit = Math.max(1, Math.min(rawLimit <= 0 ? 50 : rawLimit, 500));
+        int offset = Math.max(0, rawOffset);
+        String uid = (ownerId == null || ownerId.isBlank()) ? "default" : ownerId;
+
+        recordHoldoutExposure(runId, uid, "VIEW_DETAIL");
+
+        Integer count = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM backtest_signals WHERE run_id = ?",
+                Integer.class, runId
+        );
+        int total = count != null ? count : 0;
+
+        List<Map<String, Object>> signalRows = jdbcTemplate.queryForList(
+                "SELECT * FROM backtest_signals WHERE run_id = ? ORDER BY evaluation_date ASC LIMIT ? OFFSET ?",
+                runId, limit, offset
+        );
+
+        List<BacktestDtos.BacktestSignalDto> items = new ArrayList<>();
+        for (Map<String, Object> sr : signalRows) {
+            String sigId = (String) sr.get("id");
+            List<BacktestDtos.BacktestSignalItemDto> signalItems = jdbcTemplate.query(
+                    "SELECT id, signal_id, listing_id, score, index_value, sma_value, rank, eligible, selected, target_weight, reason_code " +
+                            "FROM backtest_signal_items WHERE signal_id = ? ORDER BY rank ASC, listing_id ASC",
+                    (rs, i) -> new BacktestDtos.BacktestSignalItemDto(
+                            rs.getString("id"),
+                            rs.getString("signal_id"),
+                            rs.getString("listing_id"),
+                            rs.getString("score"),
+                            rs.getString("index_value"),
+                            rs.getString("sma_value"),
+                            rs.getObject("rank") != null ? rs.getInt("rank") : null,
+                            rs.getInt("eligible") == 1,
+                            rs.getInt("selected") == 1,
+                            rs.getString("target_weight"),
+                            rs.getString("reason_code")
+                    ),
+                    sigId
+            );
+
+            items.add(new BacktestDtos.BacktestSignalDto(
+                    sigId,
+                    (String) sr.get("run_id"),
+                    (String) sr.get("strategy_id"),
+                    (String) sr.get("strategy_version"),
+                    (String) sr.get("universe_id"),
+                    (String) sr.get("evaluation_date"),
+                    (String) sr.get("evaluation_time"),
+                    (String) sr.get("decision_instant"),
+                    (String) sr.get("scheduled_execution_date"),
+                    (String) sr.get("target_allocation_summary"),
+                    (String) sr.get("status"),
+                    (String) sr.get("reason_code"),
+                    (String) sr.get("details_json"),
+                    signalItems,
+                    (String) sr.get("created_at")
+            ));
+        }
+
+        return new BacktestDtos.PagedResponse<>(items, total, limit, offset, offset + items.size() < total);
+    }
+
     private BacktestDtos.BacktestSummaryResponse mapRunRow(Map<String, Object> r) {
         String summaryJson = (String) r.get("summary_json");
         BacktestDtos.BacktestAnalyticsSummary candSummary = null;
@@ -828,6 +1009,23 @@ public class BacktestJobService {
             }
         }
 
+        List<BacktestDtos.BacktestHoldingsDto> candidateHoldings = jdbcTemplate.query(
+                "SELECT series_type, listing_id, units, total_cost_basis, average_cost, current_price, market_value, unrealized_gain, updated_at " +
+                        "FROM backtest_holdings WHERE run_id = ? AND series_type = 'CANDIDATE' ORDER BY listing_id ASC",
+                (rs, rowNum) -> new BacktestDtos.BacktestHoldingsDto(
+                        rs.getString("series_type"),
+                        rs.getString("listing_id"),
+                        rs.getString("units"),
+                        rs.getString("total_cost_basis"),
+                        rs.getString("average_cost"),
+                        rs.getString("current_price"),
+                        rs.getString("market_value"),
+                        rs.getString("unrealized_gain"),
+                        rs.getString("updated_at")
+                ),
+                r.get("id")
+        );
+
         return new BacktestDtos.BacktestSummaryResponse(
                 (String) r.get("id"),
                 (String) r.get("owner_id"),
@@ -840,6 +1038,9 @@ public class BacktestJobService {
                 (String) r.get("dataset_id"),
                 (String) r.get("candidate_listing_id"),
                 (String) r.get("benchmark_listing_id"),
+                (String) r.get("universe_id"),
+                (String) r.get("parameters_json"),
+                (String) r.get("experiment_id"),
                 (String) r.get("initial_cash"),
                 (String) r.get("currency"),
                 (String) r.get("evaluation_cutoff"),
@@ -854,6 +1055,7 @@ public class BacktestJobService {
                 candSummary,
                 benchSummary,
                 normalizedConfig,
+                candidateHoldings,
                 (String) r.get("created_at"),
                 (String) r.get("updated_at"),
                 (String) r.get("completed_at")

@@ -10,12 +10,15 @@ import { ChatPanelComponent } from './chat-panel/chat-panel.component';
 import { ResearchComponent } from './research/research.component';
 import { ResearchDataComponent } from './research-data/research-data.component';
 import { ResearchBacktestsComponent } from './research-backtests/research-backtests.component';
+import { ResearchStrategiesComponent } from './research-strategies/research-strategies.component';
+import { ResearchCompareComponent } from './research-compare/research-compare.component';
 import { provideHttpClient } from '@angular/common/http';
 import { provideHttpClientTesting } from '@angular/common/http/testing';
 import { BehaviorSubject, of } from 'rxjs';
 import { ResearchService } from '../services/research.service';
 import { HistoricalDataService } from '../services/historical-data.service';
 import { BacktestService } from '../services/backtest.service';
+import { BacktestComparisonDto } from '../models/backtest.model';
 
 describe('Component Unit Tests', () => {
   it('HeaderComponent should display portfolio value and cash', () => {
@@ -473,6 +476,7 @@ describe('Component Unit Tests', () => {
       ordersTotal$: of(0),
       events$: of([]),
       eventsTotal$: of(0),
+      signals$: of([]),
       refreshRuns: () => {},
       selectRun: () => {},
       clearSelection: () => {},
@@ -480,6 +484,8 @@ describe('Component Unit Tests', () => {
       createRun: () => of(mockRun),
       cancelRun: () => of(mockRun),
       getExportUrl: (id: string) => `/api/research/backtests/${id}/export`,
+      getSignalsExportUrl: (id: string) => `/api/research/backtests/${id}/signals/export`,
+      getUniverses: () => of([]),
     };
 
     const mockDataService = {
@@ -511,5 +517,164 @@ describe('Component Unit Tests', () => {
     selectedRun.next({ ...mockRun, candidateSummary: summaryWithoutCagr });
     fixture.detectChanges();
     expect(el.textContent).toContain('N/A (< 1 yr)');
+  });
+
+  it('ResearchStrategiesComponent should render strategy catalog and universe members', () => {
+    const mockStrategies = [
+      {
+        id: 's-1',
+        strategyId: 'ETF_MOMENTUM_12_1_V1',
+        version: '1.0.0',
+        name: 'ETF Momentum 12-1',
+        description: 'Multi-asset momentum rebalancing',
+        author: 'SignalForge',
+        implementationClass: 'EtfMomentumEvaluator',
+        isMultiAsset: true,
+        supportedRebalanceFrequencies: ['MONTHLY'],
+        defaultRebalanceFrequency: 'MONTHLY',
+        parametersSchemaJson: '{}',
+        defaultParametersJson: '{"k": 2}',
+        status: 'ACTIVE',
+        supportedCalendars: ['XETRA'],
+        supportedCurrencies: ['EUR'],
+        parameters: [],
+        createdAt: '2026-09-14T00:00:00Z',
+      },
+    ];
+
+    const mockUniverses = [
+      {
+        id: 'u-1',
+        name: 'Core 50 ETF',
+        description: 'Large cap ETF universe',
+        datasetId: 'ds-1',
+        memberCount: 2,
+        members: [
+          { listingId: 'VWCE', weightCap: null, effectiveDate: '2020-01-01', exitDate: null },
+          { listingId: 'AGGH', weightCap: null, effectiveDate: '2020-01-01', exitDate: null },
+        ],
+        createdAt: '2026-09-14T00:00:00Z',
+        updatedAt: '2026-09-14T00:00:00Z',
+      },
+    ];
+
+    const mockExperiments = [
+      {
+        id: 'exp-1',
+        name: 'Holdout Validation Study',
+        description: 'Evaluating momentum generalization',
+        strategyId: 'ETF_MOMENTUM_12_1_V1',
+        holdoutDatasetId: 'ds-1',
+        holdoutStartDate: '2023-01-01',
+        holdoutEndDate: '2024-01-01',
+        exposureCount: 1,
+        exposures: [],
+        createdAt: '2026-09-14T00:00:00Z',
+      },
+    ];
+
+    const mockBacktestService = {
+      getStrategies: () => of(mockStrategies),
+      getUniverses: () => of(mockUniverses),
+      getExperiments: () => of(mockExperiments),
+    };
+
+    TestBed.resetTestingModule();
+    TestBed.configureTestingModule({
+      providers: [{ provide: BacktestService, useValue: mockBacktestService }],
+    });
+
+    const fixture: ComponentFixture<ResearchStrategiesComponent> = TestBed.createComponent(ResearchStrategiesComponent);
+    fixture.detectChanges();
+
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.textContent).toContain('STRATEGY REPOSITORY');
+    expect(el.textContent).toContain('ETF_MOMENTUM_12_1_V1');
+  });
+
+  it('ResearchCompareComponent should render side-by-side comparison and rolling disclaimer', () => {
+    const mockRuns = [
+      {
+        id: 'run-1',
+        strategyId: 'ETF_BUY_HOLD_V1',
+        strategyVersion: '1.0.0',
+        candidateListingId: 'VWCE',
+        status: 'COMPLETED',
+        completedAt: '2026-09-14T00:00:00Z',
+        candidateSummary: {
+          initialEquity: '10000.00',
+          finalEquity: '11500.00',
+          cumulativeReturn: 0.15,
+          cagr: 0.03,
+          maxDrawdown: -0.1,
+          annualizedVolatility: 0.12,
+        },
+      },
+      {
+        id: 'run-2',
+        strategyId: 'ETF_MOMENTUM_12_1_V1',
+        strategyVersion: '1.0.0',
+        candidateListingId: 'UNIVERSE:core50',
+        status: 'COMPLETED',
+        completedAt: '2026-09-14T00:00:00Z',
+        candidateSummary: {
+          initialEquity: '10000.00',
+          finalEquity: '12200.00',
+          cumulativeReturn: 0.22,
+          cagr: 0.042,
+          maxDrawdown: -0.09,
+          annualizedVolatility: 0.11,
+        },
+      },
+    ];
+
+    const mockComparison: BacktestComparisonDto = {
+      id: 'cmp-1',
+      ownerId: 'default',
+      name: 'Comparison Test',
+      comparisonBasis: 'MATCHED_CONDITIONS',
+      status: 'MATCHED',
+      runIds: ['run-1', 'run-2'],
+      runs: mockRuns as any,
+      mismatchReasons: [],
+      rollingWindowsByRun: {
+        'run-1': {
+          totalWindows: 12,
+          completeWindows: 12,
+          positiveWindows: 10,
+          positiveWindowShare: 0.8333,
+          windows: [],
+          note: 'Rolling 5-year historical compounded-return windows are descriptive statistics and not predictive of future performance. Overlapping windows introduce serial correlation.',
+        },
+      },
+      createdAt: '2026-09-14T00:00:00Z',
+    };
+
+    const mockBacktestService = {
+      runs$: of(mockRuns),
+      refreshRuns: () => {},
+      getComparisons: () => of([mockComparison]),
+      createComparison: () => of(mockComparison),
+      getComparisonExportUrl: (id: string) => `/api/research/backtests/compare/${id}/export.zip`,
+    };
+
+    TestBed.resetTestingModule();
+    TestBed.configureTestingModule({
+      providers: [{ provide: BacktestService, useValue: mockBacktestService }],
+    });
+
+    const fixture: ComponentFixture<ResearchCompareComponent> = TestBed.createComponent(ResearchCompareComponent);
+    fixture.detectChanges();
+
+    const comp = fixture.componentInstance;
+    comp.selectedRunIds = new Set(['run-1', 'run-2']);
+    comp.activeComparison = mockComparison;
+    fixture.detectChanges();
+
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.textContent).toContain('STRATEGY COMPARISON & REPLAY AUDIT');
+    expect(el.textContent).toContain('Rolling 5-year historical compounded-return windows are descriptive statistics and not predictive of future performance.');
+    expect(el.textContent).toContain('ETF_MOMENTUM_12_1_V1');
+    expect(el.textContent).toContain('22.00%');
   });
 });

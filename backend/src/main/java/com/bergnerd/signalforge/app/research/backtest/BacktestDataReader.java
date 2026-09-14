@@ -55,7 +55,7 @@ public class BacktestDataReader {
         }
 
         public boolean isDistribution() {
-            return "CASH_DISTRIBUTION".equalsIgnoreCase(actionType);
+            return "CASH_DISTRIBUTION".equalsIgnoreCase(actionType) || "DISTRIBUTION".equalsIgnoreCase(actionType);
         }
 
         public BigDecimal splitRatio() {
@@ -92,8 +92,25 @@ public class BacktestDataReader {
             List<SessionRecord> tradingSessions,
             List<SessionRecord> calendarSessions,
             Map<String, Map<String, BarRecord>> barsByListingAndDate, // listingId -> date -> BarRecord
-            Map<String, List<ActionRecord>> actionsByListing // listingId -> List<ActionRecord>
-    ) {}
+            Map<String, List<ActionRecord>> actionsByListing, // listingId -> List<ActionRecord>
+            List<String> targetListingIds,
+            String lookbackStartDate,
+            List<String> monthEndSessions
+    ) {
+        public LoadedBacktestData(
+                String datasetId, String calendarId, String datasetInputChecksum, String datasetContentChecksum,
+                String parserVersion, String schemaVersion, String classification, String coverageStart, String coverageEnd,
+                String selectedEvaluationSession, String selectedEndSession, String effectiveStartDate, String effectiveEndDate,
+                SessionRecord evaluationSession, List<SessionRecord> tradingSessions, List<SessionRecord> calendarSessions,
+                Map<String, Map<String, BarRecord>> barsByListingAndDate, Map<String, List<ActionRecord>> actionsByListing
+        ) {
+            this(datasetId, calendarId, datasetInputChecksum, datasetContentChecksum, parserVersion, schemaVersion,
+                    classification, coverageStart, coverageEnd, selectedEvaluationSession, selectedEndSession,
+                    effectiveStartDate, effectiveEndDate, evaluationSession, tradingSessions, calendarSessions,
+                    barsByListingAndDate, actionsByListing, List.of(),
+                    evaluationSession != null ? evaluationSession.sessionDate() : selectedEvaluationSession, List.of());
+        }
+    }
 
     public record PreflightValidationResult(
             String datasetId,
@@ -113,8 +130,22 @@ public class BacktestDataReader {
             SessionRecord evaluationSession,
             SessionRecord endSession,
             List<SessionRecord> allSessions,
-            List<SessionRecord> runTradingSessions
+            List<SessionRecord> runTradingSessions,
+            List<String> targetListingIds,
+            String lookbackStartDate
     ) {
+        public PreflightValidationResult(
+                String datasetId, String calendarId, String calendarTimezone, String inputChecksum, String contentChecksum,
+                String parserVersion, String schemaVersion, String classification, String coverageStart, String coverageEnd,
+                String requestedStartDate, String requestedEndDate, String effectiveStartDate, String effectiveEndDate,
+                SessionRecord evaluationSession, SessionRecord endSession, List<SessionRecord> allSessions, List<SessionRecord> runTradingSessions
+        ) {
+            this(datasetId, calendarId, calendarTimezone, inputChecksum, contentChecksum, parserVersion, schemaVersion,
+                    classification, coverageStart, coverageEnd, requestedStartDate, requestedEndDate, effectiveStartDate,
+                    effectiveEndDate, evaluationSession, endSession, allSessions, runTradingSessions, List.of(),
+                    evaluationSession != null ? evaluationSession.sessionDate() : requestedStartDate);
+        }
+
         public String selectedEvaluationSession() {
             return evaluationSession != null ? evaluationSession.sessionDate() : requestedStartDate;
         }
@@ -125,6 +156,20 @@ public class BacktestDataReader {
     }
 
     public PreflightValidationResult validatePreflight(
+            String datasetId,
+            String candidateListingId,
+            String benchmarkListingId,
+            String evaluationCutoff,
+            String requestedStartDate,
+            String requestedEndDate
+    ) {
+        return validatePreflight("ETF_BUY_HOLD_V1", null, datasetId, candidateListingId, benchmarkListingId,
+                evaluationCutoff, requestedStartDate, requestedEndDate);
+    }
+
+    public PreflightValidationResult validatePreflight(
+            String strategyId,
+            String universeId,
             String datasetId,
             String candidateListingId,
             String benchmarkListingId,
@@ -155,31 +200,58 @@ public class BacktestDataReader {
         String coverageStart = (String) dsRow.get("coverage_start");
         String coverageEnd = (String) dsRow.get("coverage_end");
 
-        // 2. Verify candidate & benchmark listings exist in this dataset
-        List<Map<String, Object>> candidateListings = jdbcTemplate.queryForList(
-                "SELECT listing_id, calendar_id, quote_currency FROM dataset_listings WHERE dataset_id = ? AND listing_id = ?",
-                datasetId, candidateListingId
-        );
-        if (candidateListings.isEmpty()) {
-            throw new IllegalArgumentException("Candidate listing " + candidateListingId + " not found in dataset " + datasetId);
+        // 2. Resolve target listings (from universe if provided, else single candidate listing)
+        List<String> targetListings = new ArrayList<>();
+        if (universeId != null && !universeId.isBlank()) {
+            List<String> uListings = jdbcTemplate.queryForList(
+                    "SELECT listing_id FROM universe_listings WHERE universe_id = ? ORDER BY listing_id ASC",
+                    String.class,
+                    universeId
+            );
+            if (uListings.isEmpty()) {
+                throw new IllegalArgumentException("Universe " + universeId + " has no listings configured");
+            }
+            targetListings.addAll(uListings);
+        } else if (candidateListingId != null && !candidateListingId.isBlank()) {
+            targetListings.add(candidateListingId);
+        } else {
+            throw new IllegalArgumentException("Either candidateListingId or universeId must be provided");
         }
-        List<Map<String, Object>> benchmarkListings = jdbcTemplate.queryForList(
+
+        // Verify benchmark listing exists
+        if (benchmarkListingId == null || benchmarkListingId.isBlank()) {
+            throw new IllegalArgumentException("benchmarkListingId must be provided");
+        }
+        List<Map<String, Object>> benchmarkRows = jdbcTemplate.queryForList(
                 "SELECT listing_id, calendar_id, quote_currency FROM dataset_listings WHERE dataset_id = ? AND listing_id = ?",
                 datasetId, benchmarkListingId
         );
-        if (benchmarkListings.isEmpty()) {
+        if (benchmarkRows.isEmpty()) {
             throw new IllegalArgumentException("Benchmark listing " + benchmarkListingId + " not found in dataset " + datasetId);
         }
-
-        String candCal = (String) candidateListings.get(0).get("calendar_id");
-        String benchCal = (String) benchmarkListings.get(0).get("calendar_id");
-        if (!candCal.equalsIgnoreCase(benchCal)) {
-            throw new IllegalArgumentException("Candidate calendar (" + candCal + ") does not match benchmark calendar (" + benchCal + ")");
+        String benchCal = (String) benchmarkRows.get(0).get("calendar_id");
+        String benchCurr = (String) benchmarkRows.get(0).get("quote_currency");
+        if (!"EUR".equalsIgnoreCase(benchCurr)) {
+            throw new IllegalArgumentException("Unsupported currency: benchmark must quote in EUR (got: " + benchCurr + ")");
         }
-        String candCurr = (String) candidateListings.get(0).get("quote_currency");
-        String benchCurr = (String) benchmarkListings.get(0).get("quote_currency");
-        if (!"EUR".equalsIgnoreCase(candCurr) || !"EUR".equalsIgnoreCase(benchCurr)) {
-            throw new IllegalArgumentException("Unsupported currency: both listings must quote in EUR (candidate: " + candCurr + ", benchmark: " + benchCurr + ")");
+
+        // Verify all target listings exist in this dataset, share benchmark calendar, and quote in EUR
+        for (String lid : targetListings) {
+            List<Map<String, Object>> candRows = jdbcTemplate.queryForList(
+                    "SELECT listing_id, calendar_id, quote_currency FROM dataset_listings WHERE dataset_id = ? AND listing_id = ?",
+                    datasetId, lid
+            );
+            if (candRows.isEmpty()) {
+                throw new IllegalArgumentException("Listing " + lid + " not found in dataset " + datasetId);
+            }
+            String candCal = (String) candRows.get(0).get("calendar_id");
+            if (!candCal.equalsIgnoreCase(benchCal)) {
+                throw new IllegalArgumentException("Listing calendar (" + candCal + ") for " + lid + " does not match benchmark calendar (" + benchCal + ")");
+            }
+            String candCurr = (String) candRows.get(0).get("quote_currency");
+            if (!"EUR".equalsIgnoreCase(candCurr)) {
+                throw new IllegalArgumentException("Unsupported currency: listing " + lid + " must quote in EUR (got: " + candCurr + ")");
+            }
         }
 
         // 3. Load all sessions for the shared calendar
@@ -192,11 +264,11 @@ public class BacktestDataReader {
                         rs.getString("close_time"),
                         rs.getString("session_type")
                 ),
-                datasetId, candCal
+                datasetId, benchCal
         );
 
         if (allSessions.isEmpty()) {
-            throw new IllegalArgumentException("No calendar sessions found for dataset " + datasetId + " and calendar " + candCal);
+            throw new IllegalArgumentException("No calendar sessions found for dataset " + datasetId + " and calendar " + benchCal);
         }
 
         // 4. Strict date parsing and Month-end evaluation session validation
@@ -221,7 +293,7 @@ public class BacktestDataReader {
             }
         }
         if (evalSession == null) {
-            throw new IllegalArgumentException("Requested start date " + requestedStartDate + " is not a trading session in dataset calendar " + candCal);
+            throw new IllegalArgumentException("Requested start date " + requestedStartDate + " is not a trading session in dataset calendar " + benchCal);
         }
 
         // Month-end requirement: ensure no later trading session exists in that same calendar year & month
@@ -255,8 +327,9 @@ public class BacktestDataReader {
                     " is before evaluation session close time " + evalSession.closeTime() + "; completed observations unavailable");
         }
 
-        // Validate that evaluation session bars exist for both candidate and benchmark, and were available by cutoff
-        List<String> evalListings = List.of(candidateListingId, benchmarkListingId);
+        // Validate that evaluation session bars exist for all target listings and benchmark, and were available by cutoff
+        Set<String> evalListings = new LinkedHashSet<>(targetListings);
+        evalListings.add(benchmarkListingId);
         for (String lid : evalListings) {
             List<Map<String, Object>> evalBarRows = jdbcTemplate.queryForList(
                     "SELECT available_at FROM historical_bars WHERE dataset_id = ? AND listing_id = ? AND session_date = ?",
@@ -307,7 +380,7 @@ public class BacktestDataReader {
             }
         }
         if (endSession == null) {
-            throw new IllegalArgumentException("Requested end date " + requestedEndDate + " is not an explicit trading session in dataset calendar " + candCal);
+            throw new IllegalArgumentException("Requested end date " + requestedEndDate + " is not an explicit trading session in dataset calendar " + benchCal);
         }
 
         java.time.LocalDate effStartDate = java.time.LocalDate.parse(effectiveStartSession.sessionDate());
@@ -330,12 +403,31 @@ public class BacktestDataReader {
             throw new IllegalArgumentException("No trading sessions found in effective window [" + effectiveStartSession.sessionDate() + ", " + requestedEndDate + "]");
         }
 
+        // 9. Lookback validation for S2 and S3
+        List<String> monthEndDates = TotalReturnSignalIndexCalculator.extractMonthEndSessions(allSessions);
+        int evalIdx = monthEndDates.indexOf(evalSession.sessionDate());
+        String lookbackStartDate = evalSession.sessionDate();
+
+        if (strategyId != null && strategyId.toUpperCase().contains("MOMENTUM")) {
+            if (evalIdx < 12) {
+                throw new IllegalArgumentException("Insufficient lookback history for " + strategyId +
+                        ": evaluation month-end session requires at least 12 prior completed month-end sessions in dataset calendar, but only found " + evalIdx);
+            }
+            lookbackStartDate = monthEndDates.get(evalIdx - 12);
+        } else if (strategyId != null && strategyId.toUpperCase().contains("TREND")) {
+            if (evalIdx < 9) {
+                throw new IllegalArgumentException("Insufficient lookback history for " + strategyId +
+                        ": evaluation month-end session requires at least 9 prior completed month-end sessions in dataset calendar, but only found " + evalIdx);
+            }
+            lookbackStartDate = monthEndDates.get(evalIdx - 9);
+        }
+
         String effectiveStartDate = effectiveStartSession.sessionDate();
         String effectiveEndDate = endSession.sessionDate();
 
         return new PreflightValidationResult(
                 datasetId,
-                candCal,
+                benchCal,
                 "UTC",
                 inputChecksum,
                 contentChecksum,
@@ -351,7 +443,9 @@ public class BacktestDataReader {
                 evalSession,
                 endSession,
                 allSessions,
-                runTradingSessions
+                runTradingSessions,
+                targetListings,
+                lookbackStartDate
         );
     }
 
@@ -363,7 +457,23 @@ public class BacktestDataReader {
             String requestedStartDate,
             String requestedEndDate
     ) {
+        return loadAndValidateData("ETF_BUY_HOLD_V1", null, datasetId, candidateListingId, benchmarkListingId,
+                evaluationCutoff, requestedStartDate, requestedEndDate);
+    }
+
+    public LoadedBacktestData loadAndValidateData(
+            String strategyId,
+            String universeId,
+            String datasetId,
+            String candidateListingId,
+            String benchmarkListingId,
+            String evaluationCutoff,
+            String requestedStartDate,
+            String requestedEndDate
+    ) {
         PreflightValidationResult preflight = validatePreflight(
+                strategyId,
+                universeId,
                 datasetId,
                 candidateListingId,
                 benchmarkListingId,
@@ -385,9 +495,13 @@ public class BacktestDataReader {
         SessionRecord evalSession = preflight.evaluationSession();
         List<SessionRecord> allSessions = preflight.allSessions();
         List<SessionRecord> runTradingSessions = preflight.runTradingSessions();
+        List<String> targetListings = preflight.targetListingIds();
+        String lookbackStartDate = preflight.lookbackStartDate();
 
-        // 9. Load all historical bars for candidate and benchmark with parameterized query
-        Set<String> listingsToLoad = new HashSet<>(Arrays.asList(candidateListingId, benchmarkListingId));
+        // 10. Load historical bars for all target listings and benchmark from lookbackStartDate to effectiveEndDate
+        Set<String> listingsToLoad = new LinkedHashSet<>(targetListings);
+        listingsToLoad.add(benchmarkListingId);
+
         Map<String, Map<String, BarRecord>> barsByListingAndDate = new HashMap<>();
         for (String listingId : listingsToLoad) {
             barsByListingAndDate.put(listingId, new HashMap<>());
@@ -398,7 +512,7 @@ public class BacktestDataReader {
         List<Object> barParams = new ArrayList<>();
         barParams.add(datasetId);
         barParams.addAll(listingList);
-        barParams.add(evalSession.sessionDate());
+        barParams.add(lookbackStartDate);
         barParams.add(effectiveEndDate);
 
         jdbcTemplate.query(
@@ -444,7 +558,23 @@ public class BacktestDataReader {
             }
         }
 
-        // 10. Load all corporate actions for candidate and benchmark with parameterized query
+        // Verify that lookback trading sessions between lookbackStartDate and evalSession have bars
+        for (SessionRecord session : allSessions) {
+            if (session.isTrading()) {
+                String sDate = session.sessionDate();
+                if (sDate.compareTo(lookbackStartDate) >= 0 && sDate.compareTo(evalSession.sessionDate()) <= 0) {
+                    for (String listingId : listingsToLoad) {
+                        if (!barsByListingAndDate.get(listingId).containsKey(sDate)) {
+                            throw new IllegalArgumentException(
+                                    "Missing lookback trading bar for listing " + listingId + " on session " + sDate
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // 11. Load corporate actions for all listings with parameterized query
         Map<String, List<ActionRecord>> actionsByListing = new HashMap<>();
         for (String listingId : listingsToLoad) {
             actionsByListing.put(listingId, new ArrayList<>());
@@ -485,7 +615,7 @@ public class BacktestDataReader {
         for (String listingId : listingsToLoad) {
             for (ActionRecord action : actionsByListing.get(listingId)) {
                 if (action.isSplit()) {
-                    action.splitRatio(); // Will throw IllegalArgumentException if numerator or denominator are invalid or unrepresentable
+                    action.splitRatio();
                 } else if (action.isDistribution()) {
                     if (action.distributionCurrency() == null || !"EUR".equalsIgnoreCase(action.distributionCurrency())) {
                         throw new IllegalArgumentException("Distribution action " + action.actionId() + " must have EUR currency, got: " + action.distributionCurrency());
@@ -499,8 +629,8 @@ public class BacktestDataReader {
                     }
                 }
 
-                // Verify action availability constraints for actions within the run window:
-                if (action.effectiveDate().compareTo(evalSession.sessionDate()) >= 0 &&
+                // Verify action availability constraints for actions within the lookback and run window:
+                if (action.effectiveDate().compareTo(lookbackStartDate) >= 0 &&
                         action.effectiveDate().compareTo(effectiveEndDate) <= 0) {
                     if (action.availableAt() == null || action.availableAt().isBlank()) {
                         throw new IllegalArgumentException("Corporate action " + action.actionId() + " effective on " + action.effectiveDate() + " has null available_at");
@@ -523,6 +653,8 @@ public class BacktestDataReader {
             }
         }
 
+        List<String> monthEnds = TotalReturnSignalIndexCalculator.extractMonthEndSessions(allSessions);
+
         return new LoadedBacktestData(
                 datasetId,
                 candCal,
@@ -541,7 +673,10 @@ public class BacktestDataReader {
                 runTradingSessions,
                 allSessions,
                 barsByListingAndDate,
-                actionsByListing
+                actionsByListing,
+                targetListings,
+                lookbackStartDate,
+                monthEnds
         );
     }
 }

@@ -17,6 +17,8 @@ import {
   DailyEquityPoint,
   BacktestOrderDto,
   BacktestEventDto,
+  UniverseDto,
+  SignalDto,
 } from '../../models/backtest.model';
 import { DatasetListing, DatasetSummary } from '../../models/historical-data.model';
 
@@ -39,13 +41,17 @@ export class ResearchBacktestsComponent implements OnInit {
   public ordersTotal: number = 0;
   public events: BacktestEventDto[] = [];
   public eventsTotal: number = 0;
+  public signals: SignalDto[] = [];
+  public selectedSignal: SignalDto | null = null;
 
-  // Datasets for Modal
+  // Datasets & Universes for Modal
   public availableDatasets: DatasetSummary[] = [];
   public availableListings: DatasetListing[] = [];
+  public universes: UniverseDto[] = [];
+  public momentumK: number = 2;
 
   // View state
-  public activeTab: 'equity' | 'orders' | 'events' | 'config' = 'equity';
+  public activeTab: 'equity' | 'orders' | 'events' | 'signals' | 'config' = 'equity';
   public showCreateModal: boolean = false;
   public isSubmitting: boolean = false;
   public isCancelling: boolean = false;
@@ -66,6 +72,8 @@ export class ResearchBacktestsComponent implements OnInit {
     slippageBps: '5',
     strategyId: 'ETF_BUY_HOLD_V1',
     strategyVersion: '1.0.0',
+    universeId: '',
+    parametersJson: '',
   };
 
   // Chart computed points
@@ -163,7 +171,24 @@ export class ResearchBacktestsComponent implements OnInit {
         this.cdr.markForCheck();
       });
 
-    // 4. Subscribe to Available Datasets
+    // 4. Subscribe to Signals
+    this.backtestService.signals$
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe((signals) => {
+        this.signals = signals || [];
+        this.selectedSignal = this.signals.length > 0 ? this.signals[0] : null;
+        this.cdr.markForCheck();
+      });
+
+    // 5. Load Universes
+    this.backtestService.getUniverses()
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe((unis) => {
+        this.universes = unis || [];
+        this.cdr.markForCheck();
+      });
+
+    // 6. Subscribe to Available Datasets
     this.historicalDataService.datasets$
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe((ds) => {
@@ -174,7 +199,7 @@ export class ResearchBacktestsComponent implements OnInit {
         this.cdr.markForCheck();
       });
 
-    // 5. Polling for active runs
+    // 7. Polling for active runs
     interval(2500)
       .pipe(
         takeUntilDestroyed(this.destroyRef),
@@ -266,10 +291,54 @@ export class ResearchBacktestsComponent implements OnInit {
       });
   }
 
+  public selectSignal(sig: SignalDto): void {
+    this.selectedSignal = sig;
+    this.cdr.markForCheck();
+  }
+
+  public onStrategyChange(stratId: string): void {
+    this.newRun.strategyId = stratId;
+    if (stratId === 'ETF_MOMENTUM_12_1_V1') {
+      if (this.universes.length > 0 && !this.newRun.universeId) {
+        this.onUniverseSelect(this.universes[0].id);
+      }
+    }
+    this.cdr.markForCheck();
+  }
+
+  public onUniverseSelect(uniId: string): void {
+    this.newRun.universeId = uniId;
+    const uni = this.universes.find((u) => u.id === uniId);
+    if (uni && uni.listings?.length > 0) {
+      this.newRun.candidateListingId = uni.listings[0];
+      this.newRun.currency = uni.currency || 'EUR';
+    }
+    this.cdr.markForCheck();
+  }
+
+  public getSignalsExportUrl(id: string): string {
+    return `/api/research/backtests/${id}/signals`;
+  }
+
   public submitNewRun(): void {
-    if (!this.newRun.datasetId || !this.newRun.candidateListingId) {
-      this.createError = 'Dataset and candidate listing are required.';
+    if (!this.newRun.datasetId) {
+      this.createError = 'Dataset is required.';
       return;
+    }
+
+    if (this.newRun.strategyId === 'ETF_MOMENTUM_12_1_V1') {
+      if (!this.newRun.universeId) {
+        this.createError = 'An ETF Universe is required for ETF Momentum.';
+        return;
+      }
+      this.newRun.parametersJson = JSON.stringify({ k: Number(this.momentumK) || 2 });
+    } else {
+      this.newRun.universeId = undefined;
+      this.newRun.parametersJson = undefined;
+      if (!this.newRun.candidateListingId) {
+        this.createError = 'Candidate listing is required.';
+        return;
+      }
     }
 
     this.isSubmitting = true;

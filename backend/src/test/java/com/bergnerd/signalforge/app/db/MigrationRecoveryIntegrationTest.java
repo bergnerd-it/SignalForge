@@ -532,7 +532,7 @@ class MigrationRecoveryIntegrationTest {
         ));
 
         assertDoesNotThrow(migrationRunner::runMigration);
-        assertEquals(7, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM schema_migrations", Integer.class));
+        assertEquals(8, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM schema_migrations", Integer.class));
     }
 
     @Test
@@ -593,9 +593,10 @@ class MigrationRecoveryIntegrationTest {
         // Run upgrade migration
         migrationRunner.runMigration();
 
-        // Verify both upgrades recorded and the V4-V6 row preserved through the V7 rebuild.
+        // Verify both upgrades recorded and the V4-V6 row preserved through the V7 rebuild and V8 update.
         assertEquals(1, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM schema_migrations WHERE version = 6", Integer.class));
         assertEquals(1, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM schema_migrations WHERE version = 7", Integer.class));
+        assertEquals(1, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM schema_migrations WHERE version = 8", Integer.class));
 
         // 2. Verify all parent and child rows preserved intact
         assertEquals(1, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM backtest_runs WHERE id = 'run-v6-pop'", Integer.class));

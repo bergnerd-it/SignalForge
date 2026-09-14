@@ -26,9 +26,11 @@ public class BacktestExportService {
 
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
+    private final ExperimentService experimentService;
 
     public static final int MAX_SERIES_ROWS = 100000;
     public static final int MAX_HOLDINGS_ROWS = 10000;
+    public static final int MAX_SIGNALS_ROWS = 50000;
     public static final long MAX_EXPORT_BYTES = 50 * 1024 * 1024L;
 
     public void validateExportable(String runId, String ownerId) {
@@ -50,6 +52,8 @@ public class BacktestExportService {
         int ordersCount = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM backtest_orders WHERE run_id = ?", Integer.class, runId);
         int holdingsCount = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM backtest_holdings WHERE run_id = ?", Integer.class, runId);
 
+        int signalsCount = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM backtest_signals WHERE run_id = ?", Integer.class, runId);
+
         if (equityCount > MAX_SERIES_ROWS) {
             throw new ResponseStatusException(HttpStatus.PAYLOAD_TOO_LARGE,
                     "Export bounds exceeded: run has " + equityCount + " daily equity rows, exceeding maximum limit of " + MAX_SERIES_ROWS);
@@ -65,6 +69,10 @@ public class BacktestExportService {
         if (holdingsCount > MAX_HOLDINGS_ROWS) {
             throw new ResponseStatusException(HttpStatus.PAYLOAD_TOO_LARGE,
                     "Export bounds exceeded: run has " + holdingsCount + " holdings rows, exceeding maximum limit of " + MAX_HOLDINGS_ROWS);
+        }
+        if (signalsCount > MAX_SIGNALS_ROWS) {
+            throw new ResponseStatusException(HttpStatus.PAYLOAD_TOO_LARGE,
+                    "Export bounds exceeded: run has " + signalsCount + " signals rows, exceeding maximum limit of " + MAX_SIGNALS_ROWS);
         }
     }
 
@@ -107,6 +115,14 @@ public class BacktestExportService {
             throw new IllegalArgumentException("Backtest run not found: " + runId);
         }
         Map<String, Object> run = runRows.get(0);
+
+        List<Map<String, Object>> runExp = jdbcTemplate.queryForList(
+                "SELECT experiment_id FROM backtest_runs WHERE id = ?", runId
+        );
+        if (!runExp.isEmpty() && runExp.get(0).get("experiment_id") != null) {
+            String expId = (String) runExp.get(0).get("experiment_id");
+            experimentService.recordExposure(expId, runId, "EXPORT_DOWNLOAD", uid, "{\"runId\":\"" + runId + "\"}");
+        }
 
         BoundedOutputStream bos = new BoundedOutputStream(outputStream, maxBytes);
         try (ZipOutputStream zos = new ZipOutputStream(bos, StandardCharsets.UTF_8)) {
@@ -159,6 +175,9 @@ public class BacktestExportService {
                     manifest.put("codeFingerprint", cfg.codeFingerprint());
                     manifest.put("classification", cfg.classification());
                     manifest.put("availabilityAssumptions", cfg.availabilityAssumptions());
+                    if (cfg.universeId() != null) manifest.put("universeId", cfg.universeId());
+                    if (cfg.parametersJson() != null) manifest.put("parametersJson", cfg.parametersJson());
+                    if (cfg.experimentId() != null) manifest.put("experimentId", cfg.experimentId());
                 } catch (Exception e) {
                     log.warn("Failed to parse config_json for manifest, falling back to raw fields", e);
                 }
@@ -169,6 +188,9 @@ public class BacktestExportService {
             manifest.putIfAbsent("datasetId", run.get("dataset_id"));
             manifest.putIfAbsent("candidateListingId", run.get("candidate_listing_id"));
             manifest.putIfAbsent("benchmarkListingId", run.get("benchmark_listing_id"));
+            if (run.get("universe_id") != null) manifest.putIfAbsent("universeId", run.get("universe_id"));
+            if (run.get("parameters_json") != null) manifest.putIfAbsent("parametersJson", run.get("parameters_json"));
+            if (run.get("experiment_id") != null) manifest.putIfAbsent("experimentId", run.get("experiment_id"));
             manifest.putIfAbsent("initialCash", run.get("initial_cash"));
             manifest.putIfAbsent("currency", run.get("currency"));
             manifest.putIfAbsent("createdAt", run.get("created_at"));
@@ -308,6 +330,154 @@ public class BacktestExportService {
             );
             writer.flush();
             zos.closeEntry();
+
+            // 7. signals.csv (if any signals exist for this run)
+            Integer sigCount = jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM backtest_signals WHERE run_id = ?", Integer.class, runId
+            );
+            if (sigCount != null && sigCount > 0) {
+                zos.putNextEntry(new ZipEntry("signals.csv"));
+                writer.write("evaluation_date,evaluation_time,scheduled_execution_date,strategy_id,listing_id,score,index_value,sma_value,rank,eligible,selected,target_weight,status,reason_code\n");
+                jdbcTemplate.query(
+                        "SELECT s.evaluation_date, s.evaluation_time, s.scheduled_execution_date, s.strategy_id, " +
+                                "si.listing_id, si.score, si.index_value, si.sma_value, si.rank, si.eligible, " +
+                                "si.selected, si.target_weight, s.status, si.reason_code " +
+                                "FROM backtest_signals s " +
+                                "JOIN backtest_signal_items si ON s.id = si.signal_id " +
+                                "WHERE s.run_id = ? ORDER BY s.evaluation_date ASC, si.rank ASC, si.listing_id ASC",
+                        rs -> {
+                            try {
+                                writer.write(formatNumeric(rs.getString("evaluation_date")) + ",");
+                                writer.write(escapeCsvText(rs.getString("evaluation_time")) + ",");
+                                writer.write(formatNumeric(rs.getString("scheduled_execution_date")) + ",");
+                                writer.write(escapeCsvText(rs.getString("strategy_id")) + ",");
+                                writer.write(escapeCsvText(rs.getString("listing_id")) + ",");
+                                writer.write(formatNumeric(rs.getString("score")) + ",");
+                                writer.write(formatNumeric(rs.getString("index_value")) + ",");
+                                writer.write(formatNumeric(rs.getString("sma_value")) + ",");
+                                writer.write((rs.getObject("rank") != null ? rs.getInt("rank") : "") + ",");
+                                writer.write((rs.getInt("eligible") == 1 ? "true" : "false") + ",");
+                                writer.write((rs.getInt("selected") == 1 ? "true" : "false") + ",");
+                                writer.write(formatNumeric(rs.getString("target_weight")) + ",");
+                                writer.write(escapeCsvText(rs.getString("status")) + ",");
+                                writer.write(escapeCsvText(rs.getString("reason_code")) + "\n");
+                            } catch (IOException e) {
+                                throw new UncheckedIOException(e);
+                            }
+                        },
+                        runId
+                );
+                writer.flush();
+                zos.closeEntry();
+            }
+        }
+    }
+
+    public Path prepareComparisonZip(String comparisonId, String ownerId) throws IOException {
+        String uid = (ownerId == null || ownerId.isBlank()) ? "default" : ownerId;
+        List<Map<String, Object>> compRows = jdbcTemplate.queryForList(
+                "SELECT * FROM backtest_comparisons WHERE id = ? AND (owner_id = ? OR owner_id = 'default')",
+                comparisonId, uid
+        );
+        if (compRows.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Comparison not found: " + comparisonId);
+        }
+        Map<String, Object> comp = compRows.get(0);
+
+        List<Map<String, Object>> items = jdbcTemplate.queryForList(
+                "SELECT comparison_id, run_id, role, ordinal FROM backtest_comparison_items WHERE comparison_id = ? ORDER BY ordinal ASC",
+                comparisonId
+        );
+
+        // Check holdout exposures for all runs in comparison
+        for (Map<String, Object> item : items) {
+            String rid = (String) item.get("run_id");
+            List<Map<String, Object>> runExp = jdbcTemplate.queryForList(
+                    "SELECT experiment_id FROM backtest_runs WHERE id = ?", rid
+            );
+            if (!runExp.isEmpty() && runExp.get(0).get("experiment_id") != null) {
+                String expId = (String) runExp.get(0).get("experiment_id");
+                experimentService.recordExposure(expId, rid, "EXPORT_DOWNLOAD", uid,
+                        "{\"comparisonId\":\"" + comparisonId + "\"}");
+            }
+        }
+
+        Path zip = Files.createTempFile("signalforge-comparison-export-", ".zip");
+        try (OutputStream output = Files.newOutputStream(zip);
+             BoundedOutputStream bos = new BoundedOutputStream(output, MAX_EXPORT_BYTES);
+             ZipOutputStream zos = new ZipOutputStream(bos, StandardCharsets.UTF_8)) {
+            Writer writer = new OutputStreamWriter(zos, StandardCharsets.UTF_8);
+
+            // 1. manifest.json
+            Map<String, Object> manifest = new LinkedHashMap<>();
+            manifest.put("comparisonId", comp.get("id"));
+            manifest.put("ownerId", comp.get("owner_id"));
+            manifest.put("name", comp.get("name"));
+            manifest.put("status", comp.get("status"));
+            manifest.put("benchmarkListingId", comp.get("benchmark_listing_id"));
+            manifest.put("datasetId", comp.get("dataset_id"));
+            manifest.put("effectiveStartDate", comp.get("effective_start_date"));
+            manifest.put("effectiveEndDate", comp.get("effective_end_date"));
+            manifest.put("initialCash", comp.get("initial_cash"));
+            manifest.put("currency", comp.get("currency"));
+            manifest.put("createdAt", comp.get("created_at"));
+            manifest.put("runs", items);
+
+            String mmJson = (String) comp.get("mismatch_reasons_json");
+            if (mmJson != null && !mmJson.isBlank()) {
+                manifest.put("mismatchReasons", objectMapper.readValue(mmJson, Object.class));
+            }
+
+            zos.putNextEntry(new ZipEntry("manifest.json"));
+            writer.write(objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(manifest));
+            writer.flush();
+            zos.closeEntry();
+
+            // 2. summary.json
+            String sumJson = (String) comp.get("summary_json");
+            if (sumJson != null && !sumJson.isBlank()) {
+                zos.putNextEntry(new ZipEntry("summary.json"));
+                writer.write(objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(
+                        objectMapper.readValue(sumJson, Object.class)
+                ));
+                writer.flush();
+                zos.closeEntry();
+            }
+
+            // 3. comparative_equity.csv
+            zos.putNextEntry(new ZipEntry("comparative_equity.csv"));
+            writer.write("comparison_id,run_id,series_type,session_date,cash,holdings_value,receivables,total_equity,daily_return,drawdown\n");
+            for (Map<String, Object> item : items) {
+                String rid = (String) item.get("run_id");
+                jdbcTemplate.query(
+                        "SELECT run_id, series_type, session_date, cash, holdings_value, receivables, total_equity, daily_return, drawdown " +
+                                "FROM backtest_daily_equity WHERE run_id = ? AND series_type = 'CANDIDATE' ORDER BY session_date ASC",
+                        rs -> {
+                            try {
+                                writer.write(escapeCsvText(comparisonId) + ",");
+                                writer.write(escapeCsvText(rs.getString("run_id")) + ",");
+                                writer.write(escapeCsvText(rs.getString("series_type")) + ",");
+                                writer.write(formatNumeric(rs.getString("session_date")) + ",");
+                                writer.write(formatNumeric(rs.getString("cash")) + ",");
+                                writer.write(formatNumeric(rs.getString("holdings_value")) + ",");
+                                writer.write(formatNumeric(rs.getString("receivables")) + ",");
+                                writer.write(formatNumeric(rs.getString("total_equity")) + ",");
+                                writer.write((rs.getObject("daily_return") != null ? formatNumeric(rs.getString("daily_return")) : "") + ",");
+                                writer.write(formatNumeric(rs.getString("drawdown")) + "\n");
+                            } catch (IOException e) {
+                                throw new UncheckedIOException(e);
+                            }
+                        },
+                        rid
+                );
+            }
+            writer.flush();
+            zos.closeEntry();
+
+            return zip;
+        } catch (Exception e) {
+            Files.deleteIfExists(zip);
+            throw e;
         }
     }
 

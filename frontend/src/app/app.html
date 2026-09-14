@@ -16,6 +16,12 @@
   <!-- Historical Strategy Backtests View -->
   <app-research-backtests *ngIf="currentView === 'research-backtests'"></app-research-backtests>
 
+  <!-- Strategy Catalog View -->
+  <app-research-strategies *ngIf="currentView === 'research-strategies'"></app-research-strategies>
+
+  <!-- Strategy Comparison View -->
+  <app-research-compare *ngIf="currentView === 'research-compare'"></app-research-compare>
+
   <!-- Main Trading Workspace Grid (Demo) -->
   <main class="workspace-grid" *ngIf="currentView === 'demo'">
     <!-- Left Column: Watchlist -->

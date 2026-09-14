@@ -293,6 +293,14 @@
           >
             ASSUMPTIONS & CONFIG
           </button>
+          <button
+            class="tab-btn"
+            [class.active]="activeTab === 'signals'"
+            (click)="activeTab = 'signals'"
+            id="tab-btn-signals"
+          >
+            SIGNALS & ROTATION ({{ signals.length }})
+          </button>
         </div>
 
         <!-- Tab 1: Daily Equity Series -->
@@ -458,6 +466,86 @@
             </div>
           </div>
         </div>
+
+        <!-- Tab 5: Signals & Rotation -->
+        <div *ngIf="activeTab === 'signals'" class="tab-pane">
+          <div class="signals-pane-layout">
+            <div class="signals-list-box">
+              <div class="signals-box-header font-mono">
+                <span>EVALUATED SIGNALS ({{ signals.length }})</span>
+                <a
+                  [href]="getSignalsExportUrl(selectedRun.id)"
+                  target="_blank"
+                  class="btn btn-outline btn-xs font-mono"
+                  download
+                >
+                  EXPORT SIGNALS
+                </a>
+              </div>
+              <div *ngIf="signals.length === 0" class="empty-hint font-mono">
+                No signal evaluations recorded for this backtest run.
+              </div>
+              <div class="signals-scroll-list">
+                <div
+                  *ngFor="let s of signals"
+                  class="signal-list-card font-mono"
+                  [class.selected]="selectedSignal?.id === s.id"
+                  (click)="selectSignal(s)"
+                  [id]="'sig-card-' + s.id"
+                >
+                  <div class="sig-top-row">
+                    <span class="sig-date-txt">{{ s.evaluationDate }}</span>
+                    <span class="badge badge-outline">{{ s.status }}</span>
+                  </div>
+                  <div class="sig-target-txt">{{ s.targetAllocationSummary }}</div>
+                  <div class="sig-sub-txt">
+                    <span>Exec: {{ s.scheduledExecutionDate || 'NONE' }}</span>
+                    <span>{{ s.reasonCode }}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="signals-detail-box" *ngIf="selectedSignal">
+              <div class="sig-detail-top font-mono">
+                <span class="sig-detail-title">DECISION AUDIT: {{ selectedSignal.evaluationDate }} {{ selectedSignal.evaluationTime }}</span>
+                <span class="badge badge-primary">{{ selectedSignal.strategyId }}</span>
+              </div>
+              <div class="table-scroll-box">
+                <table class="data-table font-mono">
+                  <thead>
+                    <tr>
+                      <th>RANK</th>
+                      <th>LISTING</th>
+                      <th>SCORE</th>
+                      <th>INDEX VALUE</th>
+                      <th>SMA10 VALUE</th>
+                      <th>TARGET WEIGHT</th>
+                      <th>SELECTED</th>
+                      <th>REASON CODE</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr *ngFor="let item of selectedSignal.items" [class.row-selected]="item.selected">
+                      <td>{{ item.rank || '—' }}</td>
+                      <td class="font-bold">{{ item.listingId }}</td>
+                      <td>{{ item.score !== null && item.score !== undefined ? (item.score | number:'1.4-4') : '—' }}</td>
+                      <td>{{ item.indexValue ? (item.indexValue | number:'1.2-2') : '—' }}</td>
+                      <td>{{ item.smaValue ? (item.smaValue | number:'1.2-2') : '—' }}</td>
+                      <td class="font-bold">{{ ((+item.targetWeight) * 100) | number:'1.1-1' }}%</td>
+                      <td>
+                        <span class="badge" [ngClass]="item.selected ? 'badge-success' : 'badge-outline'">
+                          {{ item.selected ? 'YES' : 'NO' }}
+                        </span>
+                      </td>
+                      <td class="cell-desc">{{ item.reasonCode }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -567,6 +655,60 @@
           </select>
         </div>
 
+        <div class="form-row">
+          <label class="form-label" for="strategy-select">STRATEGY</label>
+          <select
+            id="strategy-select"
+            class="form-control"
+            [ngModel]="newRun.strategyId"
+            (ngModelChange)="onStrategyChange($event)"
+          >
+            <option value="ETF_BUY_HOLD_V1">S1: Global ETF Buy & Hold (v1.0.0)</option>
+            <option value="ETF_MOMENTUM_12_1_V1">S2: 12-1 Momentum Rotation (v1.0.0)</option>
+            <option value="ETF_TREND_10M_V1">S3: 10-Month SMA Trend Filter (v1.0.0)</option>
+          </select>
+        </div>
+
+        <div class="form-row" *ngIf="newRun.strategyId === 'ETF_MOMENTUM_12_1_V1'">
+          <label class="form-label" for="universe-select">ETF UNIVERSE</label>
+          <select
+            id="universe-select"
+            class="form-control"
+            [ngModel]="newRun.universeId"
+            (ngModelChange)="onUniverseSelect($event)"
+          >
+            <option value="" disabled>Select Multi-Asset Universe...</option>
+            <option *ngFor="let u of universes" [value]="u.id">
+              {{ u.name }} ({{ u.listingCount }} listings)
+            </option>
+          </select>
+        </div>
+
+        <div class="form-row form-grid-2" *ngIf="newRun.strategyId === 'ETF_MOMENTUM_12_1_V1'">
+          <div>
+            <label class="form-label" for="param-k">TOP K (HOLDINGS COUNT)</label>
+            <input
+              id="param-k"
+              type="number"
+              min="1"
+              max="10"
+              class="form-control"
+              [(ngModel)]="momentumK"
+            />
+          </div>
+          <div>
+            <span class="field-hint" style="font-size:10px;color:var(--text-muted);display:inline-block;padding-top:18px;">
+              Rebalances monthly on opening session into top K ETFs.
+            </span>
+          </div>
+        </div>
+
+        <div class="form-row" *ngIf="newRun.strategyId === 'ETF_TREND_10M_V1'">
+          <div class="trend-hint" style="font-size:11px;color:#38bdf8;background:rgba(2,132,199,0.1);padding:8px 12px;border-radius:4px;">
+            ℹ️ Trend Filter: Compares total-return index against 10-month SMA at month end. Allocates 100% to ETF when T(m) > SMA10(m), else 100% Cash.
+          </div>
+        </div>
+
         <div class="form-row form-grid-2">
           <div>
             <label class="form-label" for="candidate-select">CANDIDATE LISTING</label>
@@ -574,6 +716,7 @@
               id="candidate-select"
               class="form-control"
               [(ngModel)]="newRun.candidateListingId"
+              [disabled]="newRun.strategyId === 'ETF_MOMENTUM_12_1_V1'"
             >
               <option *ngFor="let l of availableListings" [value]="l.listingId">
                 {{ l.symbol }} ({{ l.listingId }})

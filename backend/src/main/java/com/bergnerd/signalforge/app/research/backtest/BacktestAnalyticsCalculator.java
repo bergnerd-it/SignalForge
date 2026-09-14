@@ -300,4 +300,123 @@ public class BacktestAnalyticsCalculator {
 
         return list;
     }
+
+    public BacktestDtos.RollingWindowSummaryDto calculateRolling5YearWindows(
+            List<BacktestDtos.DailyEquityPoint> points,
+            List<BacktestDataReader.SessionRecord> allSessions
+    ) {
+        if (points == null || points.isEmpty() || allSessions == null || allSessions.isEmpty()) {
+            return new BacktestDtos.RollingWindowSummaryDto(0, 0, 0, null, List.of(),
+                    "Rolling 5-year historical compounded-return windows are descriptive statistics and not predictive of future performance. Overlapping windows introduce serial correlation.");
+        }
+
+        List<BacktestDtos.DailyEquityPoint> tradingPoints = points.stream()
+                .filter(p -> p.dailyReturn() != null)
+                .toList();
+        if (tradingPoints.isEmpty()) {
+            tradingPoints = points;
+        }
+
+        Map<String, List<BacktestDtos.DailyEquityPoint>> pointsByMonth = new LinkedHashMap<>();
+        for (BacktestDtos.DailyEquityPoint pt : tradingPoints) {
+            String ym = pt.sessionDate().substring(0, 7);
+            pointsByMonth.computeIfAbsent(ym, k -> new ArrayList<>()).add(pt);
+        }
+
+        List<BacktestDtos.RollingWindowDto> windowList = new ArrayList<>();
+        int windowIdx = 0;
+        int positiveCount = 0;
+        int completeCount = 0;
+
+        List<String> sortedMonths = new ArrayList<>(pointsByMonth.keySet());
+        BacktestDtos.DailyEquityPoint prevSessionPt = points.get(0);
+
+        for (int m = 0; m < sortedMonths.size(); m++) {
+            String ym = sortedMonths.get(m);
+            List<BacktestDtos.DailyEquityPoint> monthPts = pointsByMonth.get(ym);
+            BacktestDtos.DailyEquityPoint firstMonthPt = monthPts.get(0);
+
+            String startingEquityStr;
+            String startSessionDate = firstMonthPt.sessionDate();
+            if (m == 0) {
+                startingEquityStr = points.get(0).totalEquity();
+            } else {
+                startingEquityStr = prevSessionPt.totalEquity();
+            }
+
+            LocalDate firstDate = LocalDate.parse(firstMonthPt.sessionDate());
+            LocalDate targetEndDate = firstDate.plusYears(5);
+            String targetEndStr = targetEndDate.toString();
+
+            String lastRunSessionDate = tradingPoints.get(tradingPoints.size() - 1).sessionDate();
+            boolean coveredInRun = !targetEndDate.isAfter(LocalDate.parse(lastRunSessionDate));
+
+            if (!coveredInRun) {
+                windowIdx++;
+                windowList.add(new BacktestDtos.RollingWindowDto(
+                        windowIdx,
+                        startSessionDate,
+                        targetEndStr,
+                        null,
+                        startingEquityStr,
+                        null,
+                        null,
+                        0,
+                        false,
+                        "INSUFFICIENT_HISTORY: Backtest ends on " + lastRunSessionDate + ", before 5-year anniversary " + targetEndStr
+                ));
+            } else {
+                BacktestDtos.DailyEquityPoint endingPt = null;
+                int obsCount = 0;
+                for (BacktestDtos.DailyEquityPoint pt : tradingPoints) {
+                    LocalDate d = LocalDate.parse(pt.sessionDate());
+                    if (!d.isBefore(firstDate) && !d.isAfter(targetEndDate)) {
+                        obsCount++;
+                        endingPt = pt;
+                    }
+                }
+
+                if (endingPt != null) {
+                    windowIdx++;
+                    completeCount++;
+                    BigDecimal startEq = new BigDecimal(startingEquityStr);
+                    BigDecimal endEq = new BigDecimal(endingPt.totalEquity());
+                    double compoundedReturn = endEq.subtract(startEq)
+                            .divide(startEq, 8, RoundingMode.HALF_EVEN).doubleValue();
+                    if (compoundedReturn > 0.0) {
+                        positiveCount++;
+                    }
+
+                    windowList.add(new BacktestDtos.RollingWindowDto(
+                            windowIdx,
+                            startSessionDate,
+                            targetEndStr,
+                            endingPt.sessionDate(),
+                            startingEquityStr,
+                            endingPt.totalEquity(),
+                            compoundedReturn,
+                            obsCount,
+                            true,
+                            null
+                    ));
+                }
+            }
+
+            prevSessionPt = monthPts.get(monthPts.size() - 1);
+        }
+
+        Double positiveShare = completeCount > 0
+                ? (double) positiveCount / (double) completeCount
+                : null;
+
+        return new BacktestDtos.RollingWindowSummaryDto(
+                windowList.size(),
+                completeCount,
+                positiveCount,
+                positiveShare,
+                windowList,
+                "Rolling 5-year historical compounded-return windows are descriptive statistics and not predictive of future performance. Overlapping windows introduce serial correlation."
+        );
+    }
 }
+

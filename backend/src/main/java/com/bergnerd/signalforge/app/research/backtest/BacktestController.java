@@ -93,6 +93,16 @@ public class BacktestController {
         return jobService.getEvents(id, ownerId, series, limit, offset);
     }
 
+    @GetMapping("/{id}/signals")
+    public BacktestDtos.PagedResponse<BacktestDtos.BacktestSignalDto> getSignals(
+            @PathVariable("id") String id,
+            @RequestHeader(value = "X-User-Id", required = false, defaultValue = "default") String ownerId,
+            @RequestParam(value = "limit", defaultValue = "50") int limit,
+            @RequestParam(value = "offset", defaultValue = "0") int offset
+    ) {
+        return jobService.getBacktestSignals(id, ownerId, limit, offset);
+    }
+
     @GetMapping(value = "/{id}/export", produces = "application/zip")
     public ResponseEntity<org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody> exportBacktest(
             @PathVariable("id") String id,

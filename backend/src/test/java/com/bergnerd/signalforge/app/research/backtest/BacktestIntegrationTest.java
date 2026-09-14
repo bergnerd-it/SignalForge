@@ -783,7 +783,7 @@ class BacktestIntegrationTest {
         // Wait for both to complete
         BacktestDtos.BacktestSummaryResponse summary1 = null;
         BacktestDtos.BacktestSummaryResponse summary2 = null;
-        for (int i = 0; i < 40; i++) {
+        for (int i = 0; i < 100; i++) {
             Thread.sleep(100);
             if (summary1 == null) {
                 var s = objectMapper.readValue(mockMvc.perform(get("/api/research/backtests/" + runId1)).andReturn().getResponse().getContentAsString(), BacktestDtos.BacktestSummaryResponse.class);

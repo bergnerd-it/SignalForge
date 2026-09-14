@@ -14,6 +14,7 @@ import {
   DailyEquityPoint,
   BacktestOrderDto,
   BacktestEventDto,
+  BacktestComparisonDto,
 } from '../models/backtest.model';
 
 describe('PortfolioService', () => {
@@ -783,6 +784,7 @@ describe('BacktestService', () => {
       offset: 0,
       hasMore: false,
     });
+    httpTesting.expectOne('/api/research/backtests/bt-run-1/signals').flush([]);
 
     service.dailyEquity$.subscribe((pts: DailyEquityPoint[]) => {
       expect(pts.length).toBe(3); // 2 candidate + 1 benchmark
@@ -816,6 +818,7 @@ describe('BacktestService', () => {
     httpTesting.expectOne('/api/research/backtests/bt-run-2/equity?series=BENCHMARK&limit=5000&offset=0').flush({ items: [], total: 0, limit: 5000, offset: 0, hasMore: false });
     httpTesting.expectOne('/api/research/backtests/bt-run-2/orders?limit=200&offset=0').flush({ items: [], total: 0, limit: 200, offset: 0, hasMore: false });
     httpTesting.expectOne('/api/research/backtests/bt-run-2/events?limit=200&offset=0').flush({ items: [], total: 0, limit: 200, offset: 0, hasMore: false });
+    httpTesting.expectOne('/api/research/backtests/bt-run-2/signals').flush([]);
 
     // Now Run A finally resolves late
     reqA.flush(mockRun);
@@ -935,5 +938,78 @@ describe('BacktestService', () => {
       expect(pts.length).toBe(0);
     });
   });
+
+  it('fetches strategies and universes correctly', () => {
+    httpTesting.expectOne('/api/research/backtests').flush({ items: [], total: 0, limit: 50, offset: 0, hasMore: false });
+
+    service.getStrategies().subscribe((strats) => {
+      expect(strats.length).toBe(1);
+      expect(strats[0].strategyId).toBe('ETF_MOMENTUM_12_1_V1');
+    });
+    const stratReq = httpTesting.expectOne('/api/research/strategies');
+    expect(stratReq.request.method).toBe('GET');
+    stratReq.flush([
+      {
+        id: 's-1',
+        strategyId: 'ETF_MOMENTUM_12_1_V1',
+        version: '1.0.0',
+        name: 'ETF Momentum 12-1',
+        description: 'Multi-asset momentum',
+        author: 'SignalForge',
+        implementationClass: 'EtfMomentumEvaluator',
+        isMultiAsset: true,
+        supportedRebalanceFrequencies: ['MONTHLY'],
+        defaultRebalanceFrequency: 'MONTHLY',
+        parametersSchemaJson: '{}',
+        defaultParametersJson: '{"k": 2}',
+        status: 'ACTIVE',
+        createdAt: '2026-09-14T00:00:00Z',
+      },
+    ]);
+
+    service.getUniverses().subscribe((unis) => {
+      expect(unis.length).toBe(1);
+      expect(unis[0].name).toBe('Core 50 ETF');
+    });
+    const uniReq = httpTesting.expectOne('/api/research/universes');
+    expect(uniReq.request.method).toBe('GET');
+    uniReq.flush([
+      {
+        id: 'u-1',
+        name: 'Core 50 ETF',
+        description: 'Large cap ETF universe',
+        datasetId: 'ds-1',
+        memberCount: 5,
+        members: [],
+        createdAt: '2026-09-14T00:00:00Z',
+        updatedAt: '2026-09-14T00:00:00Z',
+      },
+    ]);
+  });
+
+  it('compares runs and requests comparison report', () => {
+    httpTesting.expectOne('/api/research/backtests').flush({ items: [], total: 0, limit: 50, offset: 0, hasMore: false });
+
+    service.createComparison({ name: 'M4 Comparison', runIds: ['bt-run-1', 'bt-run-2'] }).subscribe((comp: BacktestComparisonDto) => {
+      expect(comp.runs.length).toBe(2);
+      expect(comp.status).toBe('MATCHED');
+    });
+
+    const compReq = httpTesting.expectOne('/api/research/comparisons');
+    expect(compReq.request.method).toBe('POST');
+    compReq.flush({
+      id: 'cmp-1',
+      ownerId: 'default',
+      name: 'M4 Comparison',
+      comparisonBasis: 'MATCHED_CONDITIONS',
+      status: 'MATCHED',
+      runIds: ['bt-run-1', 'bt-run-2'],
+      runs: [mockRun, mockRunB],
+      mismatchReasons: [],
+      rollingWindowsByRun: {},
+      createdAt: '2026-09-14T00:00:00Z',
+    });
+  });
 });
+
 

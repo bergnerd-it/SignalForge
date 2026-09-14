@@ -29,6 +29,8 @@ import {
 import { ResearchComponent } from './components/research/research.component';
 import { ResearchDataComponent } from './components/research-data/research-data.component';
 import { ResearchBacktestsComponent } from './components/research-backtests/research-backtests.component';
+import { ResearchStrategiesComponent } from './components/research-strategies/research-strategies.component';
+import { ResearchCompareComponent } from './components/research-compare/research-compare.component';
 
 @Component({
   selector: 'app-root',
@@ -46,12 +48,14 @@ import { ResearchBacktestsComponent } from './components/research-backtests/rese
     ResearchComponent,
     ResearchDataComponent,
     ResearchBacktestsComponent,
+    ResearchStrategiesComponent,
+    ResearchCompareComponent,
   ],
   templateUrl: './app.html',
   styleUrl: './app.css',
 })
 export class App implements OnInit, OnDestroy {
-  public currentView: 'demo' | 'research' | 'research-data' | 'research-backtests' = 'demo';
+  public currentView: 'demo' | 'research' | 'research-data' | 'research-backtests' | 'research-strategies' | 'research-compare' = 'demo';
   public portfolio: Portfolio | null = null;
   public snapshots: PortfolioSnapshot[] = [];
   public watchlist: WatchlistEntry[] = [];
@@ -79,7 +83,11 @@ export class App implements OnInit, OnDestroy {
 
   ngOnInit(): void {
     if (typeof window !== 'undefined') {
-      if (window.location.pathname.startsWith('/research/backtests')) {
+      if (window.location.pathname.startsWith('/research/strategies')) {
+        this.currentView = 'research-strategies';
+      } else if (window.location.pathname.startsWith('/research/compare')) {
+        this.currentView = 'research-compare';
+      } else if (window.location.pathname.startsWith('/research/backtests')) {
         this.currentView = 'research-backtests';
       } else if (window.location.pathname.startsWith('/research/data')) {
         this.currentView = 'research-data';
@@ -291,11 +299,15 @@ export class App implements OnInit, OnDestroy {
     }, 4000);
   }
 
-  public onViewChange(view: 'demo' | 'research' | 'research-data' | 'research-backtests'): void {
+  public onViewChange(view: 'demo' | 'research' | 'research-data' | 'research-backtests' | 'research-strategies' | 'research-compare'): void {
     this.currentView = view;
     if (typeof window !== 'undefined' && window.history) {
       const targetPath =
-        view === 'research-backtests'
+        view === 'research-strategies'
+          ? '/research/strategies'
+          : view === 'research-compare'
+          ? '/research/compare'
+          : view === 'research-backtests'
           ? '/research/backtests'
           : view === 'research-data'
           ? '/research/data'
@@ -309,7 +321,11 @@ export class App implements OnInit, OnDestroy {
 
   private handlePopState = (): void => {
     if (typeof window !== 'undefined') {
-      if (window.location.pathname.startsWith('/research/backtests')) {
+      if (window.location.pathname.startsWith('/research/strategies')) {
+        this.currentView = 'research-strategies';
+      } else if (window.location.pathname.startsWith('/research/compare')) {
+        this.currentView = 'research-compare';
+      } else if (window.location.pathname.startsWith('/research/backtests')) {
         this.currentView = 'research-backtests';
       } else if (window.location.pathname.startsWith('/research/data')) {
         this.currentView = 'research-data';

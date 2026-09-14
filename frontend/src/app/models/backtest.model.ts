@@ -26,6 +26,9 @@ export interface CreateBacktestRequest {
   slippageBps: string;
   strategyId: string;
   strategyVersion: string;
+  universeId?: string;
+  parametersJson?: string;
+  experimentId?: string;
 }
 
 export interface BacktestAnnualReturn {
@@ -140,6 +143,10 @@ export interface BacktestSummaryResponse {
   candidateSummary: BacktestAnalyticsSummary | null;
   benchmarkSummary: BacktestAnalyticsSummary | null;
   normalizedConfig?: BacktestNormalizedConfig | null;
+  universeId?: string | null;
+  parametersJson?: string | null;
+  experimentId?: string | null;
+  rollingWindows?: RollingWindowSummaryDto | null;
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
@@ -198,3 +205,188 @@ export interface BacktestEventDto {
   receivableDelta: string;
   createdAt: string;
 }
+
+export interface StrategyParameterDefinitionDto {
+  name: string;
+  type: string;
+  defaultValue: any;
+  description: string;
+  required: boolean;
+}
+
+export interface StrategyVersionDto {
+  strategyId: string;
+  strategyVersion: string;
+  name: string;
+  strategyFamily: string;
+  status: string;
+  description: string;
+  rebalanceFrequency: string;
+  executionModel: string;
+  parameters: StrategyParameterDefinitionDto[];
+  supportedCalendars: string[];
+  supportedCurrencies: string[];
+}
+
+export interface UniverseDto {
+  id: string;
+  ownerId: string;
+  name: string;
+  version: string;
+  description: string;
+  datasetId: string;
+  calendarId: string;
+  currency: string;
+  provenance: string;
+  listingCount: number;
+  listings: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateUniverseRequest {
+  name: string;
+  version: string;
+  description: string;
+  datasetId: string;
+  calendarId: string;
+  currency: string;
+  provenance: string;
+  listingIds: string[];
+}
+
+export interface ExperimentExposureEventDto {
+  id: string;
+  experimentId: string;
+  runId?: string | null;
+  accessType: string;
+  userId: string;
+  reasonJson?: string | null;
+  exposedAt: string;
+}
+
+export interface ExperimentDto {
+  id: string;
+  ownerId: string;
+  name: string;
+  version: number;
+  strategyId: string;
+  strategyVersion: string;
+  datasetId: string;
+  benchmarkListingId: string;
+  developmentStartDate: string;
+  developmentEndDate: string;
+  holdoutStartDate: string;
+  holdoutEndDate: string;
+  declaredHoldoutStatus: string;
+  parametersJson?: string | null;
+  totalExposures: number;
+  exposureEvents: ExperimentExposureEventDto[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateExperimentRequest {
+  name: string;
+  version: number;
+  strategyId: string;
+  strategyVersion: string;
+  datasetId: string;
+  benchmarkListingId: string;
+  developmentStartDate: string;
+  developmentEndDate: string;
+  holdoutStartDate: string;
+  holdoutEndDate: string;
+  declaredHoldoutStatus: string;
+  parametersJson?: string | null;
+}
+
+export interface ComparisonMismatchReason {
+  field: string;
+  message: string;
+  valuesByRun: Record<string, any>;
+}
+
+export interface RollingWindowDto {
+  windowIndex: number;
+  startDate: string;
+  targetEndDate: string;
+  actualEndDate?: string | null;
+  startingEquity: string;
+  endingEquity?: string | null;
+  compoundedReturn?: number | null;
+  observationCount: number;
+  isComplete: boolean;
+  incompleteReason?: string | null;
+}
+
+export interface RollingWindowSummaryDto {
+  totalWindows: number;
+  completeWindows: number;
+  positiveWindows: number;
+  positiveWindowShare?: number | null;
+  windows: RollingWindowDto[];
+  note: string;
+}
+
+export interface BacktestComparisonDto {
+  id: string;
+  ownerId: string;
+  name: string;
+  comparisonBasis: string;
+  status: 'MATCHED' | 'MISMATCHED';
+  runIds: string[];
+  runs: BacktestSummaryResponse[];
+  mismatchReasons: ComparisonMismatchReason[];
+  rollingWindowsByRun: Record<string, RollingWindowSummaryDto>;
+  createdAt: string;
+}
+
+export interface CreateComparisonRequest {
+  name: string;
+  runIds: string[];
+}
+
+export interface SignalItemDto {
+  id: string;
+  signalId: string;
+  listingId: string;
+  score?: number | null;
+  indexValue?: string | null;
+  smaValue?: string | null;
+  rank?: number | null;
+  eligible: boolean;
+  selected: boolean;
+  targetWeight: string;
+  reasonCode: string;
+}
+
+export interface SignalDto {
+  id: string;
+  runId: string;
+  strategyId: string;
+  strategyVersion: string;
+  universeId?: string | null;
+  evaluationDate: string;
+  evaluationTime: string;
+  decisionInstant: string;
+  scheduledExecutionDate?: string | null;
+  targetAllocationSummary: string;
+  status: string;
+  reasonCode: string;
+  detailsJson?: string | null;
+  items: SignalItemDto[];
+  createdAt: string;
+}
+
+export interface HoldingDto {
+  listingId: string;
+  units: string;
+  averageCostBasis: string;
+  totalCostBasis: string;
+  currentPrice: string;
+  marketValue: string;
+  unrealizedGainLoss: string;
+  weight: number;
+}
+

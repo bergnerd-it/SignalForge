@@ -39,8 +39,8 @@ public class MigrationRunner {
     @Value("${spring.datasource.url}")
     private String datasourceUrl;
 
-    public static final String CODE_VERSION = "2.0.0-M3";
-    public static final int CURRENT_SCHEMA_VERSION = 7;
+    public static final String CODE_VERSION = "2.0.0-M4";
+    public static final int CURRENT_SCHEMA_VERSION = 8;
 
     public static final List<String> DEFAULT_TICKERS = List.of(
             "AAPL", "GOOGL", "MSFT", "AMZN", "TSLA",
@@ -143,6 +143,7 @@ public class MigrationRunner {
         String v5Sql = loadResource("db/migration/V5__backtest_engine_hardening.sql");
         String v6Sql = loadResource("db/migration/V6__backtest_listing_integrity.sql");
         String v7Sql = loadResource("db/migration/V7__backtest_funded_observation.sql");
+        String v8Sql = loadResource("db/migration/V8__strategy_versions_and_comparisons.sql");
         String v1Checksum = computeV1MigrationChecksum(v1Sql);
         String v2Checksum = computeSqlChecksum(v2Sql);
         String v3Checksum = computeSqlChecksum(v3Sql);
@@ -150,6 +151,7 @@ public class MigrationRunner {
         String v5Checksum = computeSqlChecksum(v5Sql);
         String v6Checksum = computeSqlChecksum(v6Sql);
         String v7Checksum = computeSqlChecksum(v7Sql);
+        String v8Checksum = computeSqlChecksum(v8Sql);
 
         transactionTemplate.executeWithoutResult(status -> {
             executeSqlScript(v1Sql);
@@ -159,6 +161,7 @@ public class MigrationRunner {
             executeSqlScript(v5Sql);
             executeSqlScript(v6Sql);
             executeSqlScript(v7Sql);
+            executeSqlScript(v8Sql);
 
             // Record migrations
             String now = Instant.now().toString();
@@ -190,13 +193,17 @@ public class MigrationRunner {
                     "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (7, 'M3 funded observation timing', ?, ?, ?)",
                     v7Checksum, now, CODE_VERSION
             );
+            jdbcTemplate.update(
+                    "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (8, 'M4 strategy versions and comparisons', ?, ?, ?)",
+                    v8Checksum, now, CODE_VERSION
+            );
 
             // Seed default user legacy demo portfolio and initial cash
             seedFreshDefaults(now);
         });
         validateCurrentSchema();
 
-        log.info("Fresh M3 installation completed successfully.");
+        log.info("Fresh M4 installation completed successfully.");
     }
 
     private void applyLegacyMigration() {
@@ -214,6 +221,7 @@ public class MigrationRunner {
         String v5Sql = loadResource("db/migration/V5__backtest_engine_hardening.sql");
         String v6Sql = loadResource("db/migration/V6__backtest_listing_integrity.sql");
         String v7Sql = loadResource("db/migration/V7__backtest_funded_observation.sql");
+        String v8Sql = loadResource("db/migration/V8__strategy_versions_and_comparisons.sql");
         String v1Checksum = computeV1MigrationChecksum(v1Sql);
         String v2Checksum = computeSqlChecksum(v2Sql);
         String v3Checksum = computeSqlChecksum(v3Sql);
@@ -221,6 +229,7 @@ public class MigrationRunner {
         String v5Checksum = computeSqlChecksum(v5Sql);
         String v6Checksum = computeSqlChecksum(v6Sql);
         String v7Checksum = computeSqlChecksum(v7Sql);
+        String v8Checksum = computeSqlChecksum(v8Sql);
 
         transactionTemplate.executeWithoutResult(status -> {
             log.info("Renaming legacy tables to raw archive tables...");
@@ -240,6 +249,7 @@ public class MigrationRunner {
             executeSqlScript(v5Sql);
             executeSqlScript(v6Sql);
             executeSqlScript(v7Sql);
+            executeSqlScript(v8Sql);
 
             // Sync legacy tables for backwards compatibility
             syncLegacyCompatibilityTables();
@@ -274,6 +284,10 @@ public class MigrationRunner {
                     "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (7, 'M3 funded observation timing', ?, ?, ?)",
                     v7Checksum, now, CODE_VERSION
             );
+            jdbcTemplate.update(
+                    "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (8, 'M4 strategy versions and comparisons', ?, ?, ?)",
+                    v8Checksum, now, CODE_VERSION
+            );
         });
         validateCurrentSchema();
 
@@ -288,6 +302,7 @@ public class MigrationRunner {
         String v5Sql = loadResource("db/migration/V5__backtest_engine_hardening.sql");
         String v6Sql = loadResource("db/migration/V6__backtest_listing_integrity.sql");
         String v7Sql = loadResource("db/migration/V7__backtest_funded_observation.sql");
+        String v8Sql = loadResource("db/migration/V8__strategy_versions_and_comparisons.sql");
         String expectedV1Checksum = computeV1MigrationChecksum(v1Sql);
         String candidateV1Checksum = computeCandidateV1MigrationChecksum(v1Sql);
         String expectedV2Checksum = computeSqlChecksum(v2Sql);
@@ -296,6 +311,7 @@ public class MigrationRunner {
         String expectedV5Checksum = computeSqlChecksum(v5Sql);
         String expectedV6Checksum = computeSqlChecksum(v6Sql);
         String expectedV7Checksum = computeSqlChecksum(v7Sql);
+        String expectedV8Checksum = computeSqlChecksum(v8Sql);
 
         List<Map<String, Object>> migrations = jdbcTemplate.queryForList(
                 "SELECT version, checksum, description, applied_at FROM schema_migrations ORDER BY version ASC"
@@ -340,6 +356,10 @@ public class MigrationRunner {
             } else if (version == 7) {
                 if (!expectedV7Checksum.equals(recordedChecksum)) {
                     throw new IllegalStateException("Migration version 7 checksum mismatch! Recorded: " + recordedChecksum);
+                }
+            } else if (version == 8) {
+                if (!expectedV8Checksum.equals(recordedChecksum)) {
+                    throw new IllegalStateException("Migration version 8 checksum mismatch! Recorded: " + recordedChecksum);
                 }
             } else {
                 throw new IllegalStateException("Unknown migration version found in database: " + version);
@@ -402,6 +422,11 @@ public class MigrationRunner {
         if (!versions.contains(7)) {
             executeMigrationWithFkToggle(v7Sql, 7, "M3 funded observation timing", expectedV7Checksum);
             versions.add(7);
+        }
+
+        if (!versions.contains(8)) {
+            executeMigrationWithFkToggle(v8Sql, 8, "M4 strategy versions and comparisons", expectedV8Checksum);
+            versions.add(8);
         }
 
         validateCurrentSchema();
@@ -549,7 +574,9 @@ public class MigrationRunner {
                 "chat_actions", "migration_reconciliations", "users_profile", "watchlist", "trades",
                 "portfolio_snapshots", "chat_messages",
                 "datasets", "dataset_listings", "dataset_sessions", "historical_bars", "historical_actions", "import_jobs",
-                "backtest_runs", "backtest_daily_equity", "backtest_orders", "backtest_events", "backtest_holdings"
+                "backtest_runs", "backtest_daily_equity", "backtest_orders", "backtest_events", "backtest_holdings",
+                "universes", "universe_listings", "strategy_versions", "experiments", "experiment_exposure_events",
+                "backtest_signals", "backtest_signal_items", "backtest_comparisons", "backtest_comparison_items"
         );
         Set<String> missing = new HashSet<>(requiredTables);
         missing.removeAll(getExistingTables());
@@ -590,8 +617,8 @@ public class MigrationRunner {
         ));
         requireColumns("backtest_runs", Set.of(
                 "id", "owner_id", "idempotency_key", "canonical_hash", "strategy_id", "strategy_version",
-                "dataset_id", "candidate_listing_id", "benchmark_listing_id", "initial_cash", "currency",
-                "evaluation_cutoff", "requested_start_date", "requested_end_date", "commission_per_fill",
+                "dataset_id", "candidate_listing_id", "benchmark_listing_id", "universe_id", "parameters_json", "experiment_id",
+                "initial_cash", "currency", "evaluation_cutoff", "requested_start_date", "requested_end_date", "commission_per_fill",
                 "spread_bps", "slippage_bps", "status", "progress_pct", "config_json", "created_at", "updated_at"
         ));
         requireColumns("backtest_daily_equity", Set.of(
@@ -611,6 +638,43 @@ public class MigrationRunner {
         requireColumns("backtest_holdings", Set.of(
                 "run_id", "series_type", "listing_id", "units", "total_cost_basis", "average_cost",
                 "current_price", "market_value", "unrealized_gain", "updated_at"
+        ));
+        requireColumns("universes", Set.of(
+                "id", "owner_id", "name", "version", "description", "dataset_id", "calendar_id",
+                "currency", "provenance", "created_at"
+        ));
+        requireColumns("universe_listings", Set.of(
+                "universe_id", "listing_id", "ordinal"
+        ));
+        requireColumns("strategy_versions", Set.of(
+                "strategy_id", "strategy_version", "name", "description", "parameters_schema_json",
+                "calculation_policy_version", "decision_schedule", "created_at"
+        ));
+        requireColumns("experiments", Set.of(
+                "id", "owner_id", "name", "version", "strategy_id", "strategy_version", "dataset_id",
+                "universe_id", "candidate_listing_id", "benchmark_listing_id", "development_start_date",
+                "development_end_date", "holdout_start_date", "holdout_end_date", "declared_holdout_status",
+                "parameters_json", "created_at"
+        ));
+        requireColumns("experiment_exposure_events", Set.of(
+                "id", "experiment_id", "run_id", "access_type", "exposed_by", "exposed_at", "details_json"
+        ));
+        requireColumns("backtest_signals", Set.of(
+                "id", "run_id", "strategy_id", "strategy_version", "universe_id", "evaluation_date",
+                "evaluation_time", "decision_instant", "scheduled_execution_date", "target_allocation_summary",
+                "status", "reason_code", "details_json", "created_at"
+        ));
+        requireColumns("backtest_signal_items", Set.of(
+                "id", "signal_id", "listing_id", "score", "index_value", "sma_value", "rank",
+                "eligible", "selected", "target_weight", "reason_code"
+        ));
+        requireColumns("backtest_comparisons", Set.of(
+                "id", "owner_id", "idempotency_key", "name", "benchmark_listing_id", "dataset_id",
+                "effective_start_date", "effective_end_date", "initial_cash", "currency", "status",
+                "mismatch_reasons_json", "summary_json", "created_at", "updated_at"
+        ));
+        requireColumns("backtest_comparison_items", Set.of(
+                "comparison_id", "run_id", "role", "ordinal"
         ));
 
         Integer immutableTriggers = jdbcTemplate.queryForObject(
@@ -646,8 +710,8 @@ public class MigrationRunner {
         long datasetListingReferences = backtestForeignKeys.stream()
                 .filter(row -> "dataset_listings".equals(row.get("table")))
                 .count();
-        if (datasetListingReferences < 2) {
-            throw new IllegalStateException("backtest_runs listing composite foreign keys are missing: found " + datasetListingReferences);
+        if (datasetListingReferences < 1) {
+            throw new IllegalStateException("backtest_runs benchmark listing composite foreign key is missing: found " + datasetListingReferences);
         }
 
         requireUniqueColumns("portfolio_creation_requests", List.of("owner_id", "idempotency_key"));
@@ -664,6 +728,16 @@ public class MigrationRunner {
         requireTrigger("prevent_completed_holdings_insert");
         requireTrigger("validate_backtest_run_listings_insert");
         requireTrigger("validate_backtest_run_listings_update");
+        requireTrigger("prevent_universes_update");
+        requireTrigger("prevent_universes_delete");
+        requireTrigger("prevent_strategy_versions_update");
+        requireTrigger("prevent_strategy_versions_delete");
+        requireTrigger("prevent_experiments_update");
+        requireTrigger("prevent_experiments_delete");
+        requireTrigger("prevent_exposure_events_update");
+        requireTrigger("prevent_exposure_events_delete");
+        requireTrigger("prevent_completed_signals_insert");
+        requireTrigger("prevent_comparisons_delete");
     }
 
     private void requireColumns(String table, Set<String> required) {

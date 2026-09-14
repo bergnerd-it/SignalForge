@@ -9,6 +9,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.List;
+import java.util.Map;
 
 public final class BacktestDtos {
 
@@ -30,7 +31,9 @@ public final class BacktestDtos {
 
     public enum OrderType {
         INITIAL_BUY,
-        REINVEST
+        REINVEST,
+        REBALANCE_BUY,
+        REBALANCE_SELL
     }
 
     public enum OrderStatus {
@@ -60,8 +63,32 @@ public final class BacktestDtos {
             String spreadBps,
             String slippageBps,
             String strategyId,
-            String strategyVersion
+            String strategyVersion,
+            String universeId,
+            String parametersJson,
+            String experimentId
     ) {
+        public CreateBacktestRequest(
+                String datasetId,
+                String candidateListingId,
+                String benchmarkListingId,
+                String evaluationCutoff,
+                String requestedStartDate,
+                String requestedEndDate,
+                String initialCash,
+                String currency,
+                String commissionPerFill,
+                String spreadBps,
+                String slippageBps,
+                String strategyId,
+                String strategyVersion
+        ) {
+            this(datasetId, candidateListingId, benchmarkListingId, evaluationCutoff,
+                    requestedStartDate, requestedEndDate, initialCash, currency,
+                    commissionPerFill, spreadBps, slippageBps, strategyId, strategyVersion,
+                    null, null, null);
+        }
+
         public CreateBacktestRequest {
             if (strategyId == null || strategyId.isBlank()) {
                 strategyId = "ETF_BUY_HOLD_V1";
@@ -106,8 +133,10 @@ public final class BacktestDtos {
                         strategyId.trim(),
                         strategyVersion.trim(),
                         datasetId.trim(),
-                        candidateListingId.trim(),
+                        candidateListingId != null ? candidateListingId.trim() : "",
                         benchmarkListingId.trim(),
+                        universeId != null ? universeId.trim() : "",
+                        parametersJson != null ? parametersJson.trim() : "",
                         evaluationCutoff.trim(),
                         requestedStartDate.trim(),
                         requestedEndDate.trim(),
@@ -163,8 +192,56 @@ public final class BacktestDtos {
             boolean dirtyFlag,
             String codeFingerprint,
             String classification,
-            String availabilityAssumptions
+            String availabilityAssumptions,
+            String universeId,
+            String parametersJson,
+            String experimentId
     ) {
+        public BacktestNormalizedConfig(
+                String strategyId,
+                String strategyVersion,
+                String datasetId,
+                String datasetInputChecksum,
+                String datasetContentChecksum,
+                String parserVersion,
+                String schemaVersion,
+                String calendarId,
+                String calendarTimezone,
+                String coverageStart,
+                String coverageEnd,
+                String candidateListingId,
+                String benchmarkListingId,
+                String quoteCurrency,
+                String initialCash,
+                String evaluationCutoff,
+                String selectedEvaluationSession,
+                String selectedEndSession,
+                String requestedStartDate,
+                String requestedEndDate,
+                String effectiveStartDate,
+                String effectiveEndDate,
+                String commissionPerFill,
+                String spreadBps,
+                String slippageBps,
+                String costModelVersion,
+                String accountingVersion,
+                String executionModelVersion,
+                String engineVersion,
+                String sourceCommit,
+                boolean dirtyFlag,
+                String codeFingerprint,
+                String classification,
+                String availabilityAssumptions
+        ) {
+            this(strategyId, strategyVersion, datasetId, datasetInputChecksum, datasetContentChecksum,
+                    parserVersion, schemaVersion, calendarId, calendarTimezone, coverageStart, coverageEnd,
+                    candidateListingId, benchmarkListingId, quoteCurrency, initialCash, evaluationCutoff,
+                    selectedEvaluationSession, selectedEndSession, requestedStartDate, requestedEndDate,
+                    effectiveStartDate, effectiveEndDate, commissionPerFill, spreadBps, slippageBps,
+                    costModelVersion, accountingVersion, executionModelVersion, engineVersion, sourceCommit,
+                    dirtyFlag, codeFingerprint, classification, availabilityAssumptions, null, null, null);
+        }
+
         public String canonicalHash() {
             try {
                 MessageDigest md = MessageDigest.getInstance("SHA-256");
@@ -180,6 +257,8 @@ public final class BacktestDtos {
                         calendarTimezone != null ? calendarTimezone.trim() : "",
                         candidateListingId != null ? candidateListingId.trim() : "",
                         benchmarkListingId != null ? benchmarkListingId.trim() : "",
+                        universeId != null ? universeId.trim() : "",
+                        parametersJson != null ? parametersJson.trim() : "",
                         quoteCurrency != null ? quoteCurrency.trim().toUpperCase() : "",
                         initialCash != null ? initialCash.trim() : "",
                         evaluationCutoff != null ? evaluationCutoff.trim() : "",
@@ -276,6 +355,9 @@ public final class BacktestDtos {
             String datasetId,
             String candidateListingId,
             String benchmarkListingId,
+            String universeId,
+            String parametersJson,
+            String experimentId,
             String initialCash,
             String currency,
             String evaluationCutoff,
@@ -290,10 +372,26 @@ public final class BacktestDtos {
             BacktestAnalyticsSummary candidateSummary,
             BacktestAnalyticsSummary benchmarkSummary,
             BacktestNormalizedConfig normalizedConfig,
+            List<BacktestHoldingsDto> candidateHoldings,
             String createdAt,
             String updatedAt,
             String completedAt
-    ) {}
+    ) {
+        public BacktestSummaryResponse(
+                String id, String ownerId, String idempotencyKey, String canonicalHash, String status, int progressPct,
+                String strategyId, String strategyVersion, String datasetId, String candidateListingId, String benchmarkListingId,
+                String initialCash, String currency, String evaluationCutoff, String requestedStartDate, String requestedEndDate,
+                String effectiveStartDate, String effectiveEndDate, String commissionPerFill, String spreadBps, String slippageBps,
+                String failureReason, BacktestAnalyticsSummary candidateSummary, BacktestAnalyticsSummary benchmarkSummary,
+                BacktestNormalizedConfig normalizedConfig, String createdAt, String updatedAt, String completedAt
+        ) {
+            this(id, ownerId, idempotencyKey, canonicalHash, status, progressPct, strategyId, strategyVersion, datasetId,
+                    candidateListingId, benchmarkListingId, null, null, null, initialCash, currency, evaluationCutoff,
+                    requestedStartDate, requestedEndDate, effectiveStartDate, effectiveEndDate, commissionPerFill,
+                    spreadBps, slippageBps, failureReason, candidateSummary, benchmarkSummary, normalizedConfig,
+                    List.of(), createdAt, updatedAt, completedAt);
+        }
+    }
 
     public record DailyEquityPoint(
             String sessionDate,
@@ -375,4 +473,247 @@ public final class BacktestDtos {
             int offset,
             boolean hasMore
     ) {}
+
+    // --- M4 DTOs ---
+
+    public record UniverseListingDto(
+            String listingId,
+            int ordinal,
+            String symbol,
+            String venue,
+            String quoteCurrency
+    ) {}
+
+    public record UniverseDto(
+            String id,
+            String ownerId,
+            String name,
+            String version,
+            String description,
+            String datasetId,
+            String calendarId,
+            String currency,
+            String provenance,
+            int listingCount,
+            List<UniverseListingDto> listings,
+            String createdAt
+    ) {
+        public UniverseDto(
+                String id, String ownerId, String name, String version, String description,
+                String datasetId, String calendarId, String currency, String provenance,
+                List<UniverseListingDto> listings, String createdAt
+        ) {
+            this(id, ownerId, name, version, description, datasetId, calendarId, currency, provenance,
+                 listings != null ? listings.size() : 0, listings, createdAt);
+        }
+    }
+
+    public record CreateUniverseRequest(
+            String name,
+            String version,
+            String description,
+            String datasetId,
+            String calendarId,
+            String currency,
+            String provenance,
+            List<String> listingIds
+    ) {}
+
+    public record StrategyVersionDto(
+            String strategyId,
+            String strategyVersion,
+            String name,
+            String description,
+            String parametersSchemaJson,
+            String calculationPolicyVersion,
+            String decisionSchedule,
+            String createdAt
+    ) {}
+
+    public record BacktestSignalItemDto(
+            String id,
+            String signalId,
+            String listingId,
+            String score,
+            String indexValue,
+            String smaValue,
+            Integer rank,
+            boolean eligible,
+            boolean selected,
+            String targetWeight,
+            String reasonCode
+    ) {}
+
+    public record BacktestSignalDto(
+            String id,
+            String runId,
+            String strategyId,
+            String strategyVersion,
+            String universeId,
+            String evaluationDate,
+            String evaluationTime,
+            String decisionInstant,
+            String scheduledExecutionDate,
+            String targetAllocationSummary,
+            String status,
+            String reasonCode,
+            String detailsJson,
+            List<BacktestSignalItemDto> items,
+            String createdAt
+    ) {}
+
+    public record RollingWindowDto(
+            int windowIndex,
+            String startDate,
+            String targetEndDate,
+            String actualEndDate,
+            String startingEquity,
+            String endingEquity,
+            Double compoundedReturn,
+            int observationCount,
+            boolean isComplete,
+            String incompleteReason
+    ) {}
+
+    public record RollingWindowSummaryDto(
+            int totalWindows,
+            int completeWindows,
+            int positiveWindows,
+            Double positiveWindowShare,
+            List<RollingWindowDto> windows,
+            String note
+    ) {}
+
+    public record ComparisonMismatch(
+            String field,
+            String expected,
+            String actual,
+            String runId,
+            String message
+    ) {}
+
+    public record ComparisonMetricRow(
+            String metricKey,
+            String metricLabel,
+            String benchmarkValue,
+            Map<String, String> valuesByRunId,
+            Map<String, String> diffAgainstBenchmarkByRunId
+    ) {
+        public ComparisonMetricRow(String metricKey, String metricLabel, Map<String, String> valuesByRunId, Map<String, String> diffAgainstBenchmarkByRunId, String unit) {
+            this(metricKey, metricLabel, unit, valuesByRunId, diffAgainstBenchmarkByRunId);
+        }
+    }
+
+    public record ComparisonItemDto(
+            String runId,
+            String role,
+            int ordinal,
+            BacktestSummaryResponse runSummary
+    ) {}
+
+    public record BacktestComparisonItemDto(
+            String comparisonId,
+            String runId,
+            String role,
+            int ordinal
+    ) {}
+
+    public record ComparisonMismatchReason(
+            String field,
+            String expected,
+            String actual,
+            String message
+    ) {}
+
+    public record ComparisonSummaryDto(
+            List<ComparisonMetricRow> metricRows,
+            Map<String, RollingWindowSummaryDto> rollingWindowsByRunId,
+            String note
+    ) {}
+
+    public record BacktestComparisonDto(
+            String id,
+            String ownerId,
+            String idempotencyKey,
+            String name,
+            String benchmarkListingId,
+            String datasetId,
+            String effectiveStartDate,
+            String effectiveEndDate,
+            String initialCash,
+            String currency,
+            String status,
+            List<ComparisonMismatchReason> mismatchReasons,
+            List<BacktestComparisonItemDto> items,
+            ComparisonSummaryDto summary,
+            String createdAt,
+            String updatedAt
+    ) {}
+
+    public record CreateComparisonRequest(
+            String name,
+            List<String> runIds
+    ) {}
+
+    public record CreateExperimentRequest(
+            String name,
+            int version,
+            String strategyId,
+            String strategyVersion,
+            String datasetId,
+            String universeId,
+            String candidateListingId,
+            String benchmarkListingId,
+            String developmentStartDate,
+            String developmentEndDate,
+            String holdoutStartDate,
+            String holdoutEndDate,
+            String declaredHoldoutStatus,
+            String parametersJson
+    ) {}
+
+    public record ExperimentExposureEventDto(
+            String id,
+            String experimentId,
+            String runId,
+            String accessType,
+            String exposedBy,
+            String exposedAt,
+            String detailsJson
+    ) {}
+
+    public record ExperimentDto(
+            String id,
+            String ownerId,
+            String name,
+            int version,
+            String strategyId,
+            String strategyVersion,
+            String datasetId,
+            String universeId,
+            String candidateListingId,
+            String benchmarkListingId,
+            String developmentStartDate,
+            String developmentEndDate,
+            String holdoutStartDate,
+            String holdoutEndDate,
+            String declaredHoldoutStatus,
+            String parametersJson,
+            int totalExposures,
+            List<ExperimentExposureEventDto> exposureEvents,
+            String createdAt
+    ) {
+        public ExperimentDto(
+                String id, String ownerId, String name, int version, String strategyId, String strategyVersion,
+                String datasetId, String universeId, String candidateListingId, String benchmarkListingId,
+                String developmentStartDate, String developmentEndDate, String holdoutStartDate, String holdoutEndDate,
+                String declaredHoldoutStatus, String parametersJson,
+                List<ExperimentExposureEventDto> exposureEvents, String createdAt
+        ) {
+            this(id, ownerId, name, version, strategyId, strategyVersion, datasetId, universeId,
+                 candidateListingId, benchmarkListingId, developmentStartDate, developmentEndDate,
+                 holdoutStartDate, holdoutEndDate, declaredHoldoutStatus, parametersJson,
+                 exposureEvents != null ? exposureEvents.size() : 0, exposureEvents, createdAt);
+        }
+    }
 }

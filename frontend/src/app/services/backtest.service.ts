@@ -9,6 +9,14 @@ import {
   BacktestEventDto,
   PagedResponse,
   SeriesType,
+  StrategyVersionDto,
+  UniverseDto,
+  CreateUniverseRequest,
+  ExperimentDto,
+  CreateExperimentRequest,
+  BacktestComparisonDto,
+  CreateComparisonRequest,
+  SignalDto,
 } from '../models/backtest.model';
 
 @Injectable({
@@ -35,6 +43,9 @@ export class BacktestService {
 
   private readonly eventsTotalSubject = new BehaviorSubject<number>(0);
   public readonly eventsTotal$: Observable<number> = this.eventsTotalSubject.asObservable();
+
+  private readonly signalsSubject = new BehaviorSubject<SignalDto[]>([]);
+  public readonly signals$: Observable<SignalDto[]> = this.signalsSubject.asObservable();
 
   private readonly loadingSubject = new BehaviorSubject<boolean>(false);
   public readonly loading$: Observable<boolean> = this.loadingSubject.asObservable();
@@ -86,6 +97,7 @@ export class BacktestService {
           this.ordersTotalSubject.next(0);
           this.eventsSubject.next([]);
           this.eventsTotalSubject.next(0);
+          this.signalsSubject.next([]);
         }
       },
       error: (err) => {
@@ -106,6 +118,7 @@ export class BacktestService {
     this.ordersTotalSubject.next(0);
     this.eventsSubject.next([]);
     this.eventsTotalSubject.next(0);
+    this.signalsSubject.next([]);
     this.equityStatusSubject.next({
       isComplete: true,
       candidateLoaded: 0,
@@ -230,6 +243,19 @@ export class BacktestService {
         this.ordersTotalSubject.next(ordersPage?.total || 0);
         this.eventsSubject.next(eventsPage?.items || []);
         this.eventsTotalSubject.next(eventsPage?.total || 0);
+
+        this.getSignals(id).subscribe({
+          next: (sigs) => {
+            if (this.activeLoadingRunId === id) {
+              this.signalsSubject.next(sigs || []);
+            }
+          },
+          error: () => {
+            if (this.activeLoadingRunId === id) {
+              this.signalsSubject.next([]);
+            }
+          }
+        });
       },
       error: (err) => {
         if (this.activeLoadingRunId === id) {
@@ -303,5 +329,57 @@ export class BacktestService {
 
   public getExportUrl(id: string): string {
     return `/api/research/backtests/${id}/export`;
+  }
+
+  public getSignals(runId: string): Observable<SignalDto[]> {
+    return this.http.get<SignalDto[]>(`/api/research/backtests/${runId}/signals`);
+  }
+
+  public getStrategies(): Observable<StrategyVersionDto[]> {
+    return this.http.get<StrategyVersionDto[]>('/api/research/strategies');
+  }
+
+  public getStrategy(id: string): Observable<StrategyVersionDto> {
+    return this.http.get<StrategyVersionDto>(`/api/research/strategies/${id}`);
+  }
+
+  public getUniverses(): Observable<UniverseDto[]> {
+    return this.http.get<UniverseDto[]>('/api/research/universes');
+  }
+
+  public getUniverse(id: string): Observable<UniverseDto> {
+    return this.http.get<UniverseDto>(`/api/research/universes/${id}`);
+  }
+
+  public createUniverse(req: CreateUniverseRequest): Observable<UniverseDto> {
+    return this.http.post<UniverseDto>('/api/research/universes', req);
+  }
+
+  public getExperiments(): Observable<ExperimentDto[]> {
+    return this.http.get<ExperimentDto[]>('/api/research/experiments');
+  }
+
+  public getExperiment(id: string): Observable<ExperimentDto> {
+    return this.http.get<ExperimentDto>(`/api/research/experiments/${id}`);
+  }
+
+  public createExperiment(req: CreateExperimentRequest): Observable<ExperimentDto> {
+    return this.http.post<ExperimentDto>('/api/research/experiments', req);
+  }
+
+  public getComparisons(): Observable<BacktestComparisonDto[]> {
+    return this.http.get<BacktestComparisonDto[]>('/api/research/comparisons');
+  }
+
+  public getComparison(id: string): Observable<BacktestComparisonDto> {
+    return this.http.get<BacktestComparisonDto>(`/api/research/comparisons/${id}`);
+  }
+
+  public createComparison(req: CreateComparisonRequest): Observable<BacktestComparisonDto> {
+    return this.http.post<BacktestComparisonDto>('/api/research/comparisons', req);
+  }
+
+  public getComparisonExportUrl(id: string): string {
+    return `/api/research/comparisons/${id}/export`;
   }
 }

@@ -1,0 +1,395 @@
+<div class="strategies-container">
+  <!-- Top Navigation & Controls Bar -->
+  <div class="top-nav-bar">
+    <div class="sub-tabs font-mono">
+      <button
+        class="sub-tab-btn"
+        [class.active]="activeSubTab === 'strategies'"
+        (click)="selectSubTab('strategies')"
+        id="subtab-strategies"
+      >
+        STRATEGY REPOSITORY
+      </button>
+      <button
+        class="sub-tab-btn"
+        [class.active]="activeSubTab === 'universes'"
+        (click)="selectSubTab('universes')"
+        id="subtab-universes"
+      >
+        ASSET UNIVERSES ({{ universes.length }})
+      </button>
+      <button
+        class="sub-tab-btn"
+        [class.active]="activeSubTab === 'experiments'"
+        (click)="selectSubTab('experiments')"
+        id="subtab-experiments"
+      >
+        EXPERIMENTS & HOLDOUTS ({{ experiments.length }})
+      </button>
+    </div>
+
+    <div class="action-buttons">
+      <button
+        *ngIf="activeSubTab === 'universes'"
+        class="btn btn-primary font-mono"
+        (click)="openCreateUniverse()"
+        id="btn-create-universe"
+      >
+        + CREATE UNIVERSE
+      </button>
+      <button
+        *ngIf="activeSubTab === 'experiments'"
+        class="btn btn-primary font-mono"
+        (click)="openCreateExperiment()"
+        id="btn-create-experiment"
+      >
+        + NEW EXPERIMENT
+      </button>
+    </div>
+  </div>
+
+  <!-- Alert Banner -->
+  <div *ngIf="error" class="alert-banner alert-error font-mono">
+    <span>⚠️ {{ error }}</span>
+    <button class="alert-close" (click)="error = null">&times;</button>
+  </div>
+  <div *ngIf="successMsg" class="alert-banner alert-success font-mono">
+    <span>✓ {{ successMsg }}</span>
+    <button class="alert-close" (click)="successMsg = null">&times;</button>
+  </div>
+
+  <!-- 1. STRATEGIES SUBTAB -->
+  <div *ngIf="activeSubTab === 'strategies'" class="tab-content-grid">
+    <!-- Strategies List -->
+    <div class="list-panel">
+      <div class="panel-header">
+        <span class="panel-title font-mono">REGISTERED STRATEGY VERSIONS</span>
+        <span class="badge badge-info font-mono">{{ strategies.length }} Active</span>
+      </div>
+      <div class="cards-list">
+        <div
+          *ngFor="let strat of strategies"
+          class="item-card"
+          [class.selected]="selectedStrategy?.strategyId === strat.strategyId"
+          (click)="selectStrategy(strat)"
+          [id]="'strat-card-' + strat.strategyId"
+        >
+          <div class="item-card-header">
+            <span class="item-id font-mono">{{ strat.strategyId }}</span>
+            <span class="badge badge-primary font-mono">v{{ strat.strategyVersion }}</span>
+          </div>
+          <div class="item-name">{{ strat.name }}</div>
+          <div class="item-meta font-mono">
+            <span>Family: {{ strat.strategyFamily }}</span>
+            <span>Freq: {{ strat.rebalanceFrequency }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Strategy Detail Inspector -->
+    <div class="detail-panel" *ngIf="selectedStrategy">
+      <div class="detail-header">
+        <div>
+          <h2 class="detail-title">{{ selectedStrategy.name }}</h2>
+          <div class="detail-badges font-mono">
+            <span class="badge badge-primary">{{ selectedStrategy.strategyId }} v{{ selectedStrategy.strategyVersion }}</span>
+            <span class="badge badge-outline">{{ selectedStrategy.strategyFamily }}</span>
+            <span class="badge badge-success">{{ selectedStrategy.status }}</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="detail-body">
+        <div class="detail-section">
+          <h3 class="section-heading font-mono">SPECIFICATION & RULES</h3>
+          <p class="section-desc">{{ selectedStrategy.description }}</p>
+        </div>
+
+        <div class="spec-grid">
+          <div class="spec-card">
+            <span class="spec-label font-mono">REBALANCE FREQUENCY</span>
+            <span class="spec-val font-mono">{{ selectedStrategy.rebalanceFrequency }}</span>
+          </div>
+          <div class="spec-card">
+            <span class="spec-label font-mono">EXECUTION MODEL</span>
+            <span class="spec-val font-mono">{{ selectedStrategy.executionModel }}</span>
+          </div>
+          <div class="spec-card">
+            <span class="spec-label font-mono">SUPPORTED CALENDARS</span>
+            <span class="spec-val font-mono">{{ selectedStrategy.supportedCalendars?.join(', ') || 'N/A' }}</span>
+          </div>
+          <div class="spec-card">
+            <span class="spec-label font-mono">BASE CURRENCIES</span>
+            <span class="spec-val font-mono">{{ selectedStrategy.supportedCurrencies?.join(', ') || 'N/A' }}</span>
+          </div>
+        </div>
+
+        <div class="detail-section" *ngIf="selectedStrategy.parameters?.length">
+          <h3 class="section-heading font-mono">CONFIGURABLE PARAMETERS</h3>
+          <table class="detail-table font-mono">
+            <thead>
+              <tr>
+                <th>PARAMETER</th>
+                <th>TYPE</th>
+                <th>DEFAULT</th>
+                <th>REQUIRED</th>
+                <th>DESCRIPTION</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr *ngFor="let p of selectedStrategy.parameters">
+                <td class="cell-bold">{{ p.name }}</td>
+                <td><span class="type-tag">{{ p.type }}</span></td>
+                <td>{{ p.defaultValue }}</td>
+                <td>{{ p.required ? 'YES' : 'NO' }}</td>
+                <td class="cell-desc">{{ p.description }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 2. UNIVERSES SUBTAB -->
+  <div *ngIf="activeSubTab === 'universes'" class="tab-content-grid">
+    <div class="list-panel">
+      <div class="panel-header">
+        <span class="panel-title font-mono">SAVED ETF UNIVERSES</span>
+        <span class="badge badge-info font-mono">{{ universes.length }} Universes</span>
+      </div>
+      <div class="cards-list">
+        <div
+          *ngFor="let uni of universes"
+          class="item-card"
+          [class.selected]="selectedUniverse?.id === uni.id"
+          (click)="selectUniverse(uni)"
+          [id]="'uni-card-' + uni.id"
+        >
+          <div class="item-card-header">
+            <span class="item-id font-mono">{{ uni.name }}</span>
+            <span class="badge badge-outline font-mono">{{ uni.listingCount }} Listings</span>
+          </div>
+          <div class="item-meta font-mono">
+            <span>{{ uni.currency }} · {{ uni.calendarId }}</span>
+            <span>v{{ uni.version }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Universe Inspector -->
+    <div class="detail-panel" *ngIf="selectedUniverse">
+      <div class="detail-header">
+        <div>
+          <h2 class="detail-title">{{ selectedUniverse.name }}</h2>
+          <div class="detail-badges font-mono">
+            <span class="badge badge-primary">ID: {{ selectedUniverse.id }}</span>
+            <span class="badge badge-outline">{{ selectedUniverse.currency }}</span>
+            <span class="badge badge-outline">Cal: {{ selectedUniverse.calendarId }}</span>
+            <span class="badge badge-success">{{ selectedUniverse.provenance }}</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="detail-body">
+        <p class="section-desc">{{ selectedUniverse.description }}</p>
+
+        <div class="detail-section">
+          <h3 class="section-heading font-mono">CONSTITUENT LISTINGS ({{ selectedUniverse.listings?.length || 0 }})</h3>
+          <div class="tags-cloud font-mono">
+            <span *ngFor="let l of selectedUniverse.listings" class="listing-tag">
+              {{ l }}
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 3. EXPERIMENTS SUBTAB -->
+  <div *ngIf="activeSubTab === 'experiments'" class="tab-content-grid">
+    <div class="list-panel">
+      <div class="panel-header">
+        <span class="panel-title font-mono">RESEARCH EXPERIMENTS</span>
+        <span class="badge badge-info font-mono">{{ experiments.length }} Experiments</span>
+      </div>
+      <div class="cards-list">
+        <div
+          *ngFor="let exp of experiments"
+          class="item-card"
+          [class.selected]="selectedExperiment?.id === exp.id"
+          (click)="selectExperiment(exp)"
+          [id]="'exp-card-' + exp.id"
+        >
+          <div class="item-card-header">
+            <span class="item-id font-mono">{{ exp.name }}</span>
+            <span
+              class="badge font-mono"
+              [ngClass]="exp.declaredHoldoutStatus === 'UNEXAMINED' ? 'badge-warning' : (exp.declaredHoldoutStatus === 'AUDITED' ? 'badge-success' : 'badge-danger')"
+            >
+              {{ exp.declaredHoldoutStatus }}
+            </span>
+          </div>
+          <div class="item-meta font-mono">
+            <span>{{ exp.strategyId }}</span>
+            <span>Exposures: {{ exp.totalExposures }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Experiment Inspector -->
+    <div class="detail-panel" *ngIf="selectedExperiment">
+      <div class="detail-header">
+        <div>
+          <h2 class="detail-title">{{ selectedExperiment.name }}</h2>
+          <div class="detail-badges font-mono">
+            <span class="badge badge-primary">{{ selectedExperiment.strategyId }}</span>
+            <span class="badge badge-outline">Dev: {{ selectedExperiment.developmentStartDate }} → {{ selectedExperiment.developmentEndDate }}</span>
+            <span class="badge badge-warning">Holdout: {{ selectedExperiment.holdoutStartDate }} → {{ selectedExperiment.holdoutEndDate }}</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="detail-body">
+        <div class="detail-section">
+          <h3 class="section-heading font-mono">HOLDOUT DISCIPLINE AUDIT</h3>
+          <div class="spec-grid">
+            <div class="spec-card">
+              <span class="spec-label font-mono">HOLDOUT STATUS</span>
+              <span class="spec-val font-mono">{{ selectedExperiment.declaredHoldoutStatus }}</span>
+            </div>
+            <div class="spec-card">
+              <span class="spec-label font-mono">TOTAL EXPOSURES</span>
+              <span class="spec-val font-mono">{{ selectedExperiment.totalExposures }}</span>
+            </div>
+            <div class="spec-card">
+              <span class="spec-label font-mono">BENCHMARK</span>
+              <span class="spec-val font-mono">{{ selectedExperiment.benchmarkListingId }}</span>
+            </div>
+            <div class="spec-card">
+              <span class="spec-label font-mono">DATASET</span>
+              <span class="spec-val font-mono">{{ selectedExperiment.datasetId }}</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="detail-section" *ngIf="selectedExperiment.exposureEvents?.length">
+          <h3 class="section-heading font-mono">APPEND-ONLY EXPOSURE EVENT LOG</h3>
+          <table class="detail-table font-mono">
+            <thead>
+              <tr>
+                <th>TIMESTAMP</th>
+                <th>ACCESS TYPE</th>
+                <th>USER</th>
+                <th>RUN ID</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr *ngFor="let ev of selectedExperiment.exposureEvents">
+                <td>{{ ev.exposedAt }}</td>
+                <td><span class="badge badge-outline">{{ ev.accessType }}</span></td>
+                <td>{{ ev.userId }}</td>
+                <td>{{ ev.runId || 'N/A' }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Create Universe Modal -->
+  <div *ngIf="showCreateUniverseModal" class="modal-backdrop">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3 class="modal-title font-mono">CREATE ETF UNIVERSE</h3>
+        <button class="modal-close" (click)="closeCreateUniverse()">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label font-mono">Universe Name</label>
+          <input type="text" class="form-input font-mono" [(ngModel)]="newUniverse.name" placeholder="e.g. Core European ETFs" />
+        </div>
+        <div class="form-group">
+          <label class="form-label font-mono">Dataset ID</label>
+          <input type="text" class="form-input font-mono" [(ngModel)]="newUniverse.datasetId" placeholder="e.g. dataset-id" />
+        </div>
+        <div class="form-group">
+          <label class="form-label font-mono">Constituent Listings (comma-separated)</label>
+          <input type="text" class="form-input font-mono" [(ngModel)]="newUniverseListingsInput" placeholder="EXXT.DE, EUNL.DE, IS3N.DE" />
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label font-mono">Calendar</label>
+            <input type="text" class="form-input font-mono" [(ngModel)]="newUniverse.calendarId" />
+          </div>
+          <div class="form-group">
+            <label class="form-label font-mono">Currency</label>
+            <input type="text" class="form-input font-mono" [(ngModel)]="newUniverse.currency" />
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary font-mono" (click)="closeCreateUniverse()">Cancel</button>
+        <button class="btn btn-primary font-mono" (click)="submitCreateUniverse()">Create Universe</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Create Experiment Modal -->
+  <div *ngIf="showCreateExperimentModal" class="modal-backdrop">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3 class="modal-title font-mono">REGISTER EXPERIMENT</h3>
+        <button class="modal-close" (click)="closeCreateExperiment()">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label font-mono">Experiment Name</label>
+          <input type="text" class="form-input font-mono" [(ngModel)]="newExperiment.name" placeholder="e.g. Momentum Lookback Study" />
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label font-mono">Strategy</label>
+            <select class="form-select font-mono" [(ngModel)]="newExperiment.strategyId">
+              <option value="ETF_BUY_HOLD_V1">ETF_BUY_HOLD_V1</option>
+              <option value="ETF_MOMENTUM_12_1_V1">ETF_MOMENTUM_12_1_V1</option>
+              <option value="ETF_TREND_10M_V1">ETF_TREND_10M_V1</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label font-mono">Dataset ID</label>
+            <input type="text" class="form-input font-mono" [(ngModel)]="newExperiment.datasetId" placeholder="Dataset ID" />
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label font-mono">Dev Period Start</label>
+            <input type="date" class="form-input font-mono" [(ngModel)]="newExperiment.developmentStartDate" />
+          </div>
+          <div class="form-group">
+            <label class="form-label font-mono">Dev Period End</label>
+            <input type="date" class="form-input font-mono" [(ngModel)]="newExperiment.developmentEndDate" />
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label font-mono">Holdout Period Start</label>
+            <input type="date" class="form-input font-mono" [(ngModel)]="newExperiment.holdoutStartDate" />
+          </div>
+          <div class="form-group">
+            <label class="form-label font-mono">Holdout Period End</label>
+            <input type="date" class="form-input font-mono" [(ngModel)]="newExperiment.holdoutEndDate" />
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary font-mono" (click)="closeCreateExperiment()">Cancel</button>
+        <button class="btn btn-primary font-mono" (click)="submitCreateExperiment()">Register Experiment</button>
+      </div>
+    </div>
+  </div>
+</div>
