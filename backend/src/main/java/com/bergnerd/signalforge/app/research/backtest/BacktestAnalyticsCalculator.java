@@ -294,7 +294,13 @@ public class BacktestAnalyticsCalculator {
                 prevYearEndBenchEq = bEnd;
             }
 
-            list.add(new BacktestDtos.AnnualReturn(year, candRet, benchRet, isPartial));
+            list.add(new BacktestDtos.AnnualReturn(
+                    year,
+                    candRet,
+                    benchRet,
+                    BigDecimal.valueOf(startEq).setScale(2, RoundingMode.HALF_EVEN).toPlainString(),
+                    yearPts.get(yearPts.size() - 1).totalEquity(),
+                    isPartial));
             prevYearEndCandidateEq = endEq;
         }
 

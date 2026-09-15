@@ -577,6 +577,7 @@ describe('Component Unit Tests', () => {
       getStrategies: () => of(mockStrategies),
       getUniverses: () => of(mockUniverses),
       getExperiments: () => of(mockExperiments),
+      getExperiment: () => of(mockExperiments[0]),
     };
 
     TestBed.resetTestingModule();

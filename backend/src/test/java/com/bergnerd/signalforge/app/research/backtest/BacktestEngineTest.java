@@ -266,5 +266,7 @@ class BacktestEngineTest {
         BacktestDtos.AnnualReturn yr2024 = summary.annualReturns().get(0);
         assertEquals(2024, yr2024.year());
         assertEquals(0.018, yr2024.candidateReturn(), 0.00001);
+        assertEquals("1000.00", yr2024.startEquity());
+        assertEquals("1018.00", yr2024.endEquity());
     }
 }

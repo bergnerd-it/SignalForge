@@ -35,6 +35,8 @@ export interface BacktestAnnualReturn {
   year: number;
   candidateReturn: number | null;
   benchmarkReturn: number | null;
+  startEquity: string;
+  endEquity: string;
   isPartial: boolean;
 }
 

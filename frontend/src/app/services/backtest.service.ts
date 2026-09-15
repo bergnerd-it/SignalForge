@@ -366,7 +366,13 @@ export class BacktestService {
   }
 
   public getExperiments(): Observable<ExperimentDto[]> {
-    return this.http.get<ExperimentDto[]>('/api/research/experiments');
+    const readPage = (offset: number): Observable<ExperimentDto[]> =>
+      this.http.get<PagedResponse<ExperimentDto>>('/api/research/experiments', {
+        params: { limit: '100', offset: String(offset) },
+      }).pipe(switchMap((page) => page.hasMore
+        ? readPage(offset + page.items.length).pipe(switchMap((rest) => of([...page.items, ...rest])))
+        : of(page.items)));
+    return readPage(0);
   }
 
   public getExperiment(id: string): Observable<ExperimentDto> {

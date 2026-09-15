@@ -660,6 +660,23 @@ describe('BacktestService', () => {
     httpTesting.expectOne('/api/research/backtests').flush({ items: [mockRun], total: 1, limit: 50, offset: 0, hasMore: false });
   });
 
+  it('unwraps all experiment pages', () => {
+    httpTesting.expectOne('/api/research/backtests').flush({ items: [], total: 0, limit: 50, offset: 0, hasMore: false });
+
+    let ids: string[] = [];
+    service.getExperiments().subscribe((experiments) => {
+      ids = experiments.map((experiment) => experiment.id);
+    });
+
+    httpTesting.expectOne('/api/research/experiments?limit=100&offset=0').flush({
+      items: [{ id: 'exp-1' }], total: 2, limit: 100, offset: 0, hasMore: true,
+    });
+    httpTesting.expectOne('/api/research/experiments?limit=100&offset=1').flush({
+      items: [{ id: 'exp-2' }], total: 2, limit: 100, offset: 1, hasMore: false,
+    });
+    expect(ids).toEqual(['exp-1', 'exp-2']);
+  });
+
   it('loads run details on selectRun(id) with equity multi-page traversal', () => {
     httpTesting.expectOne('/api/research/backtests').flush({ items: [], total: 0, limit: 50, offset: 0, hasMore: false });
 

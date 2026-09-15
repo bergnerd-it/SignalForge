@@ -105,7 +105,7 @@ export class ResearchStrategiesComponent implements OnInit {
       next: (exps) => {
         this.experiments = exps;
         if (exps.length > 0 && !this.selectedExperiment) {
-          this.selectedExperiment = exps[0];
+          this.selectExperiment(exps[0]);
         }
         this.cdr.markForCheck();
       },
@@ -131,6 +131,15 @@ export class ResearchStrategiesComponent implements OnInit {
   public selectExperiment(exp: ExperimentDto): void {
     this.selectedExperiment = exp;
     this.cdr.markForCheck();
+    this.backtestService.getExperiment(exp.id).subscribe({
+      next: (detail) => {
+        if (this.selectedExperiment?.id === detail.id) {
+          this.selectedExperiment = detail;
+          this.cdr.markForCheck();
+        }
+      },
+      error: (err) => console.error('Failed to load experiment:', err),
+    });
   }
 
   public openCreateUniverse(): void {

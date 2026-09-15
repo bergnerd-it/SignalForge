@@ -532,7 +532,7 @@ class MigrationRecoveryIntegrationTest {
         ));
 
         assertDoesNotThrow(migrationRunner::runMigration);
-        assertEquals(10, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM schema_migrations", Integer.class));
+        assertEquals(11, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM schema_migrations", Integer.class));
     }
 
     @Test
@@ -669,6 +669,88 @@ class MigrationRecoveryIntegrationTest {
         Exception ex = assertThrows(Exception.class, migrationRunner::runMigration);
         assertTrue(ex.getMessage().contains("invalid candidate or benchmark listing") ||
                 (ex.getCause() != null && ex.getCause().getMessage().contains("invalid candidate or benchmark listing")));
+    }
+
+    @Test
+    void populatedV9Upgrade_preservesSignalsAndRestoresVersionMetadata() throws Exception {
+        try (var connection = dataSource.getConnection()) {
+            for (int version = 1; version <= 9; version++) {
+                String resourceName = switch (version) {
+                    case 1 -> "V1__init_m1b_schema.sql";
+                    case 2 -> "V2__m1b_review_fixes.sql";
+                    case 3 -> "V3__historical_datasets_and_import.sql";
+                    case 4 -> "V4__backtest_engine.sql";
+                    case 5 -> "V5__backtest_engine_hardening.sql";
+                    case 6 -> "V6__backtest_listing_integrity.sql";
+                    case 7 -> "V7__backtest_funded_observation.sql";
+                    case 8 -> "V8__strategy_versions_and_comparisons.sql";
+                    default -> "V9__fix_strategy_schema_and_integrity.sql";
+                };
+                String sql = resource("db/migration/" + resourceName);
+                for (String statement : SqlScriptParser.parseStatements(sql)) {
+                    try (var sqlStatement = connection.createStatement()) {
+                        sqlStatement.execute(statement);
+                    }
+                }
+                String checksum = version == 1 ? migrationRunner.computeV1MigrationChecksum(sql) : migrationRunner.computeSqlChecksum(sql);
+                try (var migrationRecord = connection.prepareStatement(
+                        "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (?, ?, ?, ?, ?)")) {
+                    migrationRecord.setInt(1, version);
+                    migrationRecord.setString(2, resourceName);
+                    migrationRecord.setString(3, checksum);
+                    migrationRecord.setString(4, "2026-09-14T00:00:00Z");
+                    migrationRecord.setString(5, MigrationRunner.CODE_VERSION);
+                    migrationRecord.executeUpdate();
+                }
+            }
+        }
+
+        String originalSchema = "{\"type\":\"object\",\"properties\":{\"lookbackMonths\":{\"type\":\"integer\",\"default\":10}}}";
+        String correctedSchema = "{\"type\":\"object\",\"properties\":{}}";
+        assertEquals(correctedSchema, jdbcTemplate.queryForObject(
+                "SELECT parameters_schema_json FROM strategy_versions WHERE strategy_id = 'ETF_TREND_10M_V1' AND strategy_version = '1.0.0'", String.class));
+
+        String now = "2026-09-14T00:00:00Z";
+        jdbcTemplate.update("INSERT INTO datasets (id, name, source, classification, schema_version, parser_version, input_checksum, content_checksum, manifest_json, coverage_start, coverage_end, validation_status, validation_findings_json, quality_label, imported_at, created_at) " +
+                "VALUES ('ds-v9-pop', 'V9 upgrade fixture', 'TEST', 'SYNTHETIC', '1', '1', 'input', 'content', '{}', '2025-01-01', '2025-01-31', 'VALID', '[]', 'SYNTHETIC', ?, ?)", now, now);
+        jdbcTemplate.update("INSERT INTO dataset_listings (dataset_id, listing_id, instrument_id, symbol, quote_currency, calendar_id) " +
+                "VALUES ('ds-v9-pop', 'ETF-1', 'inst-1', 'ETF1', 'EUR', 'XETR')");
+        jdbcTemplate.update("INSERT INTO backtest_runs (id, owner_id, idempotency_key, canonical_hash, strategy_id, strategy_version, dataset_id, candidate_listing_id, benchmark_listing_id, initial_cash, currency, evaluation_cutoff, requested_start_date, requested_end_date, commission_per_fill, spread_bps, slippage_bps, status, progress_pct, config_json, created_at, updated_at) " +
+                "VALUES ('run-v9-pop', 'owner-v9', 'key-v9', 'hash-v9', 'ETF_TREND_10M_V1', '1.0.0', 'ds-v9-pop', 'ETF-1', 'ETF-1', '1000.00', 'EUR', '2025-01-01T17:00:00Z', '2025-01-02', '2025-01-31', '1.00', '0', '0', 'RUNNING', 50, '{}', ?, ?)", now, now);
+        jdbcTemplate.update("INSERT INTO backtest_signals (id, run_id, strategy_id, strategy_version, evaluation_date, evaluation_time, decision_instant, scheduled_execution_date, target_allocation_summary, status, reason_code, details_json, created_at) " +
+                "VALUES ('signal-v9-pop', 'run-v9-pop', 'ETF_TREND_10M_V1', '1.0.0', '2025-01-02', '2025-01-02T16:30:00Z', '2025-01-02T16:35:00Z', '2025-01-03', '{}', 'EXECUTED', 'TREND_ABOVE_SMA', '{}', ?)", now);
+        jdbcTemplate.update("INSERT INTO backtest_signal_items (id, signal_id, listing_id, index_value, eligible, selected, target_weight, reason_code) " +
+                "VALUES ('item-v9-pop', 'signal-v9-pop', 'ETF-1', '100.00000000', 1, 1, '1.00000000', 'TREND_ABOVE_SMA')");
+        jdbcTemplate.update("UPDATE backtest_runs SET status = 'COMPLETED', progress_pct = 100 WHERE id = 'run-v9-pop'");
+
+        dataSource.setEnforceForeignKeys(true);
+        migrationRunner.runMigration();
+        assertEquals(11, jdbcTemplate.queryForObject("SELECT MAX(version) FROM schema_migrations", Integer.class));
+        assertEquals("COMPLETED", jdbcTemplate.queryForObject("SELECT status FROM backtest_runs WHERE id = 'run-v9-pop'", String.class));
+        assertEquals("2025-01-03", jdbcTemplate.queryForObject("SELECT scheduled_execution_date FROM backtest_signals WHERE id = 'signal-v9-pop'", String.class));
+        assertEquals("100.00000000", jdbcTemplate.queryForObject("SELECT index_value FROM backtest_signal_items WHERE id = 'item-v9-pop'", String.class));
+        assertEquals(originalSchema, jdbcTemplate.queryForObject(
+                "SELECT parameters_schema_json FROM strategy_versions WHERE strategy_id = 'ETF_TREND_10M_V1' AND strategy_version = '1.0.0'", String.class));
+        assertEquals(correctedSchema, jdbcTemplate.queryForObject(
+                "SELECT parameters_schema_json FROM strategy_versions WHERE strategy_id = 'ETF_TREND_10M_V1' AND strategy_version = '1.0.1'", String.class));
+        assertEquals(1, jdbcTemplate.queryForObject("PRAGMA foreign_keys", Integer.class));
+        assertTrue(jdbcTemplate.queryForList("PRAGMA foreign_key_check").isEmpty());
+        assertThrows(Exception.class, () -> jdbcTemplate.update("UPDATE backtest_signals SET reason_code = 'CHANGED' WHERE id = 'signal-v9-pop'"));
+        assertThrows(Exception.class, () -> jdbcTemplate.update("DELETE FROM backtest_signal_items WHERE id = 'item-v9-pop'"));
+        assertThrows(Exception.class, () -> jdbcTemplate.update("UPDATE backtest_signal_items SET target_weight = '0' WHERE id = 'item-v9-pop'"));
+        assertThrows(Exception.class, () -> jdbcTemplate.update("INSERT INTO backtest_signal_items (id, signal_id, listing_id, target_weight, reason_code) VALUES ('late-item-v10', 'signal-v9-pop', 'ETF-2', '1', 'LATE')"));
+        assertThrows(Exception.class, () -> jdbcTemplate.update("UPDATE strategy_versions SET name = 'Changed' WHERE strategy_id = 'ETF_TREND_10M_V1' AND strategy_version = '1.0.0'"));
+        assertThrows(Exception.class, () -> jdbcTemplate.update("INSERT INTO backtest_signal_items (id, signal_id, listing_id, target_weight, reason_code) VALUES ('orphan-v10', 'missing-signal', 'ETF-1', '1', 'ORPHAN')"));
+
+        jdbcTemplate.update("INSERT INTO backtest_runs (id, owner_id, idempotency_key, canonical_hash, strategy_id, strategy_version, dataset_id, candidate_listing_id, benchmark_listing_id, initial_cash, currency, evaluation_cutoff, requested_start_date, requested_end_date, commission_per_fill, spread_bps, slippage_bps, status, progress_pct, config_json, created_at, updated_at) " +
+                "VALUES ('run-v10-open', 'owner-v9', 'key-v10', 'hash-v10', 'ETF_TREND_10M_V1', '1.0.1', 'ds-v9-pop', 'ETF-1', 'ETF-1', '1000.00', 'EUR', '2025-01-01T17:00:00Z', '2025-01-02', '2025-01-31', '1.00', '0', '0', 'RUNNING', 50, '{}', ?, ?)", now, now);
+        jdbcTemplate.update("INSERT INTO backtest_signals (id, run_id, strategy_id, strategy_version, evaluation_date, evaluation_time, decision_instant, target_allocation_summary, status, reason_code, details_json, created_at) " +
+                "VALUES ('signal-v10-final', 'run-v10-open', 'ETF_TREND_10M_V1', '1.0.1', '2025-01-31', '2025-01-31T16:30:00Z', '2025-01-31T16:35:00Z', '{}', 'UNEXECUTED', 'DATA_UNAVAILABLE_BEFORE_EXECUTION', '{}', ?)", now);
+        assertNull(jdbcTemplate.queryForObject("SELECT scheduled_execution_date FROM backtest_signals WHERE id = 'signal-v10-final'", String.class));
+        jdbcTemplate.update("UPDATE backtest_runs SET status = 'COMPLETED', progress_pct = 100 WHERE id = 'run-v10-open'");
+        assertDoesNotThrow(migrationRunner::runMigration);
+        assertEquals(11, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM schema_migrations", Integer.class));
+        assertEquals(1, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM backtest_signal_items WHERE id = 'item-v9-pop'", Integer.class));
     }
 
     private String resource(String name) {

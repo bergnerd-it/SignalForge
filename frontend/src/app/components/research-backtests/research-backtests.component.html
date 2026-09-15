@@ -251,8 +251,8 @@
               <td [ngClass]="(((ar.candidateReturn ?? 0) - (ar.benchmarkReturn ?? 0))) >= 0 ? 'text-green' : 'text-red'">
                 {{ formatPct(((ar.candidateReturn ?? 0) - (ar.benchmarkReturn ?? 0))) }}
               </td>
-              <td>{{ selectedRun.candidateSummary.initialEquity }}</td>
-              <td>{{ selectedRun.candidateSummary.finalEquity }}</td>
+              <td>{{ ar.startEquity }}</td>
+              <td>{{ ar.endEquity }}</td>
               <td>
                 <span *ngIf="ar.isPartial" class="badge-partial">PARTIAL</span>
                 <span *ngIf="!ar.isPartial" class="badge-full">FULL</span>

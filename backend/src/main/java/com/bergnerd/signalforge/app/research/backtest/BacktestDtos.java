@@ -304,6 +304,8 @@ public final class BacktestDtos {
             int year,
             Double candidateReturn,
             Double benchmarkReturn,
+            String startEquity,
+            String endEquity,
             boolean isPartial
     ) {}
 

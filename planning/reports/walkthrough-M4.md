@@ -1,21 +1,21 @@
 # M4 implementation walkthrough
 
-Updated 2026-09-14 after the independent M4 code review and TASK-16 corrections. Read `planning/reports/research-M4.md` for the current evidence and limitations. This document describes the implemented paths; no native browser session was repeated for this update.
+Updated 2026-09-15 after populated-upgrade and native-browser verification. See `planning/reports/research-M4.md` for commands, source identity, hashes, review dispositions, and gates.
 
 ## Data and strategy path
 
-A research user selects a validated dataset, candidate or universe, benchmark, dates, and a registered strategy version. `BacktestJobService` checks parameter JSON, strategy version, K bounds, ownership, and experiment identity before queuing. `BacktestDataReader` validates the calendar, EUR listings, required bars and actions, point-in-time availability, and a common initial funding boundary. Monthly evaluations build the total-return index only from loaded sessions; late observations delay the scheduled open, and an evaluation with no later open persists as `UNEXECUTED`. A null availability timestamp cannot enter a point-in-time signal index.
+Run creation validates strategy/version, parameters, ownership, calendars, EUR listings, required observations, point-in-time availability, experiment identity, and a common funding boundary. Monthly signals use loaded total-return data; late observations delay execution; a final evaluation without another open persists as UNEXECUTED.
 
-S1 retains the M3 buy-and-hold behavior. S2 uses the 12-1 momentum score, stable listing-ID tie breaks, and top-K equal weights. S3 uses the fixed ten-month trend rule and `1.0.1` for new requests. Its target sizing uses pre-trade equity. While ETF allocation persists, distribution payments can trigger next-open reinvestment even between monthly evaluations. Executed orders store requested and executed quantities; a cash-limited buy is recorded as a filled partial quantity with a shortfall reason.
+S1 retains buy-and-hold. S2 uses 12-1 momentum, listing-ID tie breaks, and equal top-K weights. S3 uses fixed ten-month trend version 1.0.1, pre-trade-equity sizing, and next-open eligible distribution reinvestment.
 
 ## Research API and UI path
 
-The strategy catalog exposes four version rows across S1, S2, and S3. Universe responses contain listing objects with real dataset symbol, calendar, and currency. The Angular selectors extract `listingId` from those objects. The Signals tab reads paged JSON and downloads `GET /api/research/backtests/{id}/signals/export`; comparison exports use `GET /api/research/comparisons/{id}/export`. The comparison client sends an idempotency key, pages list results, and renders the backend's expected/actual mismatch fields.
+The catalog has four immutable versions. Signal JSON is paged and CSV bounded. Comparisons use idempotency, strict financial matching, and explicit complete/incomplete rolling windows. The UI now labels comparison run counts neutrally, unwraps paged experiments, fetches selected exposure detail, and shows each annual row's own start/end equity.
 
-Experiment creation requires ordered development and holdout trading-session boundaries and compatible dataset, strategy, benchmark, and owner-scoped universe metadata. Result list and export paths record permitted append-only exposure types before revealing holdout results. Comparison matching checks the actual funding event instant, reporting sessions, and benchmark accounting series. Rolling windows require calendar anniversary coverage and an end-equity mark, or report an incomplete reason.
+Experiments require ordered trading-session development/holdout boundaries and compatible strategy, dataset, benchmark, candidate, and owner-scoped universe identities. Result reads append an allowed exposure event before returning output.
 
 ## Schema and verification
 
-V8 created M4's strategy versions, universes, signals, comparisons, and experiments. V9 contains the initial correction migration. V10 restores S3 `1.0.0` metadata after V9, adds corrected S3 `1.0.1`, and permits a final unexecuted signal without a scheduled date. `MigrationRunner` targets V10. The original review and follow-up findings remain in `planning/reports/M4-code-review.md` as historical evidence.
+V8 created M4 tables; V9 applied initial corrections; V10 restores immutable S3 1.0.0 metadata, publishes 1.0.1, and permits final unscheduled UNEXECUTED signals. Verification demonstrated mutable terminal signal items, so forward-only V11 adds insert/update/delete guards. `MigrationRunner` now targets V11.
 
-`./gradlew clean test` passed **175 backend tests** with no failures; `npm test -- --watch=false` passed **43 frontend tests**; `npm run build` succeeded with a research-backtests CSS budget warning. No backend Spotless task or frontend lint script is configured. The current correction run did not perform a native browser walkthrough or a populated V9-to-V10 signal-row upgrade, so those behaviors are not claimed as manually verified.
+The backend suite passed 176 tests and frontend passed 44. Native Chrome verified disposable data, S1/S2/S3 detail and signals, deep links, matched/rejected comparisons, and rolling states. Actual ZIP/CSV bytes were inspected. Native modal creation, the corrected holdout registry, browser-managed saving, and production build on declared Node 24.21.0 remain NOT VERIFIED. Docker remains deferred.
