@@ -1,0 +1,445 @@
+<div class="paper-container">
+  <!-- Top Control Bar -->
+  <header class="paper-header">
+    <div class="header-left">
+      <h1 class="page-title">Prospective Paper Tracking</h1>
+      <div class="portfolio-selector-box">
+        <label for="portfolio-select" class="selector-label">Portfolio:</label>
+        <select
+          id="portfolio-select"
+          class="select-control"
+          [ngModel]="selectedPortfolio?.id"
+          (ngModelChange)="onSelectPortfolio($event)"
+        >
+          <option *ngFor="let p of portfolios" [value]="p.id">
+            {{ p.name }} ({{ p.baseCurrency }} {{ p.cashBalance }})
+          </option>
+        </select>
+        <button id="btn-new-paper-portfolio" class="btn btn-secondary" (click)="showCreateModal = true">
+          + New Paper Portfolio
+        </button>
+      </div>
+    </div>
+
+    <div class="header-right" *ngIf="selectedPortfolio">
+      <button
+        id="btn-activate-tracking"
+        class="btn btn-primary"
+        *ngIf="!selectedPortfolio.activeSegment"
+        (click)="showActivateModal = true"
+      >
+        Activate Strategy Tracking
+      </button>
+      <button
+        id="btn-adopt-dataset"
+        class="btn btn-secondary"
+        *ngIf="selectedPortfolio.activeSegment"
+        (click)="showAdoptModal = true"
+      >
+        Adopt Dataset Snapshot
+      </button>
+      <button
+        id="btn-evaluate"
+        class="btn btn-accent"
+        *ngIf="selectedPortfolio.activeSegment"
+        (click)="evaluateStrategy()"
+      >
+        Evaluate Strategy
+      </button>
+      <button
+        id="btn-process-events"
+        class="btn btn-secondary"
+        *ngIf="selectedPortfolio.activeSegment"
+        (click)="processEvents()"
+      >
+        Process Observations
+      </button>
+      <button
+        id="btn-toggle-auto-paper"
+        class="btn"
+        [ngClass]="selectedPortfolio.activeSegment?.approvalMode === 'AUTO_PAPER' ? 'btn-active-mode' : 'btn-outline'"
+        *ngIf="selectedPortfolio.activeSegment"
+        (click)="toggleMode()"
+      >
+        {{ selectedPortfolio.activeSegment?.approvalMode === 'AUTO_PAPER' ? 'AUTO_PAPER: ON' : 'AUTO_PAPER: OFF (MANUAL)' }}
+      </button>
+      <button
+        id="btn-export-audit"
+        class="btn btn-outline"
+        (click)="exportAuditZip()"
+      >
+        Export Audit Archive (ZIP)
+      </button>
+    </div>
+  </header>
+
+  <!-- Error Alert -->
+  <div *ngIf="errorMessage" class="alert alert-danger">
+    <span>{{ errorMessage }}</span>
+    <button class="alert-close" (click)="errorMessage = null">&times;</button>
+  </div>
+
+  <!-- KPI Cards Bar -->
+  <div class="kpi-grid" *ngIf="selectedPortfolio">
+    <div class="kpi-card">
+      <span class="kpi-label">Mode / Status</span>
+      <div class="kpi-value-row">
+        <span class="badge badge-paper">{{ selectedPortfolio.mode }}</span>
+        <span class="badge" [ngClass]="selectedPortfolio.strategyTracking === 'ACTIVE' ? 'badge-success' : 'badge-neutral'">
+          {{ selectedPortfolio.strategyTracking }}
+        </span>
+      </div>
+      <span class="kpi-subtext">Approval: {{ selectedPortfolio.activeSegment?.approvalMode || 'N/A' }}</span>
+    </div>
+
+    <div class="kpi-card">
+      <span class="kpi-label">Available Cash</span>
+      <span class="kpi-value highlight">{{ selectedPortfolio.baseCurrency }} {{ selectedPortfolio.cashBalance }}</span>
+      <span class="kpi-subtext">Initial: {{ selectedPortfolio.baseCurrency }} {{ selectedPortfolio.activeSegment?.initialEquity || selectedPortfolio.cashBalance }}</span>
+    </div>
+
+    <div class="kpi-card">
+      <span class="kpi-label">Active Strategy</span>
+      <span class="kpi-value">{{ selectedPortfolio.activeSegment?.strategyId || 'None' }}</span>
+      <span class="kpi-subtext">Universe: {{ selectedPortfolio.activeSegment?.universeId || 'None' }}</span>
+    </div>
+
+    <div class="kpi-card">
+      <span class="kpi-label">Data Readiness</span>
+      <div class="kpi-value-row">
+        <span class="badge" [ngClass]="selectedPortfolio.dataReadinessStatus === 'READY' ? 'badge-success' : 'badge-warning'">
+          {{ selectedPortfolio.dataReadinessStatus || 'NO_SNAPSHOT' }}
+        </span>
+      </div>
+      <span class="kpi-subtext">Snapshot: {{ selectedPortfolio.activeSegment?.adoptedDatasetId || 'None' }}</span>
+    </div>
+  </div>
+
+  <!-- Navigation Sub-Tabs -->
+  <nav class="tabs-nav">
+    <button
+      id="tab-proposals"
+      class="tab-btn"
+      [class.active]="activeTab === 'proposals'"
+      (click)="activeTab = 'proposals'"
+    >
+      Proposals & Execution ({{ proposals.length }})
+    </button>
+    <button
+      id="tab-valuations"
+      class="tab-btn"
+      [class.active]="activeTab === 'valuations'"
+      (click)="activeTab = 'valuations'"
+    >
+      Prospective Valuations ({{ valuations.length }})
+    </button>
+    <button
+      id="tab-positions"
+      class="tab-btn"
+      [class.active]="activeTab === 'positions'"
+      (click)="activeTab = 'positions'"
+    >
+      Holdings & Receivables ({{ selectedPortfolio?.positions?.length || 0 }})
+    </button>
+    <button
+      id="tab-mode-history"
+      class="tab-btn"
+      [class.active]="activeTab === 'modeHistory'"
+      (click)="activeTab = 'modeHistory'"
+    >
+      Mode History
+    </button>
+    <button
+      id="tab-assistant"
+      class="tab-btn"
+      [class.active]="activeTab === 'assistant'"
+      (click)="activeTab = 'assistant'"
+    >
+      Research Assistant
+    </button>
+  </nav>
+
+  <!-- TAB 1: Proposals -->
+  <section *ngIf="activeTab === 'proposals'" class="tab-content">
+    <div *ngIf="proposals.length === 0" class="empty-state">
+      <p>No strategy proposals generated yet.</p>
+      <button class="btn btn-primary" (click)="evaluateStrategy()" *ngIf="selectedPortfolio?.activeSegment">
+        Run Strategy Evaluation
+      </button>
+    </div>
+
+    <div *ngFor="let p of proposals" class="proposal-card">
+      <div class="proposal-header">
+        <div>
+          <span class="proposal-id">Proposal: {{ p.id }}</span>
+          <span class="proposal-cycle">Cycle: {{ p.cycleId }} (Evaluation: {{ p.evaluationSessionDate }})</span>
+        </div>
+        <div class="proposal-actions">
+          <span class="badge" [ngClass]="{
+            'badge-warning': p.status === 'PROPOSED',
+            'badge-success': p.status === 'ACCEPTED',
+            'badge-danger': p.status === 'REJECTED' || p.status === 'MISSED',
+            'badge-neutral': p.status === 'SUPERSEDED'
+          }">
+            {{ p.status }}
+          </span>
+          <button
+            id="btn-accept-proposal-{{ p.id }}"
+            class="btn btn-sm btn-success"
+            *ngIf="p.status === 'PROPOSED'"
+            (click)="acceptProposal(p.id)"
+          >
+            Accept
+          </button>
+          <button
+            id="btn-reject-proposal-{{ p.id }}"
+            class="btn btn-sm btn-danger"
+            *ngIf="p.status === 'PROPOSED'"
+            (click)="rejectProposal(p.id)"
+          >
+            Reject
+          </button>
+        </div>
+      </div>
+
+      <div class="proposal-meta">
+        <span>Scheduled Open: <strong>{{ p.scheduledOpenSessionDate }} ({{ p.scheduledOpenInstant }})</strong></span>
+        <span>Reason: {{ p.reasonCode }}</span>
+        <span *ngIf="p.acceptedAt">Accepted At: {{ p.acceptedAt }}</span>
+        <span *ngIf="p.rejectedAt">Rejected At: {{ p.rejectedAt }} ({{ p.rejectionReason }})</span>
+      </div>
+
+      <table class="table proposal-table" *ngIf="p.items && p.items.length > 0">
+        <thead>
+          <tr>
+            <th>Rank</th>
+            <th>Listing ID</th>
+            <th>Target Weight</th>
+            <th>Score</th>
+            <th>Reason</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr *ngFor="let item of p.items">
+            <td>#{{ item.rank }}</td>
+            <td class="code-font">{{ item.listingId }}</td>
+            <td>{{ item.targetWeight }}</td>
+            <td>{{ item.score || 'N/A' }}</td>
+            <td>{{ item.reasonDescription || item.reasonCode }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- TAB 2: Valuations -->
+  <section *ngIf="activeTab === 'valuations'" class="tab-content">
+    <table class="table valuations-table" *ngIf="valuations.length > 0">
+      <thead>
+        <tr>
+          <th>Session Date</th>
+          <th>Observation Kind</th>
+          <th>Cash Balance</th>
+          <th>Total Equity</th>
+          <th>Return</th>
+          <th>Drawdown</th>
+          <th>Readiness</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr *ngFor="let v of valuations">
+          <td>{{ v.sessionDate }}</td>
+          <td><span class="badge badge-neutral">{{ v.observationKind }}</span></td>
+          <td>EUR {{ v.cashBalance }}</td>
+          <td><strong>EUR {{ v.totalEquity || v.cashBalance }}</strong></td>
+          <td>{{ v.cumulativeReturn || '0.0%' }}</td>
+          <td>{{ v.drawdown || '0.0%' }}</td>
+          <td><span class="badge badge-success">{{ v.dataReadinessStatus }}</span></td>
+        </tr>
+      </tbody>
+    </table>
+    <div *ngIf="valuations.length === 0" class="empty-state">
+      <p>No prospective valuations recorded yet.</p>
+    </div>
+  </section>
+
+  <!-- TAB 3: Holdings & Receivables -->
+  <section *ngIf="activeTab === 'positions'" class="tab-content">
+    <h3 class="section-title">Current Held Positions</h3>
+    <table class="table" *ngIf="selectedPortfolio?.positions && selectedPortfolio!.positions.length > 0">
+      <thead>
+        <tr>
+          <th>Ticker</th>
+          <th>Listing ID</th>
+          <th>Quantity</th>
+          <th>Avg Cost</th>
+          <th>Total Acquisition Cost</th>
+          <th>Updated At</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr *ngFor="let pos of selectedPortfolio?.positions">
+          <td><strong>{{ pos.ticker }}</strong></td>
+          <td class="code-font">{{ pos.listingId }}</td>
+          <td>{{ pos.quantity }}</td>
+          <td>EUR {{ pos.averageCost }}</td>
+          <td>EUR {{ pos.totalAcquisitionCost }}</td>
+          <td>{{ pos.updatedAt }}</td>
+        </tr>
+      </tbody>
+    </table>
+    <div *ngIf="!selectedPortfolio?.positions || selectedPortfolio!.positions.length === 0" class="empty-state">
+      <p>No securities held in this portfolio. Portfolio is 100% in cash.</p>
+    </div>
+  </section>
+
+  <!-- TAB 4: Mode History -->
+  <section *ngIf="activeTab === 'modeHistory'" class="tab-content">
+    <table class="table" *ngIf="modeHistory.length > 0">
+      <thead>
+        <tr>
+          <th>Transition Time</th>
+          <th>From Mode</th>
+          <th>To Mode</th>
+          <th>Trigger</th>
+          <th>Notes</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr *ngFor="let m of modeHistory">
+          <td>{{ m.transitionInstant }}</td>
+          <td>{{ m.fromMode }}</td>
+          <td><strong>{{ m.toMode }}</strong></td>
+          <td><span class="badge badge-neutral">{{ m.triggerType }}</span></td>
+          <td>{{ m.notes }}</td>
+        </tr>
+      </tbody>
+    </table>
+    <div *ngIf="modeHistory.length === 0" class="empty-state">
+      <p>No mode change history recorded.</p>
+    </div>
+  </section>
+
+  <!-- TAB 5: Grounded Research Assistant -->
+  <section *ngIf="activeTab === 'assistant'" class="tab-content">
+    <div class="assistant-panel">
+      <div class="assistant-chat-history">
+        <div class="assistant-intro">
+          <h4>Grounded Research Assistant</h4>
+          <p>Explanations and answers are grounded strictly in authoritative backend metrics and evidence records.</p>
+        </div>
+
+        <div *ngIf="assistantResponse" class="assistant-response-box">
+          <div class="response-message">{{ assistantResponse.message }}</div>
+
+          <div class="fact-cards-grid" *ngIf="assistantResponse.factCards && assistantResponse.factCards.length > 0">
+            <div *ngFor="let fc of assistantResponse.factCards" class="fact-card">
+              <span class="fact-title">{{ fc.title }}</span>
+              <span class="fact-value">{{ fc.value }}</span>
+              <span class="fact-desc">{{ fc.description }}</span>
+            </div>
+          </div>
+
+          <div class="evidence-list" *ngIf="assistantResponse.evidenceReferences && assistantResponse.evidenceReferences.length > 0">
+            <h5>Grounded Evidence References</h5>
+            <ul>
+              <li *ngFor="let ev of assistantResponse.evidenceReferences">
+                <code>[{{ ev.type }}]</code> {{ ev.id }} ({{ ev.observationInstant }}): {{ ev.description }}
+              </li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+      <div class="assistant-input-row">
+        <input
+          type="text"
+          class="input-control"
+          placeholder="Ask about this paper portfolio, strategy, or proposal..."
+          [(ngModel)]="assistantMessage"
+          (keydown.enter)="sendAssistantQuery()"
+          [disabled]="isAssistantThinking"
+        />
+        <button
+          class="btn btn-primary"
+          (click)="sendAssistantQuery()"
+          [disabled]="isAssistantThinking || !assistantMessage.trim()"
+        >
+          {{ isAssistantThinking ? 'Analyzing...' : 'Ask Assistant' }}
+        </button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Create Portfolio Modal -->
+  <div class="modal-backdrop" *ngIf="showCreateModal">
+    <div class="modal-box">
+      <h3>Create New EUR Paper Portfolio</h3>
+      <div class="form-group">
+        <label>Portfolio Name</label>
+        <input type="text" class="input-control" [(ngModel)]="newPortName" />
+      </div>
+      <div class="form-group">
+        <label>Initial Cash (EUR)</label>
+        <input type="text" class="input-control" [(ngModel)]="newPortCash" />
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" (click)="showCreateModal = false">Cancel</button>
+        <button class="btn btn-primary" (click)="createPortfolio()">Create Portfolio</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Activate Tracking Modal -->
+  <div class="modal-backdrop" *ngIf="showActivateModal">
+    <div class="modal-box">
+      <h3>Activate Prospective Tracking Segment</h3>
+      <div class="form-group">
+        <label>Strategy ID</label>
+        <select class="select-control" [(ngModel)]="actStrategyId">
+          <option value="ETF_BUY_HOLD_V1">ETF_BUY_HOLD_V1 (S1 Buy & Hold)</option>
+          <option value="ETF_MOMENTUM_12_1_V1">ETF_MOMENTUM_12_1_V1 (S2 Momentum)</option>
+          <option value="ETF_TREND_10M_V1">ETF_TREND_10M_V1 (S3 10M Trend Filter)</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Strategy Version</label>
+        <input type="text" class="input-control" [(ngModel)]="actStrategyVersion" />
+      </div>
+      <div class="form-group">
+        <label>Universe ID</label>
+        <input type="text" class="input-control" [(ngModel)]="actUniverseId" />
+      </div>
+      <div class="form-group">
+        <label>Benchmark Listing ID</label>
+        <input type="text" class="input-control" [(ngModel)]="actBenchmarkId" />
+      </div>
+      <div class="form-group">
+        <label>Approval Mode</label>
+        <select class="select-control" [(ngModel)]="actApprovalMode">
+          <option value="MANUAL">MANUAL (Explicit user accept/reject)</option>
+          <option value="AUTO_PAPER">AUTO_PAPER (Automatic pre-open execution)</option>
+        </select>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" (click)="showActivateModal = false">Cancel</button>
+        <button class="btn btn-primary" (click)="activatePortfolio()">Activate Segment</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Adopt Dataset Modal -->
+  <div class="modal-backdrop" *ngIf="showAdoptModal">
+    <div class="modal-box">
+      <h3>Adopt Dataset Snapshot</h3>
+      <div class="form-group">
+        <label>Dataset ID</label>
+        <input type="text" class="input-control" placeholder="dataset-..." [(ngModel)]="adoptDatasetId" />
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" (click)="showAdoptModal = false">Cancel</button>
+        <button class="btn btn-primary" (click)="adoptDataset()">Adopt Snapshot</button>
+      </div>
+    </div>
+  </div>
+</div>
