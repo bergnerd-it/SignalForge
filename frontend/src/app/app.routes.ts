@@ -8,4 +8,6 @@ export const routes: Routes = [
   { path: 'research/compare', children: [] },
   { path: 'research/backtests', children: [] },
   { path: 'research/backtests/:id', children: [] },
+  { path: 'research/portfolios', children: [] },
+  { path: 'research/portfolios/:id', children: [] },
 ];

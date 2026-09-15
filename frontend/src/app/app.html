@@ -22,6 +22,9 @@
   <!-- Strategy Comparison View -->
   <app-research-compare *ngIf="currentView === 'research-compare'"></app-research-compare>
 
+  <!-- Prospective Paper Tracking View -->
+  <app-research-paper *ngIf="currentView === 'research-portfolios'"></app-research-paper>
+
   <!-- Main Trading Workspace Grid (Demo) -->
   <main class="workspace-grid" *ngIf="currentView === 'demo'">
     <!-- Left Column: Watchlist -->

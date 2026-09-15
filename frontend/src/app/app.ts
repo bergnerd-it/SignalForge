@@ -31,6 +31,7 @@ import { ResearchDataComponent } from './components/research-data/research-data.
 import { ResearchBacktestsComponent } from './components/research-backtests/research-backtests.component';
 import { ResearchStrategiesComponent } from './components/research-strategies/research-strategies.component';
 import { ResearchCompareComponent } from './components/research-compare/research-compare.component';
+import { ResearchPaperComponent } from './components/research-paper/research-paper.component';
 
 @Component({
   selector: 'app-root',
@@ -50,12 +51,13 @@ import { ResearchCompareComponent } from './components/research-compare/research
     ResearchBacktestsComponent,
     ResearchStrategiesComponent,
     ResearchCompareComponent,
+    ResearchPaperComponent,
   ],
   templateUrl: './app.html',
   styleUrl: './app.css',
 })
 export class App implements OnInit, OnDestroy {
-  public currentView: 'demo' | 'research' | 'research-data' | 'research-backtests' | 'research-strategies' | 'research-compare' = 'demo';
+  public currentView: 'demo' | 'research' | 'research-data' | 'research-backtests' | 'research-strategies' | 'research-compare' | 'research-portfolios' = 'demo';
   public portfolio: Portfolio | null = null;
   public snapshots: PortfolioSnapshot[] = [];
   public watchlist: WatchlistEntry[] = [];
@@ -83,7 +85,9 @@ export class App implements OnInit, OnDestroy {
 
   ngOnInit(): void {
     if (typeof window !== 'undefined') {
-      if (window.location.pathname.startsWith('/research/strategies')) {
+      if (window.location.pathname.startsWith('/research/portfolios')) {
+        this.currentView = 'research-portfolios';
+      } else if (window.location.pathname.startsWith('/research/strategies')) {
         this.currentView = 'research-strategies';
       } else if (window.location.pathname.startsWith('/research/compare')) {
         this.currentView = 'research-compare';
@@ -299,11 +303,13 @@ export class App implements OnInit, OnDestroy {
     }, 4000);
   }
 
-  public onViewChange(view: 'demo' | 'research' | 'research-data' | 'research-backtests' | 'research-strategies' | 'research-compare'): void {
+  public onViewChange(view: 'demo' | 'research' | 'research-data' | 'research-backtests' | 'research-strategies' | 'research-compare' | 'research-portfolios'): void {
     this.currentView = view;
     if (typeof window !== 'undefined' && window.history) {
       const targetPath =
-        view === 'research-strategies'
+        view === 'research-portfolios'
+          ? '/research/portfolios'
+          : view === 'research-strategies'
           ? '/research/strategies'
           : view === 'research-compare'
           ? '/research/compare'
@@ -321,7 +327,9 @@ export class App implements OnInit, OnDestroy {
 
   private handlePopState = (): void => {
     if (typeof window !== 'undefined') {
-      if (window.location.pathname.startsWith('/research/strategies')) {
+      if (window.location.pathname.startsWith('/research/portfolios')) {
+        this.currentView = 'research-portfolios';
+      } else if (window.location.pathname.startsWith('/research/strategies')) {
         this.currentView = 'research-strategies';
       } else if (window.location.pathname.startsWith('/research/compare')) {
         this.currentView = 'research-compare';

@@ -39,8 +39,8 @@ public class MigrationRunner {
     @Value("${spring.datasource.url}")
     private String datasourceUrl;
 
-    public static final String CODE_VERSION = "2.0.0-M4";
-    public static final int CURRENT_SCHEMA_VERSION = 11;
+    public static final String CODE_VERSION = "2.0.0-M5";
+    public static final int CURRENT_SCHEMA_VERSION = 12;
 
     public static final List<String> DEFAULT_TICKERS = List.of(
             "AAPL", "GOOGL", "MSFT", "AMZN", "TSLA",
@@ -147,6 +147,7 @@ public class MigrationRunner {
         String v9Sql = loadResource("db/migration/V9__fix_strategy_schema_and_integrity.sql");
         String v10Sql = loadResource("db/migration/V10__restore_immutable_trend_version.sql");
         String v11Sql = loadResource("db/migration/V11__protect_terminal_signal_items.sql");
+        String v12Sql = loadResource("db/migration/V12__paper_tracking_and_proposals.sql");
         String v1Checksum = computeV1MigrationChecksum(v1Sql);
         String v2Checksum = computeSqlChecksum(v2Sql);
         String v3Checksum = computeSqlChecksum(v3Sql);
@@ -158,6 +159,7 @@ public class MigrationRunner {
         String v9Checksum = computeSqlChecksum(v9Sql);
         String v10Checksum = computeSqlChecksum(v10Sql);
         String v11Checksum = computeSqlChecksum(v11Sql);
+        String v12Checksum = computeSqlChecksum(v12Sql);
 
         transactionTemplate.executeWithoutResult(status -> {
             executeSqlScript(v1Sql);
@@ -171,6 +173,7 @@ public class MigrationRunner {
             executeSqlScript(v9Sql);
             executeSqlScript(v10Sql);
             executeSqlScript(v11Sql);
+            executeSqlScript(v12Sql);
 
             // Record migrations
             String now = Instant.now().toString();
@@ -218,6 +221,10 @@ public class MigrationRunner {
                     "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (11, 'M4 terminal signal item integrity', ?, ?, ?)",
                     v11Checksum, now, CODE_VERSION
             );
+            jdbcTemplate.update(
+                    "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (12, 'M5 paper tracking and proposals', ?, ?, ?)",
+                    v12Checksum, now, CODE_VERSION
+            );
 
             // Seed default user legacy demo portfolio and initial cash
             seedFreshDefaults(now);
@@ -246,6 +253,7 @@ public class MigrationRunner {
         String v9Sql = loadResource("db/migration/V9__fix_strategy_schema_and_integrity.sql");
         String v10Sql = loadResource("db/migration/V10__restore_immutable_trend_version.sql");
         String v11Sql = loadResource("db/migration/V11__protect_terminal_signal_items.sql");
+        String v12Sql = loadResource("db/migration/V12__paper_tracking_and_proposals.sql");
         String v1Checksum = computeV1MigrationChecksum(v1Sql);
         String v2Checksum = computeSqlChecksum(v2Sql);
         String v3Checksum = computeSqlChecksum(v3Sql);
@@ -257,6 +265,7 @@ public class MigrationRunner {
         String v9Checksum = computeSqlChecksum(v9Sql);
         String v10Checksum = computeSqlChecksum(v10Sql);
         String v11Checksum = computeSqlChecksum(v11Sql);
+        String v12Checksum = computeSqlChecksum(v12Sql);
 
         transactionTemplate.executeWithoutResult(status -> {
             log.info("Renaming legacy tables to raw archive tables...");
@@ -280,6 +289,7 @@ public class MigrationRunner {
             executeSqlScript(v9Sql);
             executeSqlScript(v10Sql);
             executeSqlScript(v11Sql);
+            executeSqlScript(v12Sql);
 
             // Sync legacy tables for backwards compatibility
             syncLegacyCompatibilityTables();
@@ -330,6 +340,10 @@ public class MigrationRunner {
                     "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (11, 'M4 terminal signal item integrity', ?, ?, ?)",
                     v11Checksum, now, CODE_VERSION
             );
+            jdbcTemplate.update(
+                    "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (12, 'M5 paper tracking and proposals', ?, ?, ?)",
+                    v12Checksum, now, CODE_VERSION
+            );
         });
         validateCurrentSchema();
 
@@ -348,6 +362,7 @@ public class MigrationRunner {
         String v9Sql = loadResource("db/migration/V9__fix_strategy_schema_and_integrity.sql");
         String v10Sql = loadResource("db/migration/V10__restore_immutable_trend_version.sql");
         String v11Sql = loadResource("db/migration/V11__protect_terminal_signal_items.sql");
+        String v12Sql = loadResource("db/migration/V12__paper_tracking_and_proposals.sql");
         String expectedV1Checksum = computeV1MigrationChecksum(v1Sql);
         String candidateV1Checksum = computeCandidateV1MigrationChecksum(v1Sql);
         String expectedV2Checksum = computeSqlChecksum(v2Sql);
@@ -360,6 +375,7 @@ public class MigrationRunner {
         String expectedV9Checksum = computeSqlChecksum(v9Sql);
         String expectedV10Checksum = computeSqlChecksum(v10Sql);
         String expectedV11Checksum = computeSqlChecksum(v11Sql);
+        String expectedV12Checksum = computeSqlChecksum(v12Sql);
 
         List<Map<String, Object>> migrations = jdbcTemplate.queryForList(
                 "SELECT version, checksum, description, applied_at FROM schema_migrations ORDER BY version ASC"
@@ -420,6 +436,10 @@ public class MigrationRunner {
             } else if (version == 11) {
                 if (!expectedV11Checksum.equals(recordedChecksum)) {
                     throw new IllegalStateException("Migration version 11 checksum mismatch! Recorded: " + recordedChecksum);
+                }
+            } else if (version == 12) {
+                if (!expectedV12Checksum.equals(recordedChecksum)) {
+                    throw new IllegalStateException("Migration version 12 checksum mismatch! Recorded: " + recordedChecksum);
                 }
             } else {
                 throw new IllegalStateException("Unknown migration version found in database: " + version);
@@ -507,6 +527,17 @@ public class MigrationRunner {
                 );
             });
             versions.add(11);
+        }
+
+        if (!versions.contains(12)) {
+            transactionTemplate.executeWithoutResult(status -> {
+                executeSqlScript(v12Sql);
+                jdbcTemplate.update(
+                        "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (12, 'M5 paper tracking and proposals', ?, ?, ?)",
+                        expectedV12Checksum, Instant.now().toString(), CODE_VERSION
+                );
+            });
+            versions.add(12);
         }
 
         validateCurrentSchema();
@@ -656,13 +687,42 @@ public class MigrationRunner {
                 "datasets", "dataset_listings", "dataset_sessions", "historical_bars", "historical_actions", "import_jobs",
                 "backtest_runs", "backtest_daily_equity", "backtest_orders", "backtest_events", "backtest_holdings",
                 "universes", "universe_listings", "strategy_versions", "experiments", "experiment_exposure_events",
-                "backtest_signals", "backtest_signal_items", "backtest_comparisons", "backtest_comparison_items"
+                "backtest_signals", "backtest_signal_items", "backtest_comparisons", "backtest_comparison_items",
+                "paper_portfolio_segments", "paper_mode_history", "paper_dataset_adoptions", "paper_proposals",
+                "paper_proposal_items", "paper_proposal_observations", "paper_receivables", "paper_processed_corporate_actions",
+                "paper_execution_intents", "paper_intent_transitions", "paper_execution_results", "paper_valuations"
         );
         Set<String> missing = new HashSet<>(requiredTables);
         missing.removeAll(getExistingTables());
         if (!missing.isEmpty()) {
             throw new IllegalStateException("Versioned schema is missing required tables: " + missing);
         }
+
+        requireColumns("paper_portfolio_segments", Set.of(
+                "id", "portfolio_id", "strategy_id", "strategy_version", "universe_id", "benchmark_listing_id",
+                "cost_policy_json", "approval_mode", "status", "initial_equity", "opening_observation_instant", "created_at"
+        ));
+        requireColumns("paper_proposals", Set.of(
+                "id", "portfolio_id", "cycle_id", "strategy_id", "strategy_version", "dataset_id", "dataset_checksum",
+                "calendar_id", "calendar_version", "evaluation_session_date", "input_cutoff_instant", "evaluation_instant",
+                "scheduled_open_session_date", "scheduled_open_instant", "reason_code", "portfolio_state_version", "status", "created_at"
+        ));
+        requireColumns("paper_execution_intents", Set.of(
+                "id", "portfolio_id", "order_type", "scheduled_session_date", "scheduled_open_instant", "approval_mode", "status", "created_at"
+        ));
+        requireColumns("paper_execution_results", Set.of(
+                "id", "intent_id", "operation_id", "execution_id", "listing_id", "side", "requested_quantity", "executed_quantity",
+                "raw_open_price", "fill_price", "commission", "spread_slippage_cost", "cost_basis", "realized_gain",
+                "dataset_id", "dataset_checksum", "market_effective_instant", "observed_instant", "booked_instant"
+        ));
+        requireColumns("paper_receivables", Set.of(
+                "id", "portfolio_id", "listing_id", "action_id", "action_type", "record_instant", "ex_date", "payment_date",
+                "gross_amount", "withholding_tax", "net_amount", "status", "created_at"
+        ));
+        requireColumns("paper_valuations", Set.of(
+                "id", "portfolio_id", "session_date", "observation_kind", "observation_instant", "cash_balance",
+                "positions_market_value", "receivables_value", "is_complete", "adopted_dataset_id", "adopted_dataset_checksum"
+        ));
 
         requireColumns("chat_requests", Set.of(
                 "id", "user_id", "idempotency_key", "payload_hash", "user_message", "status",
