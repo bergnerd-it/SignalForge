@@ -42,3 +42,4 @@ Thumbs.db
 # Task-owned pre-migration checkpoint
 .checkpoint/
 
+.npm/_update-notifier-last-checked

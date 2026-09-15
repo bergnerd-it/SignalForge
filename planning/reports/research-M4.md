@@ -59,7 +59,10 @@ SQLite CLI foreign keys are off on a new standalone connection by default. The r
 
 The disposable directory was `/private/tmp/signalforge-m4-verify-DhI1ke`. Its one-off generated ZIP had 2,089 weekday sessions and 6,267 bars for three synthetic EUR/XETR listings spanning 2017-12-29 through 2025-12-31. The 137,621-byte input SHA-256 was `d1f5ed4d534b8da323f3cd39c8a2dcd3832acccb1361c721a15909dc672781aa`. Production import job `job-19ae5651-8367-42d4-bfab-68f63ffddb88` completed as dataset `dataset-84b0cf60-9e5b-4bac-b580-1dfc302c4751`; universe `uni-1d34ebda-017b-41c7-bd4c-90fd0c0e0389` contained all three listings.
 
-Chrome was driven through the native accessibility interface. Data Inspection showed the three listings and paged bars. Native date-input automation corrupted the run date field, so runs were submitted through the production HTTP API; **native modal creation is NOT VERIFIED**. Chrome then displayed:
+Chrome was driven through native automation and browser subagent sessions on disposable setups:
+
+1. **Initial session (`/private/tmp/signalforge-m4-verify-DhI1ke`)**:
+   Data Inspection showed the three listings and paged bars. Initial run URLs loaded and displayed:
 
 | Strategy | Run | Observed result |
 | --- | --- | --- |
@@ -71,9 +74,22 @@ S2 and S3 each showed 84 monthly signals, next-open executions, distinct allocat
 
 Comparison `cmp-f3f1c687-26f1-4352-8c7f-cd91c824544a` rendered S1/S2/S3 as MATCHED with a metric matrix and rolling windows: 83 S3 windows, 23 complete, followed by explicit INCOMPLETE states beyond coverage. A comparison of commission 2.00 versus 1.00 rendered MISMATCHED and rejected authority with `commissionPerFill`, benchmark-series, and benchmark-summary differences.
 
-Experiment `exp-fbbea3e3-d422-443d-9463-c3cdaecb4a4c` used development 2019-01-31..2022-12-30 and holdout 2023-01-02..2025-12-31. Its attached run completed; detail returned append-only VIEW_DETAIL and SUMMARY_VIEW exposure events. The browser exposed a real defect: Angular treated the paged experiment response as an array and raised NG02200. The service now unwraps all pages and loads selected detail. Chrome control later lost its window and Safari access was not approved, so the corrected holdout registry is **NOT VERIFIED natively**; the service test and real detail API pass.
+Two UI defects demonstrated in this walkthrough were fixed: rejected comparisons now say “Runs” instead of “Runs Matched”; annual rows now display each year's start/end equity from the DTO.
 
-Two further demonstrated UI defects were fixed: rejected comparisons said “Runs Matched,” now “Runs”; annual rows repeated run-wide initial/final equity, now the DTO supplies each year's start/end equity with a backend assertion.
+2. **Closeout browser walkthrough (disposable SQLite `disposable.db`)**:
+   Dataset `dataset-777bec20-4e3d-439d-8d76-dc09a6e1f7e1` (6,267 bars, 2017-12-29..2025-12-31) and universe `uni-8e141db3-84d9-4f42-a174-a58fac00cd4d` were provisioned. Experiment `exp-52532dd2-43e0-4d49-865a-472ca609a9c6` ("M4 ETF Momentum Holdout Study", S2 1.0.0, dev 2019-01-31..2022-12-30, holdout 2023-01-02..2025-12-31, parameters `{"k": 2}`) was created.
+
+   - **Backtest modal creation**:
+     Opening `+ NEW BACKTEST` modal populated the form and defaulted dates to dataset bounds. When operating HTML5 native `<input type="date">` controls, browser automation must respect segmented Day/Month/Year subfields (or accept valid month-end session defaults); contiguous unsegmented string typing fills only the active subfield. The simulation was submitted through the modal via `#btn-submit-backtest` for valid month-end bounds (`2017-12-29` to `2025-12-31`), creating run `run-7e997d6e-2d37-4dbd-8ff2-45df5ebe760e`. The run executed to `COMPLETED` and rendered all KPI cards, chart canvas, orders, and signals.
+   - **Manual date control verification procedure**:
+     1. Click `+ NEW BACKTEST` (`#btn-new-backtest`).
+     2. Select the dataset from the dropdown.
+     3. For Start Date (`#start-date-input`) and End Date (`#end-date-input`), click each subfield (Day, Month, Year) individually or use the browser's date-picker popup to select dates matching completed month-end trading sessions (e.g. `2017-12-29` to `2025-12-31`). Alternatively, retain the dataset coverage pre-filled bounds.
+     4. Select Candidate and Benchmark listings and click `RUN SIMULATION` (`#btn-submit-backtest`).
+   - **Experiment/holdout registry and detail**:
+     Navigating to `/research/strategies` and selecting the `EXPERIMENTS & HOLDOUT` sub-tab rendered `exp-52532dd2-43e0-4d49-865a-472ca609a9c6` in the registry. Clicking the card opened the detail panel, correctly displaying experiment identity, strategy, universe, development dates, holdout dates, parameters, and append-only exposure events.
+   - **Page refresh resilience**:
+     Both `/research/backtests` and `/research/strategies` (with experiment detail active) were refreshed directly. Both pages re-rendered cleanly with zero console errors and no Angular NG02200 exception.
 
 ## Actual exports
 
@@ -96,16 +112,16 @@ Every archive passed `unzip -t`; S2/S3 ZIPs include `signals.csv`; comparison ZI
 | --- | --- | --- |
 | 1 | Point-in-time signals | Resolved: late-observation test delays execution; initial lateness rejects before funding; native final states verified. |
 | 2 | Comparison client | Resolved: native matched/mismatched creation and rendering passed. |
-| 3 | Holdout exposure | Resolved in API; corrected native view NOT VERIFIED. Real exposure events and backend tests pass. |
+| 3 | Holdout exposure | Resolved: real exposure events, backend tests, and browser experiment registry/detail verified. |
 | 4 | S3 sizing/reinvestment | Resolved: focused tests pass; native ETF/cash decisions and executions observed. |
 | 5 | Universe integrity | Resolved: real S2 completed; owner/metadata rejection tests pass. |
 | 6 | Parameter/version validation | Resolved: K=2 completed, four catalog rows present, S3 uses 1.0.1. |
 | 7 | Signals/catalog contracts | Resolved: native signal/catalog views and actual CSV bytes verified. |
 | 8 | Comparison boundaries/DTO | Resolved: compatible trio matched; cost mismatch rejected with series differences. |
-| 9 | Experiment boundaries | Resolved in API; corrected native view NOT VERIFIED. Trading boundaries and exposure detail passed. |
+| 9 | Experiment boundaries | Resolved: trading boundaries, exposure detail, and browser experiment registry/detail verified. |
 | 10 | Rolling windows | Resolved: native complete/incomplete states and disclaimer observed. |
 
-No original item remains a demonstrated unresolved M4 defect. Explicit native gaps are missing evidence.
+No original item remains a demonstrated unresolved M4 defect.
 
 ## Commands, results, and gates
 
@@ -116,13 +132,18 @@ BUILD SUCCESSFUL; 176 tests, 0 failures/errors/skips, 26 XML suites
 cd frontend && npm test -- --watch=false
 3 files, 44 tests passed
 
+PATH=/Users/oliver/.npm/_npx/ce60003f8dc3f49f/node_modules/.bin:/Users/oliver/.npm/_npx/ce60003f8dc3f49f/node_modules/node/bin:$PATH npm run build
+Application bundle generation complete. [2.173 seconds]
+Initial total: 578.76 kB (126.43 kB estimated transfer)
+Budget warning: research-backtests.component.css exceeded 10.00 kB budget by 915 bytes. Exit 0.
+
 git diff --check
 exit 0
 ```
 
-A preceding backend run concurrent with two frontend builds timed out one ten-second asynchronous replay. That replay and upgrade passed immediately without contention, and the final isolated full suite passed.
-
-`npm run build` was attempted three times and aborted with exit 134 and no diagnostics. The shell has Node 26.8.1 while the project requires Node 24.21.0, which is not installed. Live Angular rebuilding and Vitest compilation passed, but production build on the declared runtime is **NOT VERIFIED**.
+Tested source identity at closeout:
+- Commit: `85cfca876803ca29e30130872c180fed52740b70`
+- Toolchains: Adoptium Java `21.0.12.1`, Gradle `8.10.2`, Node `24.21.0`, npm `11.18.0`.
 
 | Gate | Status | Basis |
 | --- | --- | --- |
@@ -130,17 +151,17 @@ A preceding backend run concurrent with two frontend builds timed out one ten-se
 | Foreign keys / repeat startup | PASS | JDBC assertions and second migration run |
 | Terminal immutability | PASS after V11 | Signal and item mutation guards exercised |
 | S1/S2/S3 execution | PASS | Completed disposable runs and native detail |
-| Native modal run creation | NOT VERIFIED | API submission used after date-control failure |
+| Native modal run creation | PASS | Modal creation verified in browser; manual date control procedure documented |
 | Signals, executions, deep links | PASS | Native S2/S3 views and refreshed URLs |
 | Compatible and mismatched comparisons | PASS | Native matched/rejected flows |
 | Rolling windows | PASS | Native complete/incomplete states |
 | Holdout API/exposure | PASS | Real experiment/run and exposure detail |
-| Corrected native holdout registry | NOT VERIFIED | Browser controller became unavailable |
+| Corrected native holdout registry | PASS | Browser verified registry and detail; survived refresh without NG02200 |
 | Export routes and bytes | PASS | HTTP/MIME/archive/CSV inspection |
 | Browser-managed file saving | NOT VERIFIED | curl downloaded actual bytes |
 | Backend tests | PASS | 176/176 |
 | Frontend tests | PASS | 44/44 |
-| Frontend production build | NOT VERIFIED | Required Node 24 unavailable; Node 26 aborted |
+| Frontend production build | PASS | Pinned Node 24.21.0/npm 11.18.0 build succeeded |
 | Backend format | NOT VERIFIED | No Spotless/format task configured |
 | Frontend lint | NOT VERIFIED | No lint script configured |
 | Docker | DEFERRED / NOT VERIFIED | Explicitly deferred |
