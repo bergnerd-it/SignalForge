@@ -277,6 +277,37 @@ public final class AccountingCore {
     }
 
     /**
+     * Cash distribution (dividend) operation.
+     * Cash increases by distributionAmount. Position and total basis remain unchanged.
+     */
+    public static AccountingDelta creditCashDistribution(
+            AccountingState current,
+            BigDecimal distributionAmount
+    ) {
+        Objects.requireNonNull(current, "current state must not be null");
+        Objects.requireNonNull(distributionAmount, "distribution amount must not be null");
+        if (distributionAmount.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new IllegalArgumentException("Distribution amount must be strictly positive: " + distributionAmount);
+        }
+
+        BigDecimal cashDelta = roundCash(normalizeCash(distributionAmount, "distributionAmount"));
+        AccountingState newState = new AccountingState(
+                current.cash().add(cashDelta),
+                current.quantity(),
+                current.totalBasis()
+        );
+
+        return new AccountingDelta(
+                newState,
+                cashDelta,
+                BigDecimal.ZERO,
+                BigDecimal.ZERO,
+                BigDecimal.ZERO.setScale(CASH_SCALE, CASH_ROUNDING),
+                cashDelta
+        );
+    }
+
+    /**
      * Rebuilds state from ledger entries.
      * Cash, units, and total basis are strictly accumulated.
      */

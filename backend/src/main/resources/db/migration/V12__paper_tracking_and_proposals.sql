@@ -67,12 +67,13 @@ CREATE TABLE IF NOT EXISTS paper_proposals (
     scheduled_open_instant TEXT NOT NULL,
     reason_code TEXT NOT NULL,
     portfolio_state_version INTEGER NOT NULL,
-    status TEXT NOT NULL CHECK(status IN ('PROPOSED', 'ACCEPTED', 'REJECTED', 'SUPERSEDED', 'MISSED')),
+    status TEXT NOT NULL CHECK(status IN ('PROPOSED', 'ACCEPTED', 'REJECTED', 'SUPERSEDED', 'BLOCKED')),
     accepted_at TEXT,
     rejected_at TEXT,
     rejection_reason TEXT,
     superseding_proposal_id TEXT REFERENCES paper_proposals(id),
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    UNIQUE(portfolio_id, cycle_id, portfolio_state_version)
 );
 
 CREATE INDEX IF NOT EXISTS idx_paper_proposals_port_cycle ON paper_proposals(portfolio_id, cycle_id);
@@ -85,11 +86,12 @@ CREATE TABLE IF NOT EXISTS paper_proposal_items (
     listing_id TEXT NOT NULL REFERENCES listings(id),
     rank INTEGER NOT NULL,
     target_weight TEXT NOT NULL,
-    desired_units TEXT NOT NULL,
+    desired_units TEXT NOT NULL DEFAULT '0',
     score TEXT,
     reason_code TEXT NOT NULL,
     reason_description TEXT,
     raw_price_reference TEXT,
+    observation_kind TEXT NOT NULL DEFAULT 'CLOSE',
     UNIQUE(proposal_id, listing_id)
 );
 
@@ -101,7 +103,7 @@ CREATE TABLE IF NOT EXISTS paper_proposal_observations (
     proposal_id TEXT NOT NULL REFERENCES paper_proposals(id),
     listing_id TEXT NOT NULL REFERENCES listings(id),
     observation_session_date TEXT NOT NULL,
-    observation_type TEXT NOT NULL CHECK(observation_type IN ('CLOSE', 'SPLIT', 'DISTRIBUTION', 'SMA10')),
+    observation_type TEXT NOT NULL CHECK(observation_type IN ('CLOSE', 'SPLIT', 'DISTRIBUTION', 'SMA10', 'MOMENTUM_SCORE', 'TOTAL_RETURN_INDEX')),
     observation_value TEXT NOT NULL,
     observed_at TEXT NOT NULL
 );
@@ -139,6 +141,7 @@ CREATE TABLE IF NOT EXISTS paper_processed_corporate_actions (
     action_id TEXT NOT NULL,
     action_type TEXT NOT NULL CHECK(action_type IN ('SPLIT', 'CASH_DISTRIBUTION')),
     terms_hash TEXT NOT NULL,
+    payload_hash TEXT NOT NULL,
     effective_date TEXT NOT NULL,
     availability_instant TEXT NOT NULL,
     processing_instant TEXT NOT NULL,
@@ -147,7 +150,7 @@ CREATE TABLE IF NOT EXISTS paper_processed_corporate_actions (
     status TEXT NOT NULL CHECK(status IN ('PROCESSED', 'CONFLICT')),
     linked_operation_id TEXT REFERENCES operations(id),
     linked_receivable_id TEXT REFERENCES paper_receivables(id),
-    UNIQUE(portfolio_id, source_namespace, listing_id, action_type, action_id, terms_hash)
+    UNIQUE(portfolio_id, source_namespace, listing_id, action_type, action_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_paper_proc_actions_port ON paper_processed_corporate_actions(portfolio_id);
@@ -163,7 +166,8 @@ CREATE TABLE IF NOT EXISTS paper_execution_intents (
     scheduled_open_instant TEXT NOT NULL,
     approval_mode TEXT NOT NULL CHECK(approval_mode IN ('MANUAL', 'AUTO_PAPER')),
     status TEXT NOT NULL CHECK(status IN ('PENDING', 'WAITING_FOR_OBSERVATION', 'EXECUTED', 'MISSED', 'CANCELLED', 'FAILED')),
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    UNIQUE(portfolio_id, proposal_id, scheduled_session_date)
 );
 
 CREATE INDEX IF NOT EXISTS idx_paper_intents_port ON paper_execution_intents(portfolio_id);
@@ -205,7 +209,8 @@ CREATE TABLE IF NOT EXISTS paper_execution_results (
     dataset_checksum TEXT NOT NULL,
     market_effective_instant TEXT NOT NULL,
     observed_instant TEXT NOT NULL,
-    booked_instant TEXT NOT NULL
+    booked_instant TEXT NOT NULL,
+    UNIQUE(intent_id, listing_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_paper_exec_res_intent ON paper_execution_results(intent_id);
@@ -236,13 +241,48 @@ CREATE TABLE IF NOT EXISTS paper_valuations (
 
 CREATE INDEX IF NOT EXISTS idx_paper_valuations_port ON paper_valuations(portfolio_id);
 
--- 13. Immutability Triggers
-CREATE TRIGGER IF NOT EXISTS paper_proposals_immutable_after_terminal
+-- 13. Paper Mutation Requests (Idempotency and deduplication)
+CREATE TABLE IF NOT EXISTS paper_mutation_requests (
+    id TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    payload_hash TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('RECEIVED', 'COMMITTED', 'FAILED')),
+    resource_id TEXT,
+    result_json TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(owner_id, action, idempotency_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_paper_mut_req ON paper_mutation_requests(owner_id, action, idempotency_key);
+
+-- 14. Immutability & Lifecycle Triggers
+
+-- Proposal updates: once accepted or terminal, proposal is immutable
+CREATE TRIGGER IF NOT EXISTS paper_proposals_immutable_after_decision
 BEFORE UPDATE ON paper_proposals
 FOR EACH ROW
-WHEN OLD.status IN ('REJECTED', 'SUPERSEDED', 'MISSED')
+WHEN OLD.status IN ('ACCEPTED', 'REJECTED', 'SUPERSEDED', 'BLOCKED')
 BEGIN
-    SELECT RAISE(ABORT, 'Cannot update terminal paper proposal');
+    SELECT RAISE(ABORT, 'Cannot update accepted or terminal paper proposal');
+END;
+
+CREATE TRIGGER IF NOT EXISTS paper_proposals_no_delete
+BEFORE DELETE ON paper_proposals
+FOR EACH ROW
+BEGIN
+    SELECT RAISE(ABORT, 'Proposals cannot be deleted');
+END;
+
+-- Prevent inserting child items or observations into non-proposed proposals
+CREATE TRIGGER IF NOT EXISTS paper_proposal_items_no_insert_after_decision
+BEFORE INSERT ON paper_proposal_items
+FOR EACH ROW
+WHEN (SELECT status FROM paper_proposals WHERE id = NEW.proposal_id) != 'PROPOSED'
+BEGIN
+    SELECT RAISE(ABORT, 'Cannot insert proposal items into non-proposed proposal');
 END;
 
 CREATE TRIGGER IF NOT EXISTS paper_proposal_items_no_update
@@ -259,6 +299,14 @@ BEGIN
     SELECT RAISE(ABORT, 'Proposal items cannot be deleted');
 END;
 
+CREATE TRIGGER IF NOT EXISTS paper_proposal_obs_no_insert_after_decision
+BEFORE INSERT ON paper_proposal_observations
+FOR EACH ROW
+WHEN (SELECT status FROM paper_proposals WHERE id = NEW.proposal_id) != 'PROPOSED'
+BEGIN
+    SELECT RAISE(ABORT, 'Cannot insert proposal observations into non-proposed proposal');
+END;
+
 CREATE TRIGGER IF NOT EXISTS paper_proposal_observations_no_update
 BEFORE UPDATE ON paper_proposal_observations
 FOR EACH ROW
@@ -273,6 +321,38 @@ BEGIN
     SELECT RAISE(ABORT, 'Proposal observations cannot be deleted');
 END;
 
+-- Execution intents: terminal states immutable, no deletion
+CREATE TRIGGER IF NOT EXISTS paper_intents_immutable_after_terminal
+BEFORE UPDATE ON paper_execution_intents
+FOR EACH ROW
+WHEN OLD.status IN ('EXECUTED', 'FAILED', 'MISSED', 'CANCELLED')
+BEGIN
+    SELECT RAISE(ABORT, 'Cannot update terminal execution intent');
+END;
+
+CREATE TRIGGER IF NOT EXISTS paper_intents_no_delete
+BEFORE DELETE ON paper_execution_intents
+FOR EACH ROW
+BEGIN
+    SELECT RAISE(ABORT, 'Execution intents cannot be deleted');
+END;
+
+-- Execution intent transitions: append-only
+CREATE TRIGGER IF NOT EXISTS paper_intent_transitions_no_update
+BEFORE UPDATE ON paper_intent_transitions
+FOR EACH ROW
+BEGIN
+    SELECT RAISE(ABORT, 'Intent transitions are append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS paper_intent_transitions_no_delete
+BEFORE DELETE ON paper_intent_transitions
+FOR EACH ROW
+BEGIN
+    SELECT RAISE(ABORT, 'Intent transitions cannot be deleted');
+END;
+
+-- Execution results: immutable, no deletion
 CREATE TRIGGER IF NOT EXISTS paper_execution_results_no_update
 BEFORE UPDATE ON paper_execution_results
 FOR EACH ROW
@@ -287,10 +367,128 @@ BEGIN
     SELECT RAISE(ABORT, 'Paper execution results cannot be deleted');
 END;
 
-CREATE TRIGGER IF NOT EXISTS paper_segments_single_active
+-- Receivables: terminal states immutable, no deletion
+CREATE TRIGGER IF NOT EXISTS paper_receivables_immutable_after_terminal
+BEFORE UPDATE ON paper_receivables
+FOR EACH ROW
+WHEN OLD.status IN ('PAID', 'CANCELLED')
+BEGIN
+    SELECT RAISE(ABORT, 'Cannot update paid or cancelled receivable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS paper_receivables_no_delete
+BEFORE DELETE ON paper_receivables
+FOR EACH ROW
+BEGIN
+    SELECT RAISE(ABORT, 'Receivables cannot be deleted');
+END;
+
+-- Processed corporate actions: immutable, no deletion
+CREATE TRIGGER IF NOT EXISTS paper_proc_actions_no_update
+BEFORE UPDATE ON paper_processed_corporate_actions
+FOR EACH ROW
+BEGIN
+    SELECT RAISE(ABORT, 'Processed corporate actions are immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS paper_proc_actions_no_delete
+BEFORE DELETE ON paper_processed_corporate_actions
+FOR EACH ROW
+BEGIN
+    SELECT RAISE(ABORT, 'Processed corporate actions cannot be deleted');
+END;
+
+-- Mode history: append-only
+CREATE TRIGGER IF NOT EXISTS paper_mode_history_no_update
+BEFORE UPDATE ON paper_mode_history
+FOR EACH ROW
+BEGIN
+    SELECT RAISE(ABORT, 'Mode history is append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS paper_mode_history_no_delete
+BEFORE DELETE ON paper_mode_history
+FOR EACH ROW
+BEGIN
+    SELECT RAISE(ABORT, 'Mode history cannot be deleted');
+END;
+
+-- Dataset adoptions: append-only
+CREATE TRIGGER IF NOT EXISTS paper_adoptions_no_update
+BEFORE UPDATE ON paper_dataset_adoptions
+FOR EACH ROW
+BEGIN
+    SELECT RAISE(ABORT, 'Dataset adoptions are append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS paper_adoptions_no_delete
+BEFORE DELETE ON paper_dataset_adoptions
+FOR EACH ROW
+BEGIN
+    SELECT RAISE(ABORT, 'Dataset adoptions cannot be deleted');
+END;
+
+-- Valuations: immutable
+CREATE TRIGGER IF NOT EXISTS paper_valuations_no_update
+BEFORE UPDATE ON paper_valuations
+FOR EACH ROW
+BEGIN
+    SELECT RAISE(ABORT, 'Valuations are immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS paper_valuations_no_delete
+BEFORE DELETE ON paper_valuations
+FOR EACH ROW
+BEGIN
+    SELECT RAISE(ABORT, 'Valuations cannot be deleted');
+END;
+
+-- Segments: single active segment on INSERT and UPDATE
+CREATE TRIGGER IF NOT EXISTS paper_segments_single_active_insert
 BEFORE INSERT ON paper_portfolio_segments
 FOR EACH ROW
 WHEN NEW.status = 'ACTIVE' AND (SELECT COUNT(*) FROM paper_portfolio_segments WHERE portfolio_id = NEW.portfolio_id AND status = 'ACTIVE') > 0
 BEGIN
     SELECT RAISE(ABORT, 'Only one active paper portfolio segment is permitted per portfolio');
 END;
+
+CREATE TRIGGER IF NOT EXISTS paper_segments_single_active_update
+BEFORE UPDATE OF status ON paper_portfolio_segments
+FOR EACH ROW
+WHEN NEW.status = 'ACTIVE' AND OLD.status != 'ACTIVE' AND (SELECT COUNT(*) FROM paper_portfolio_segments WHERE portfolio_id = NEW.portfolio_id AND status = 'ACTIVE') > 0
+BEGIN
+    SELECT RAISE(ABORT, 'Only one active paper portfolio segment is permitted per portfolio');
+END;
+
+-- Segment configuration immutability (only status, approval_mode, adopted_dataset_id, adopted_at may update)
+CREATE TRIGGER IF NOT EXISTS paper_segments_config_immutable
+BEFORE UPDATE ON paper_portfolio_segments
+FOR EACH ROW
+WHEN (OLD.strategy_id != NEW.strategy_id OR
+      OLD.strategy_version != NEW.strategy_version OR
+      OLD.universe_id != NEW.universe_id OR
+      OLD.benchmark_listing_id != NEW.benchmark_listing_id OR
+      OLD.cost_policy_json != NEW.cost_policy_json OR
+      OLD.initial_equity != NEW.initial_equity OR
+      OLD.opening_observation_instant != NEW.opening_observation_instant)
+BEGIN
+    SELECT RAISE(ABORT, 'Paper segment core configuration is immutable once activated');
+END;
+
+-- 15. Extend operations.kind and ledger_entries.entry_type validation triggers to include CASH_DISTRIBUTION
+DROP TRIGGER IF EXISTS validate_operation_kind_insert;
+CREATE TRIGGER validate_operation_kind_insert
+BEFORE INSERT ON operations
+WHEN NEW.kind NOT IN ('INITIAL_FUNDING', 'MIGRATION_OPENING', 'TRADE', 'SPLIT', 'CORRECTION', 'CASH_DISTRIBUTION')
+BEGIN
+    SELECT RAISE(ABORT, 'Invalid operation kind');
+END;
+
+DROP TRIGGER IF EXISTS validate_ledger_type_insert;
+CREATE TRIGGER validate_ledger_type_insert
+BEFORE INSERT ON ledger_entries
+WHEN NEW.entry_type NOT IN ('INITIAL_FUNDING', 'MIGRATION_OPENING', 'TRADE', 'SPLIT', 'CORRECTION', 'CASH_DISTRIBUTION')
+BEGIN
+    SELECT RAISE(ABORT, 'Invalid ledger entry type');
+END;
+

@@ -166,7 +166,7 @@ class PaperPortfolioIntegrationTest {
         paperPortfolioService.activatePortfolio(portfolioId, OWNER, "idemp-act-m5", actReq);
 
         // Step 3: Adopt dataset snapshot
-        dataReadinessService.adoptDataset(portfolioId, "ds-test-m5");
+        dataReadinessService.adoptDataset(portfolioId, "ds-test-m5", OWNER, "idemp-adopt-m5");
 
         // Step 4: Verify initial valuation snapshot is created with EUR 10,000.00
         PagedResponse<PaperValuationDto> vals = paperPortfolioService.listValuations(portfolioId, OWNER, 10, 0);
@@ -281,7 +281,7 @@ class PaperPortfolioIntegrationTest {
 
         assertTrue(entriesFound.contains("manifest.json"));
         assertTrue(entriesFound.contains("proposals.csv"));
-        assertTrue(entriesFound.contains("executions.csv"));
+        assertTrue(entriesFound.contains("execution_results.csv"));
         assertTrue(entriesFound.contains("valuations.csv"));
         assertTrue(entriesFound.contains("holdings.csv"));
 
@@ -295,5 +295,185 @@ class PaperPortfolioIntegrationTest {
         assertNotNull(assistantResp.message());
         assertFalse(assistantResp.factCards().isEmpty());
         assertFalse(assistantResp.evidenceReferences().isEmpty());
+    }
+
+    @Test
+    void multiPortfolioIsolationAndLegacyDemoIntegrity_scenario1() {
+        String owner = "scenario-1-owner";
+
+        // Create Paper Portfolio 1 (EUR 5000)
+        OperationService.PortfolioCreationResult p1 = operationService.createPortfolio(
+                owner, "Paper Portfolio 1", "PAPER", "EUR", new BigDecimal("5000.00"), "idemp-sc1-p1"
+        );
+        // Create Paper Portfolio 2 (EUR 7000)
+        OperationService.PortfolioCreationResult p2 = operationService.createPortfolio(
+                owner, "Paper Portfolio 2", "PAPER", "EUR", new BigDecimal("7000.00"), "idemp-sc1-p2"
+        );
+        // Create Legacy Demo Portfolio (EUR 20000)
+        OperationService.PortfolioCreationResult legacy = operationService.createPortfolio(
+                owner, "Legacy Demo", "LEGACY_DEMO", "EUR", new BigDecimal("20000.00"), "idemp-sc1-legacy"
+        );
+
+        // Verify isolation of cash and operations
+        BigDecimal cash1 = jdbcTemplate.queryForObject(
+                "SELECT cash_amount FROM portfolio_state WHERE portfolio_id = ?", BigDecimal.class, p1.portfolioId());
+        BigDecimal cash2 = jdbcTemplate.queryForObject(
+                "SELECT cash_amount FROM portfolio_state WHERE portfolio_id = ?", BigDecimal.class, p2.portfolioId());
+        BigDecimal legacyCash = jdbcTemplate.queryForObject(
+                "SELECT cash_amount FROM portfolio_state WHERE portfolio_id = ?", BigDecimal.class, legacy.portfolioId());
+
+        assertEquals(0, new BigDecimal("5000.00").compareTo(cash1));
+        assertEquals(0, new BigDecimal("7000.00").compareTo(cash2));
+        assertEquals(0, new BigDecimal("20000.00").compareTo(legacyCash));
+
+        // Activate and modify P1
+        ActivatePortfolioRequest actReq = new ActivatePortfolioRequest(
+                "ETF_BUY_HOLD_V1", "1.0.0", "uni-default", LISTING_ID, new CostPolicyDto("1.00", "0", "0"), "MANUAL"
+        );
+        paperPortfolioService.activatePortfolio(p1.portfolioId(), owner, "idemp-sc1-act", actReq);
+
+        // Verify P2 and Legacy Demo remain untouched
+        Integer p2Segments = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM paper_portfolio_segments WHERE portfolio_id = ?", Integer.class, p2.portfolioId());
+        Integer legacySegments = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM paper_portfolio_segments WHERE portfolio_id = ?", Integer.class, legacy.portfolioId());
+        assertEquals(0, p2Segments);
+        assertEquals(0, legacySegments);
+
+        BigDecimal legacyCashAfter = jdbcTemplate.queryForObject(
+                "SELECT cash_amount FROM portfolio_state WHERE portfolio_id = ?", BigDecimal.class, legacy.portfolioId());
+        assertEquals(0, legacyCash.compareTo(legacyCashAfter));
+    }
+
+    @Test
+    void exactArithmeticAffordability_scenario4() {
+        String owner = "scenario-4-owner";
+
+        // Step 1: Fund exactly EUR 1,000.00
+        OperationService.PortfolioCreationResult port = operationService.createPortfolio(
+                owner, "Exact Sizing Fund", "PAPER", "EUR", new BigDecimal("1000.00"), "idemp-sc4-create"
+        );
+        String portId = port.portfolioId();
+
+        // Step 2: Activate with EUR 1.00 commission, zero spread/slippage
+        ActivatePortfolioRequest actReq = new ActivatePortfolioRequest(
+                "ETF_BUY_HOLD_V1", "1.0.0", "uni-default", LISTING_ID, new CostPolicyDto("1.00", "0", "0"), "MANUAL"
+        );
+        paperPortfolioService.activatePortfolio(portId, owner, "idemp-sc4-act", actReq);
+        dataReadinessService.adoptDataset(portId, "ds-test-m5", owner, "idemp-sc4-adopt");
+
+        // Step 3: Evaluate -> generates proposal with 100% weight on IWDA.AS
+        PaperProposalDto prop = paperPortfolioService.evaluatePortfolio(portId, owner, "idemp-sc4-eval");
+        assertNotNull(prop);
+
+        // Step 4: Accept proposal
+        paperPortfolioService.acceptProposal(portId, prop.id(), owner, "idemp-sc4-acc", new AcceptProposalRequest("Accept scenario 4"));
+
+        // Simulate market open arrival
+        jdbcTemplate.update(
+                "UPDATE paper_execution_intents SET scheduled_open_instant = ? WHERE portfolio_id = ?",
+                SESSION_1 + "T09:00:00Z", portId
+        );
+
+        // Step 5: Process portfolio events:
+        // Raw open price is 100.00, cash is 1000.00. Sizing 10 units = 1000 + 1 fee = 1001 > 1000.
+        // Squeezed to 9 units. 9 * 100 = 900 + 1 commission = 901.00 total basis.
+        // Remaining cash = 1000.00 - 901.00 = 99.00 EUR.
+        paperPortfolioService.processPortfolioEvents(portId, owner, "idemp-sc4-proc-1");
+
+        BigDecimal cashAfterFill = jdbcTemplate.queryForObject(
+                "SELECT cash_amount FROM portfolio_state WHERE portfolio_id = ?", BigDecimal.class, portId);
+        BigDecimal positionQty = jdbcTemplate.queryForObject(
+                "SELECT quantity FROM positions WHERE portfolio_id = ? AND listing_id = ?", BigDecimal.class, portId, LISTING_ID);
+        BigDecimal costBasis = jdbcTemplate.queryForObject(
+                "SELECT total_acquisition_cost FROM positions WHERE portfolio_id = ? AND listing_id = ?", BigDecimal.class, portId, LISTING_ID);
+
+        assertEquals(0, new BigDecimal("99.00").compareTo(cashAfterFill), "Cash must be exactly EUR 99.00");
+        assertEquals(0, new BigDecimal("9").compareTo(positionQty), "Executed quantity must be exactly 9 units");
+        assertEquals(0, new BigDecimal("901.00").compareTo(costBasis), "Cost basis must be exactly EUR 901.00 (900 shares + 1 fee)");
+
+        // Step 6: Repeat processing is idempotent and leaves exactly 1 fill
+        paperPortfolioService.processPortfolioEvents(portId, owner, "idemp-sc4-proc-2");
+        Integer fillCount = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM paper_execution_results WHERE intent_id IN (SELECT id FROM paper_execution_intents WHERE portfolio_id = ?)",
+                Integer.class, portId
+        );
+        assertEquals(1, fillCount, "Repeat event processing must leave exactly one fill");
+    }
+
+    @Test
+    void assistantSecurityAndHoldoutIntegrity_scenario10() {
+        String owner = "scenario-10-owner";
+        String foreignOwner = "foreign-owner";
+
+        OperationService.PortfolioCreationResult port = operationService.createPortfolio(
+                owner, "Assistant Test Port", "PAPER", "EUR", new BigDecimal("1000.00"), "idemp-sc10-create"
+        );
+
+        // Foreign owner cannot query this portfolio
+        ChatRequest req = new ChatRequest(
+                "Show portfolio balance",
+                new ResearchContextDto("PORTFOLIO", port.portfolioId())
+        );
+        assertThrows(org.springframework.web.server.ResponseStatusException.class, () ->
+                assistantService.processQuery(foreignOwner, "idemp-sc10-foreign", req)
+        );
+
+        // Non-existent context throws 404
+        ChatRequest invalidReq = new ChatRequest(
+                "Show balance",
+                new ResearchContextDto("PORTFOLIO", "non-existent-id")
+        );
+        assertThrows(org.springframework.web.server.ResponseStatusException.class, () ->
+                assistantService.processQuery(owner, "idemp-sc10-invalid", invalidReq)
+        );
+    }
+
+    @Test
+    void boundedAuditZipComprehensiveVerification_scenario11() throws Exception {
+        String owner = "scenario-11-owner";
+        OperationService.PortfolioCreationResult port = operationService.createPortfolio(
+                owner, "Export Audit Port", "PAPER", "EUR", new BigDecimal("1000.00"), "idemp-sc11-create"
+        );
+        ActivatePortfolioRequest actReq = new ActivatePortfolioRequest(
+                "ETF_BUY_HOLD_V1", "1.0.0", "uni-default", LISTING_ID, new CostPolicyDto("1.00", "0", "0"), "MANUAL"
+        );
+        paperPortfolioService.activatePortfolio(port.portfolioId(), owner, "idemp-sc11-act", actReq);
+        dataReadinessService.adoptDataset(port.portfolioId(), "ds-test-m5", owner, "idemp-sc11-adopt");
+
+        byte[] zipBytes = paperExportService.createPaperAuditZip(port.portfolioId(), owner);
+        assertNotNull(zipBytes);
+        assertTrue(zipBytes.length > 0);
+
+        Set<String> entries = new HashSet<>();
+        try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(zipBytes))) {
+            ZipEntry entry;
+            while ((entry = zis.getNextEntry()) != null) {
+                entries.add(entry.getName());
+                byte[] data = zis.readAllBytes();
+                assertTrue(data.length > 0, "File " + entry.getName() + " in audit zip should not be empty");
+            }
+        }
+
+        List<String> requiredFiles = List.of(
+                "manifest.json",
+                "adoptions.csv",
+                "proposals.csv",
+                "proposal_items.csv",
+                "proposal_observations.csv",
+                "intents.csv",
+                "intent_transitions.csv",
+                "execution_results.csv",
+                "receivables.csv",
+                "corporate_actions.csv",
+                "valuations.csv",
+                "holdings.csv",
+                "mode_history.csv"
+        );
+
+        for (String expectedFile : requiredFiles) {
+            assertTrue(entries.contains(expectedFile), "Audit zip must contain " + expectedFile);
+        }
+        assertEquals(13, entries.size(), "Audit zip must contain exactly 13 files");
     }
 }

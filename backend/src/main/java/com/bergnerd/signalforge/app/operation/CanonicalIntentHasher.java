@@ -61,6 +61,44 @@ public final class CanonicalIntentHasher {
         return sha256(canonical);
     }
 
+    public static String hashSplit(
+            String portfolioId,
+            String listingId,
+            BigDecimal splitRatio
+    ) {
+        Objects.requireNonNull(portfolioId, "portfolioId must not be null");
+        Objects.requireNonNull(listingId, "listingId must not be null");
+        Objects.requireNonNull(splitRatio, "splitRatio must not be null");
+
+        String canonical = String.format(
+                "SPLIT|portfolio:%s|listing:%s|ratio:%s",
+                portfolioId.trim(),
+                listingId.trim(),
+                splitRatio.stripTrailingZeros().toPlainString()
+        );
+
+        return sha256(canonical);
+    }
+
+    public static String hashDistribution(
+            String portfolioId,
+            String actionId,
+            BigDecimal amount
+    ) {
+        Objects.requireNonNull(portfolioId, "portfolioId must not be null");
+        Objects.requireNonNull(actionId, "actionId must not be null");
+        Objects.requireNonNull(amount, "amount must not be null");
+
+        String canonical = String.format(
+                "DISTRIBUTION|portfolio:%s|action:%s|amount:%s",
+                portfolioId.trim(),
+                actionId.trim(),
+                amount.stripTrailingZeros().toPlainString()
+        );
+
+        return sha256(canonical);
+    }
+
     private static String sha256(String text) {
         try {
             MessageDigest md = MessageDigest.getInstance("SHA-256");

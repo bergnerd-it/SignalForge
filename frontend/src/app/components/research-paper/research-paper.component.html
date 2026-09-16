@@ -76,7 +76,12 @@
   <!-- Error Alert -->
   <div *ngIf="errorMessage" class="alert alert-danger">
     <span>{{ errorMessage }}</span>
-    <button class="alert-close" (click)="errorMessage = null">&times;</button>
+  </div>
+
+  <!-- Mode Change Notice -->
+  <div *ngIf="modeNotice" class="alert alert-info">
+    <span>{{ modeNotice }}</span>
+    <button class="alert-close" (click)="modeNotice = null">&times;</button>
   </div>
 
   <!-- KPI Cards Bar -->

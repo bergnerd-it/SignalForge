@@ -55,8 +55,17 @@ public class ResearchDtos {
             CostPolicyDto costPolicy,
 
             @NotBlank(message = "Approval mode is required (MANUAL or AUTO_PAPER)")
-            String approvalMode
-    ) {}
+            String approvalMode,
+
+            String datasetId
+    ) {
+        public ActivatePortfolioRequest(
+                String strategyId, String strategyVersion, String universeId,
+                String benchmarkListingId, CostPolicyDto costPolicy, String approvalMode
+        ) {
+            this(strategyId, strategyVersion, universeId, benchmarkListingId, costPolicy, approvalMode, null);
+        }
+    }
 
     public record AdoptDatasetRequest(
             @NotBlank(message = "Dataset ID is required")

@@ -240,8 +240,21 @@ export class ResearchService {
     });
   }
 
-  public exportAuditZip(id: string): void {
-    window.location.href = `/api/research/portfolios/${id}/export`;
+  public exportAuditZip(id: string): Observable<Blob> {
+    return this.http.get(`/api/research/portfolios/${id}/export`, { responseType: 'blob' }).pipe(
+      tap((blob) => {
+        if (typeof window !== 'undefined') {
+          const url = window.URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `paper-portfolio-${id}-audit.zip`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          window.URL.revokeObjectURL(url);
+        }
+      })
+    );
   }
 
   public sendAssistantChat(req: AssistantChatRequest): Observable<AssistantChatResponse> {

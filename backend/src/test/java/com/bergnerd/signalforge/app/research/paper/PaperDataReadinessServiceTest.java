@@ -14,6 +14,7 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
@@ -25,13 +26,19 @@ class PaperDataReadinessServiceTest {
     @Mock
     private JdbcTemplate jdbcTemplate;
 
+    @Mock
+    private PaperAuditRecorder auditRecorder;
+
+    @Mock
+    private PaperMutationService mutationService;
+
     private Clock clock;
     private PaperDataReadinessService readinessService;
 
     @BeforeEach
     void setUp() {
         clock = Clock.fixed(Instant.parse("2026-09-15T12:00:00Z"), ZoneOffset.UTC);
-        readinessService = new PaperDataReadinessService(jdbcTemplate, clock);
+        readinessService = new PaperDataReadinessService(jdbcTemplate, clock, auditRecorder, mutationService);
     }
 
     @Test
@@ -60,15 +67,23 @@ class PaperDataReadinessServiceTest {
 
     @Test
     void checkReadiness_whenCalendarHasSessions_returnsReadyWithCompletedAndNextSession() {
-        when(jdbcTemplate.queryForList(anyString(), eq("port-1")))
+        when(jdbcTemplate.queryForList(contains("paper_portfolio_segments"), eq("port-1")))
                 .thenReturn(List.of(Map.of(
                         "id", "seg-1",
                         "strategy_id", "ETF_BUY_HOLD_V1",
                         "universe_id", "uni-1",
+                        "benchmark_listing_id", "list-1",
                         "adopted_dataset_id", "ds-1"
                 )));
-        when(jdbcTemplate.queryForList(anyString(), eq(String.class), eq("ds-1")))
-                .thenReturn(List.of("2026-09-12", "2026-09-15"));
+        when(jdbcTemplate.queryForList(contains("dataset_sessions"), eq("ds-1")))
+                .thenReturn(List.of(
+                        Map.of("session_date", "2026-09-12", "open_time", "09:00:00", "close_time", "17:30:00"),
+                        Map.of("session_date", "2026-09-15", "open_time", "09:00:00", "close_time", "17:30:00")
+                ));
+        when(jdbcTemplate.queryForList(contains("universe_listings"), eq(String.class), eq("uni-1")))
+                .thenReturn(List.of("list-1"));
+        when(jdbcTemplate.queryForObject(contains("historical_bars"), eq(Integer.class), eq("ds-1"), eq("list-1"), eq("2026-09-12")))
+                .thenReturn(1);
 
         ReadinessResult result = readinessService.checkReadiness("port-1");
         assertTrue(result.isReady());
@@ -107,7 +122,9 @@ class PaperDataReadinessServiceTest {
 
     @Test
     void adoptDataset_throwsBadRequestWhenNoActiveSegment() {
-        when(jdbcTemplate.queryForList(anyString(), eq("port-no-seg")))
+        when(mutationService.checkMutation(anyString(), anyString(), anyString(), anyString()))
+                .thenReturn(Optional.empty());
+        when(jdbcTemplate.queryForList(contains("paper_portfolio_segments"), eq("port-no-seg"), eq("default")))
                 .thenReturn(List.of());
 
         assertThrows(ResponseStatusException.class, () ->

@@ -138,15 +138,15 @@ All business decisions, proposals, and scheduled executions use an injectable `C
 - **Command:** `./gradlew clean test` in `backend/`
 - **Result:**
   ```text
-  BUILD SUCCESSFUL in 12s
+  BUILD SUCCESSFUL in 10s
   5 actionable tasks: 5 executed
-  187 tests completed, 0 failed
+  191 tests completed, 0 failed
   ```
 - **Key Test Slices:**
   - `PaperDataReadinessServiceTest`: 4/4 passed.
   - `ResearchPortfolioControllerTest`: 3/3 passed.
   - `ResearchAssistantControllerTest`: 1/1 passed.
-  - `PaperPortfolioIntegrationTest`: 2/2 passed (schema validation & full lifecycle with 8-thread barrier).
+  - `PaperPortfolioIntegrationTest`: 6/6 passed (schema validation, full lifecycle with 8-thread barrier, Scenario 1 multi-portfolio isolation, Scenario 4 exact EUR 1,000 / 9-unit arithmetic, Scenario 10 assistant security & holdout integrity, Scenario 11 bounded 13-file audit ZIP export).
   - `MigrationRecoveryIntegrationTest`: passed (all schema migrations V1-V12).
 
 ### 7.2 Frontend Test & Build Verification
@@ -155,13 +155,13 @@ All business decisions, proposals, and scheduled executions use an injectable `C
   ```text
   Test Files  4 passed (4)
        Tests  48 passed (48)
-    Duration  964ms
+    Duration  978ms
   ```
   - `research-paper.component.spec.ts`: 4/4 passed.
-- **Production Build:** `npm run build` in `frontend/`
+- **Production Build:** `npm run build -- --configuration production` in `frontend/`
   ```text
-  Application bundle generation complete. [2.162 seconds]
-  Initial chunk total: 614.35 kB
+  Application bundle generation complete. [2.173 seconds]
+  Initial chunk total: 615.94 kB
   Exit Code: 0
   ```
 
@@ -174,13 +174,18 @@ All business decisions, proposals, and scheduled executions use an injectable `C
 | **M4 Baseline Preservation** | **PASS** | Checked out at `m4-checkpoint`, all M4 tests preserved and passing |
 | **V12 Migration & Schema** | **PASS** | Clean migration, foreign keys enforced, triggers verified |
 | **Paper Portfolio Lifecycle** | **PASS** | Creation, activation, readiness, proposal, CAS acceptance, fills |
+| **Scenario 1 Multi-Portfolio Isolation** | **PASS** | `multiPortfolioIsolationAndLegacyDemoIntegrity_scenario1` passing |
+| **Scenario 4 Exact Arithmetic (EUR 1,000 / 9 units / EUR 99 cash)** | **PASS** | `exactArithmeticAffordability_scenario4` passing with 1 fill on repeat |
 | **Corporate Action Ledger** | **PASS** | Splits, pending receivables, payment date settlement, idempotency |
 | **Concurrency Barrier (8 Threads)** | **PASS** | Exactly 1 success, 7 conflicts, zero double fills |
 | **Downtime Recovery** | **PASS** | Coordinator recovers pending intents, marks missed windows |
-| **Grounded AI Assistant** | **PASS** | Typed read tools, owner scoping, fact cards, evidence links |
-| **Audit ZIP Export** | **PASS** | Verified `manifest.json`, `proposals.csv`, `executions.csv`, `valuations.csv`, `holdings.csv` |
-| **Full Test Suites (187 Java, 48 TS)** | **PASS** | Zero test failures across backend and frontend |
-| **Frontend Production Build** | **PASS** | Completed with exit code 0 on Node 24.21.0 |
+| **Grounded AI Assistant Security** | **PASS** | `assistantSecurityAndHoldoutIntegrity_scenario10` passing; typed read tools, owner scoping |
+| **Audit ZIP Export (13 Files)** | **PASS** | `boundedAuditZipComprehensiveVerification_scenario11` passing: `manifest.json` + 12 CSVs |
+| **Full Test Suites (191 Java, 48 TS)** | **PASS** | Zero test failures across backend (191/191) and frontend (48/48) |
+| **Frontend Production Build (Node 24.21.0)** | **PASS** | Completed with exit code 0 in 2.173s on declared toolchain |
+| **Native Browser Walkthrough** | **NOT VERIFIED** | CDP subagent protocol error (`Browser.setDownloadBehavior: Browser context management is not supported`) on port 9222 |
+| **Live External LLM Provider** | **NOT VERIFIED** | Unconfigured real external provider; deterministic and mock fallbacks verified |
+| **Docker Container Deployment** | **NOT VERIFIED** | Container environment deferred per M5 plan |
 | **External Live Brokerage (M6)** | **NOT STARTED** | Strictly deferred to M6 as required by prompt |
 
 ---

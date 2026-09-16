@@ -200,7 +200,10 @@ public class ResearchPortfolioController {
     ) {
         String uid = normalizeUser(ownerId);
         validatePortfolioOwnership(id, uid);
-        PaperDataReadinessService.DatasetAdoptionResult result = dataReadinessService.adoptDataset(id, request.datasetId());
+        String effectiveKey = (idempotencyKey != null && !idempotencyKey.isBlank())
+                ? idempotencyKey.trim()
+                : "adopt-" + java.util.UUID.randomUUID();
+        PaperDataReadinessService.DatasetAdoptionResult result = dataReadinessService.adoptDataset(id, request.datasetId(), uid, effectiveKey);
         return ResponseEntity.ok(result);
     }
 
@@ -411,7 +414,7 @@ public class ResearchPortfolioController {
             );
 
             PaperDataReadinessService.ReadinessResult ready = dataReadinessService.checkReadiness(view.id());
-            readinessStatus = ready.status();
+            readinessStatus = ready.ready() ? "READY" : (ready.reasonCode() != null ? ready.reasonCode() : "NOT_READY");
         }
 
         Integer pendingProps = jdbcTemplate.queryForObject(

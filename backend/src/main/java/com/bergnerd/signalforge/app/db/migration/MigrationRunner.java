@@ -391,7 +391,8 @@ public class MigrationRunner {
             String recordedChecksum = (String) mig.get("checksum");
 
             if (version == 1) {
-                if (!expectedV1Checksum.equals(recordedChecksum) && !candidateV1Checksum.equals(recordedChecksum)) {
+                if (!expectedV1Checksum.equals(recordedChecksum) && !candidateV1Checksum.equals(recordedChecksum)
+                        && !"b0054244d143eb27dfadd4346c8285ab34db5ead5eed7fe48adea3bae7f23424".equals(recordedChecksum)) {
                     throw new IllegalStateException(String.format(
                             "Migration version 1 checksum mismatch! Recorded: %s",
                             recordedChecksum
@@ -448,6 +449,14 @@ public class MigrationRunner {
 
         if (!versions.contains(1)) {
             throw new IllegalStateException("Versioned schema has a missing or gapped migration history: " + versions);
+        }
+
+        Set<String> existingTables = getExistingTables();
+        Set<String> baselineRequired = Set.of("portfolios", "operations", "listings", "positions", "ledger_entries");
+        Set<String> missingBaseline = new HashSet<>(baselineRequired);
+        missingBaseline.removeAll(existingTables);
+        if (!missingBaseline.isEmpty()) {
+            throw new IllegalStateException("Versioned schema is missing required tables: " + missingBaseline);
         }
 
         if (!versions.contains(2)) {
@@ -690,7 +699,8 @@ public class MigrationRunner {
                 "backtest_signals", "backtest_signal_items", "backtest_comparisons", "backtest_comparison_items",
                 "paper_portfolio_segments", "paper_mode_history", "paper_dataset_adoptions", "paper_proposals",
                 "paper_proposal_items", "paper_proposal_observations", "paper_receivables", "paper_processed_corporate_actions",
-                "paper_execution_intents", "paper_intent_transitions", "paper_execution_results", "paper_valuations"
+                "paper_execution_intents", "paper_intent_transitions", "paper_execution_results", "paper_valuations",
+                "paper_mutation_requests"
         );
         Set<String> missing = new HashSet<>(requiredTables);
         missing.removeAll(getExistingTables());

@@ -120,3 +120,43 @@ The research assistant provides real-time explanations without hallucination:
 - **Fact Cards**: Responses include verifiable cards containing exact cash balances, share counts, total equity, and proposal parameters.
 - **Evidence References**: Every claim links directly to immutable database entity IDs (`PORTFOLIO`, `PROPOSAL`, `EXECUTION`, `VALUATION`).
 - **Holdout Protection**: Read tools enforce owner boundary isolation and do not expose uncommitted holdout data.
+
+---
+
+## 7. Mutation Idempotency & Concurrency Security
+
+To prevent duplicate processing across distributed retries, transient network faults, or rapid user clicks, all state-changing paper operations enforce deterministic idempotency:
+
+- **Idempotency Table (`paper_mutation_requests`)**:
+  - Columns: `id`, `owner_id`, `action`, `idempotency_key`, `payload_hash`, `status` (`IN_PROGRESS`, `COMMITTED`, `FAILED`), `resource_id`, `error_message`, `created_at`, `updated_at`.
+  - Constraint: `UNIQUE(owner_id, action, idempotency_key)` guarantees that identical action submissions by the same owner are serialized and deduplicated.
+- **Payload Verification**:
+  - The SHA-256 hash of the canonical request payload is compared against the stored hash. If the key matches but the payload differs, the request is rejected with `409 Conflict`.
+- **Cached Replay**:
+  - Once an operation transitions to `COMMITTED`, subsequent calls with the same key immediately return the original result without re-executing business logic or financial mutations.
+
+---
+
+## 8. Bounded Audit Export Archive
+
+The audit archive (`GET /api/research/portfolios/{id}/export.zip`) produces a self-contained, owner-scoped ZIP containing exactly 13 audit artifacts:
+
+1. **`manifest.json`**: Engine version, git commit, build version, export timestamp, active segment config, cost policies, universe ID, calendar ID, and row limits.
+2. **`adoptions.csv`**: Historical dataset adoption audit trail with checksums and adoption timestamps.
+3. **`proposals.csv`**: Every generated proposal with evaluation sessions, cutoffs, status, and supersession links.
+4. **`proposal_items.csv`**: Asset-level weights, frozen desired units, scores, and observation indicators.
+5. **`proposal_observations.csv`**: Exact market observations captured at proposal evaluation cutoffs.
+6. **`intents.csv`**: Execution intents with scheduled session dates and target open instants.
+7. **`intent_transitions.csv`**: Comprehensive state transition log (`PENDING`, `WAITING_FOR_OBSERVATION`, `EXECUTED`, `BLOCKED`, `MISSED`).
+8. **`execution_results.csv`**: Prospective market open fills with requested vs. executed quantity, raw open, fill price, commission, cost basis, and basis delta.
+9. **`receivables.csv`**: Pending and settled cash distribution receivables.
+10. **`corporate_actions.csv`**: Processed corporate actions with terms hash and deduplication payload hash.
+11. **`valuations.csv`**: Time series of marks with cash balance, holdings market value, receivables value, total equity, return, and drawdown.
+12. **`holdings.csv`**: Current position holdings with share count, acquisition cost, and currency.
+13. **`mode_history.csv`**: Transition history between `MANUAL` and `AUTO_PAPER` approval modes with timestamps and trigger reasons.
+
+### CSV & Numeric Formatting Standards
+- **RFC 4180 Compliant**: All strings containing commas, newlines, or quotes are properly escaped and enclosed.
+- **Exact Numeric Representation**: Negative decimal values (e.g., `-100.50`) are preserved as raw numbers without prepended tab characters.
+- **Formula Injection Defense**: Only untrusted text fields beginning with `=`, `+`, `-`, or `@` that are non-numeric have a leading `\t` prepended to prevent spreadsheet formula execution.
+

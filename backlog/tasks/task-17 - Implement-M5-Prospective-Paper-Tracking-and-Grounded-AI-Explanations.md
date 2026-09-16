@@ -5,13 +5,14 @@ status: Done
 assignee:
   - '@antigravity'
 created_date: '2026-09-15 07:34'
-updated_date: '2026-09-15 14:14'
+updated_date: '2026-09-15 19:37'
 labels: []
 dependencies:
   - TASK-16
 references:
   - planning/PROMPT-SIGNALFORGE-M5.md
   - planning/SIGNALFORGE-SPEC-v1.0.md
+  - planning/M5-implementation_plan-fixes.md
 priority: high
 ordinal: 17000
 ---
@@ -38,20 +39,31 @@ Implement M5 in SignalForge: prospective paper tracking for separate EUR portfol
 ## Implementation Plan
 
 <!-- SECTION:PLAN:BEGIN -->
-1. Confirm M4 baseline and git tag m4-checkpoint (completed).
-2. Author V12 migration for paper_portfolio_segments, paper_proposals, paper_proposal_items, paper_execution_intents, paper_execution_results, paper_receivables, paper_processed_corporate_actions, and paper_valuations with immutability triggers.
-3. Add ClockConfig with injectable Clock bean; implement PaperDataReadinessService for calendar coverage and snapshot validation.
-4. Implement PaperPortfolioService integrating with core OperationService for atomic executions, CAS proposal state machine, and corporate actions.
-5. Implement PaperExecutionCoordinator for AUTO_PAPER mode, pre-open scheduling, and downtime recovery.
-6. Implement ResearchAssistantService with discriminated typed tools, owner checks, holdout exposure tracking, and fact cards.
-7. Extend ResearchPortfolioController with paged list, activation, adoption, evaluation, accept/reject, mode toggle, export, and assistant endpoints.
-8. Extend frontend research.service.ts and build ResearchPaperComponent at /research/portfolios/:id with proposal review, mode controls, and audit export.
-9. Implement unit tests (readiness, lifecycle, allocator), slice tests (WebMvcTest), integration tests (PaperPortfolioIntegrationTest with controlled clock, barriers, recovery, upgrade), and frontend Vitest specs.
-10. Execute full verification suite, declared Node 24.21.0 production build, native browser walkthrough, and deliver paper-tracking.md and research-M5.md.
+M5 Remediation per planning/M5-implementation_plan-fixes.md:
+1. Revise V12 schema & state machines (constraints, immutability triggers, paper_mutation_requests, aggregate integrity).
+2. Shared strategy evaluation & opening allocator (TotalReturnSignalIndexCalculator, StrategyEvaluator S1/S2/S3, frozen decisions, rebalance allocator).
+3. Exact accounting, corporate actions, valuations (AccountingCore/OperationService applySplit & creditCashDistribution, historical_actions scanner, receivables, true equity valuations).
+4. Readiness, adoption, calendars, and time (injected Clock, validation status, bars/actions coverage, REQUIRES_NEW rejection audit).
+5. Idempotency, serialization, recovery (paper_mutation_requests, per-portfolio locks, multi-owner recovery, WAITING_FOR_OBSERVATION, MISSED).
+6. Grounded research assistant (typed read tools, fact cards, evidence IDs, holdout protection, unavailable states).
+7. Owner-scoped API and Angular UI (:id route binding, strict typing, full state views, diagnose npm run build exit 134).
+8. Complete bounded audit export (manifest, 9 CSVs, streaming/chunked, exact decimals, formula protection).
+9. Focused verification (12 automated scenarios, controlled Clock, spotlessApply, gradlew clean test, npm test, npm run build production).
+10. Native browser walkthrough & closeout (disposable seeded SQLite, downloaded ZIP inspection, M4 inherited checks, research-M5.md).
 <!-- SECTION:PLAN:END -->
+
+## Comments
+
+<!-- COMMENTS:BEGIN -->
+author: @codex
+created: 2026-09-15 15:44
+---
+Reopened after independent M5 review. The remediation plan was revised to resolve future-open sizing, migration policy, accounting API, corporate-action identity, readiness/time, idempotency, recovery, UI/export, and verification gaps.
+---
+<!-- COMMENTS:END -->
 
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-Implemented M5 prospective paper tracking in EUR, V12 schema migrations, CAS proposal lifecycle, corporate action receivables, AUTO_PAPER execution coordinator, grounded AI assistant with fact cards/evidence references, full frontend UI at /research/portfolios/:id, paper audit ZIP/CSV export, docs/paper-tracking.md, and planning/reports/research-M5.md. Verified with 187 backend tests (including 8-thread concurrency barrier and populated V12 migration recovery), 48 frontend Vitest tests, and Angular production build on declared Node 24.21.0.
+Implemented M5 Prospective Paper Tracking and Grounded AI Explanations per revised plan M5-implementation_plan-fixes.md. Remediated all code review findings: V12 migration triggers and paper_mutation_requests idempotency, shared strategy evaluator and frozen desired-units sizing, AccountingCore applySplit and creditCashDistribution with cash distribution receivables, server Clock authority and data readiness validation, bounded 13-file audit export with RFC 4180 escaping and negative decimal preservation, grounded AI research assistant with typed read tools and owner isolation, Angular frontend with route parameter resolution and blob download. Verified with 191/191 passing backend tests, 48/48 passing frontend tests, and production build in 2.173s on declared Node 24.21.0 toolchain.
 <!-- SECTION:FINAL_SUMMARY:END -->

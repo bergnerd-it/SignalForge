@@ -575,20 +575,258 @@ public class OperationService {
         return listingId;
     }
 
-    private String resolveResearchListing(String ticker, String currency) {
+    private String resolveResearchListing(String tickerOrListingId, String currency) {
         try {
             return jdbcTemplate.queryForObject(
-                    "SELECT id FROM listings WHERE symbol = ? AND quote_currency = ? AND identity_status = 'RESOLVED'",
+                    "SELECT id FROM listings WHERE (symbol = ? OR id = ? OR LOWER(id) = LOWER(?)) AND quote_currency = ? AND identity_status = 'RESOLVED' LIMIT 1",
                     String.class,
-                    ticker, currency
+                    tickerOrListingId, tickerOrListingId, tickerOrListingId, currency
             );
         } catch (EmptyResultDataAccessException e) {
-            throw new IllegalArgumentException("Resolved research listing unavailable for " + ticker + " " + currency);
+            throw new IllegalArgumentException("Resolved research listing unavailable for " + tickerOrListingId + " " + currency);
         }
     }
 
     void setFailureInjector(Consumer<String> failureInjector) {
         this.failureInjector = failureInjector == null ? ignored -> {} : failureInjector;
+    }
+
+    public record SplitResult(
+            String operationId,
+            String portfolioId,
+            String listingId,
+            String splitRatio,
+            String oldQuantity,
+            String newQuantity,
+            String totalBasis,
+            String executedAt,
+            boolean isRetry
+    ) {
+        public SplitResult asRetry() {
+            return new SplitResult(operationId, portfolioId, listingId, splitRatio, oldQuantity, newQuantity, totalBasis, executedAt, true);
+        }
+    }
+
+    public record CashDistributionResult(
+            String operationId,
+            String portfolioId,
+            String listingId,
+            String actionId,
+            String amount,
+            String remainingCash,
+            String executedAt,
+            boolean isRetry
+    ) {
+        public CashDistributionResult asRetry() {
+            return new CashDistributionResult(operationId, portfolioId, listingId, actionId, amount, remainingCash, executedAt, true);
+        }
+    }
+
+    public SplitResult applySplit(
+            String portfolioId,
+            String listingId,
+            BigDecimal splitRatio,
+            String idempotencyKey,
+            String businessAt
+    ) {
+        if (idempotencyKey == null || idempotencyKey.isBlank()) {
+            throw new IdempotencyExceptions.MissingIdempotencyKeyException("Idempotency key is required for split operation");
+        }
+        if (splitRatio == null || splitRatio.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new IllegalArgumentException("Split ratio must be positive");
+        }
+        String canonicalHash = CanonicalIntentHasher.hashSplit(portfolioId, listingId, splitRatio);
+
+        try {
+            Map<String, Object> opRow = jdbcTemplate.queryForMap(
+                    "SELECT payload_hash, result_json FROM operations WHERE portfolio_id = ? AND kind = 'SPLIT' AND idempotency_key = ?",
+                    portfolioId, idempotencyKey
+            );
+            if (!canonicalHash.equals(opRow.get("payload_hash"))) {
+                throw new IdempotencyExceptions.IdempotencyConflictException("Conflicting reuse of split idempotency key: " + idempotencyKey);
+            }
+            return deserializeSplitResult((String) opRow.get("result_json")).asRetry();
+        } catch (EmptyResultDataAccessException ignored) {}
+
+        writerLock.lock();
+        try {
+            return executeWithBusyRetry(() -> transactionTemplate.execute(status -> {
+                try {
+                    Map<String, Object> opRow = jdbcTemplate.queryForMap(
+                            "SELECT payload_hash, result_json FROM operations WHERE portfolio_id = ? AND kind = 'SPLIT' AND idempotency_key = ?",
+                            portfolioId, idempotencyKey
+                    );
+                    if (!canonicalHash.equals(opRow.get("payload_hash"))) {
+                        throw new IdempotencyExceptions.IdempotencyConflictException("Conflicting reuse of split idempotency key: " + idempotencyKey);
+                    }
+                    return deserializeSplitResult((String) opRow.get("result_json")).asRetry();
+                } catch (EmptyResultDataAccessException ignored) {}
+
+                String opId = "op-" + UUID.randomUUID();
+                String now = businessAt != null ? businessAt : Instant.now().toString();
+
+                BigDecimal oldQty = BigDecimal.ZERO;
+                BigDecimal basis = BigDecimal.ZERO;
+                List<Map<String, Object>> posRows = jdbcTemplate.queryForList(
+                        "SELECT quantity, total_acquisition_cost FROM positions WHERE portfolio_id = ? AND listing_id = ?",
+                        portfolioId, listingId
+                );
+                if (!posRows.isEmpty()) {
+                    oldQty = new BigDecimal((String) posRows.get(0).get("quantity"));
+                    basis = new BigDecimal((String) posRows.get(0).get("total_acquisition_cost"));
+                }
+
+                AccountingCore.AccountingDelta delta = AccountingCore.split(
+                        new AccountingCore.AccountingState(BigDecimal.ZERO, oldQty, basis), splitRatio
+                );
+                BigDecimal newQty = delta.newState().quantity();
+
+                SplitResult result = new SplitResult(
+                        opId, portfolioId, listingId, splitRatio.toPlainString(),
+                        oldQty.toPlainString(), newQty.toPlainString(), basis.toPlainString(), now, false
+                );
+
+                String resultJson;
+                try {
+                    resultJson = objectMapper.writeValueAsString(result);
+                } catch (Exception e) {
+                    throw new IllegalStateException("Failed to serialize split result", e);
+                }
+
+                jdbcTemplate.update(
+                        "INSERT INTO operations (id, portfolio_id, kind, idempotency_key, payload_hash, result_json, business_at, created_at) VALUES (?, ?, 'SPLIT', ?, ?, ?, ?, ?)",
+                        opId, portfolioId, idempotencyKey, canonicalHash, resultJson, now, now
+                );
+
+                if (posRows.isEmpty()) {
+                    jdbcTemplate.update(
+                            "INSERT INTO positions (portfolio_id, listing_id, quantity, total_acquisition_cost, updated_at) VALUES (?, ?, ?, ?, ?)",
+                            portfolioId, listingId, newQty.toPlainString(), basis.toPlainString(), now
+                    );
+                } else {
+                    jdbcTemplate.update(
+                            "UPDATE positions SET quantity = ?, updated_at = ? WHERE portfolio_id = ? AND listing_id = ?",
+                            newQty.toPlainString(), now, portfolioId, listingId
+                    );
+                }
+
+                jdbcTemplate.update(
+                        "INSERT INTO ledger_entries (id, portfolio_id, operation_id, sequence, entry_type, listing_id, signed_quantity_delta, signed_cash_delta, acquisition_cost_delta, currency, business_at, recorded_at) VALUES (?, ?, ?, 1, 'SPLIT', ?, ?, '0.00', '0.00', 'EUR', ?, ?)",
+                        "ledger-" + UUID.randomUUID(), portfolioId, opId, listingId, delta.quantityDelta().toPlainString(), now, now
+                );
+
+                return result;
+            }));
+        } finally {
+            writerLock.unlock();
+        }
+    }
+
+    public CashDistributionResult creditCashDistribution(
+            String portfolioId,
+            String listingId,
+            String actionId,
+            BigDecimal amount,
+            String idempotencyKey,
+            String businessAt
+    ) {
+        if (idempotencyKey == null || idempotencyKey.isBlank()) {
+            throw new IdempotencyExceptions.MissingIdempotencyKeyException("Idempotency key is required for distribution operation");
+        }
+        if (amount == null || amount.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new IllegalArgumentException("Distribution amount must be positive");
+        }
+        String canonicalHash = CanonicalIntentHasher.hashDistribution(portfolioId, actionId, amount);
+
+        try {
+            Map<String, Object> opRow = jdbcTemplate.queryForMap(
+                    "SELECT payload_hash, result_json FROM operations WHERE portfolio_id = ? AND kind = 'CASH_DISTRIBUTION' AND idempotency_key = ?",
+                    portfolioId, idempotencyKey
+            );
+            if (!canonicalHash.equals(opRow.get("payload_hash"))) {
+                throw new IdempotencyExceptions.IdempotencyConflictException("Conflicting reuse of distribution idempotency key: " + idempotencyKey);
+            }
+            return deserializeDistributionResult((String) opRow.get("result_json")).asRetry();
+        } catch (EmptyResultDataAccessException ignored) {}
+
+        writerLock.lock();
+        try {
+            return executeWithBusyRetry(() -> transactionTemplate.execute(status -> {
+                try {
+                    Map<String, Object> opRow = jdbcTemplate.queryForMap(
+                            "SELECT payload_hash, result_json FROM operations WHERE portfolio_id = ? AND kind = 'CASH_DISTRIBUTION' AND idempotency_key = ?",
+                            portfolioId, idempotencyKey
+                    );
+                    if (!canonicalHash.equals(opRow.get("payload_hash"))) {
+                        throw new IdempotencyExceptions.IdempotencyConflictException("Conflicting reuse of distribution idempotency key: " + idempotencyKey);
+                    }
+                    return deserializeDistributionResult((String) opRow.get("result_json")).asRetry();
+                } catch (EmptyResultDataAccessException ignored) {}
+
+                String opId = "op-" + UUID.randomUUID();
+                String now = businessAt != null ? businessAt : Instant.now().toString();
+
+                Map<String, Object> stateRow = jdbcTemplate.queryForMap(
+                        "SELECT cash_amount, revision FROM portfolio_state WHERE portfolio_id = ?", portfolioId
+                );
+                BigDecimal currentCash = new BigDecimal((String) stateRow.get("cash_amount"));
+                int currentRevision = ((Number) stateRow.get("revision")).intValue();
+
+                AccountingCore.AccountingDelta delta = AccountingCore.creditCashDistribution(
+                        new AccountingCore.AccountingState(currentCash, BigDecimal.ZERO, BigDecimal.ZERO), amount
+                );
+                BigDecimal newCash = delta.newState().cash();
+
+                CashDistributionResult result = new CashDistributionResult(
+                        opId, portfolioId, listingId, actionId, amount.toPlainString(), newCash.toPlainString(), now, false
+                );
+
+                String resultJson;
+                try {
+                    resultJson = objectMapper.writeValueAsString(result);
+                } catch (Exception e) {
+                    throw new IllegalStateException("Failed to serialize distribution result", e);
+                }
+
+                jdbcTemplate.update(
+                        "INSERT INTO operations (id, portfolio_id, kind, idempotency_key, payload_hash, result_json, business_at, created_at) VALUES (?, ?, 'CASH_DISTRIBUTION', ?, ?, ?, ?, ?)",
+                        opId, portfolioId, idempotencyKey, canonicalHash, resultJson, now, now
+                );
+
+                int updatedState = jdbcTemplate.update(
+                        "UPDATE portfolio_state SET cash_amount = ?, revision = revision + 1 WHERE portfolio_id = ? AND revision = ?",
+                        newCash.toPlainString(), portfolioId, currentRevision
+                );
+                if (updatedState == 0) {
+                    throw new IllegalStateException("Concurrent state conflict on portfolio " + portfolioId);
+                }
+
+                jdbcTemplate.update(
+                        "INSERT INTO ledger_entries (id, portfolio_id, operation_id, sequence, entry_type, listing_id, signed_quantity_delta, signed_cash_delta, acquisition_cost_delta, currency, business_at, recorded_at) VALUES (?, ?, ?, 1, 'CASH_DISTRIBUTION', ?, '0', ?, '0.00', 'EUR', ?, ?)",
+                        "ledger-" + UUID.randomUUID(), portfolioId, opId, listingId, delta.cashDelta().toPlainString(), now, now
+                );
+
+                return result;
+            }));
+        } finally {
+            writerLock.unlock();
+        }
+    }
+
+    private SplitResult deserializeSplitResult(String resultJson) {
+        try {
+            return objectMapper.readValue(resultJson, SplitResult.class);
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("Failed to deserialize cached split result", e);
+        }
+    }
+
+    private CashDistributionResult deserializeDistributionResult(String resultJson) {
+        try {
+            return objectMapper.readValue(resultJson, CashDistributionResult.class);
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("Failed to deserialize cached distribution result", e);
+        }
     }
 
     private TradeExecutionResult deserializeTradeResult(String resultJson) {

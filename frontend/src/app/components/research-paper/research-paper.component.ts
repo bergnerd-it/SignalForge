@@ -9,6 +9,7 @@ import {
   PaperProposal,
   PaperValuation,
   PaperModeHistory,
+  AssistantChatRequest,
   AssistantChatResponse,
   FactCard,
   EvidenceReference,
@@ -31,6 +32,7 @@ export class ResearchPaperComponent implements OnInit, OnDestroy {
   public activeTab: 'proposals' | 'valuations' | 'positions' | 'modeHistory' | 'assistant' = 'proposals';
   public isLoading: boolean = false;
   public errorMessage: string | null = null;
+  public modeNotice: string | null = null;
 
   // New portfolio modal
   public showCreateModal: boolean = false;
@@ -59,10 +61,20 @@ export class ResearchPaperComponent implements OnInit, OnDestroy {
   constructor(public readonly researchService: ResearchService) {}
 
   ngOnInit(): void {
+    const initialRouteId = this.extractPortfolioIdFromUrl();
+    if (initialRouteId) {
+      this.researchService.selectPortfolio(initialRouteId);
+    }
+
+    if (typeof window !== 'undefined') {
+      window.addEventListener('popstate', this.handlePopState);
+    }
+
     this.subscriptions.add(
       this.researchService.portfolios$.subscribe((list) => {
         this.portfolios = list;
-        if (list.length > 0 && !this.selectedPortfolio) {
+        const currentRouteId = this.extractPortfolioIdFromUrl();
+        if (list.length > 0 && !this.selectedPortfolio && !currentRouteId) {
           this.researchService.selectPortfolio(list[0].id);
         }
       })
@@ -71,6 +83,7 @@ export class ResearchPaperComponent implements OnInit, OnDestroy {
     this.subscriptions.add(
       this.researchService.selectedPortfolio$.subscribe((detail) => {
         this.selectedPortfolio = detail;
+        this.assistantResponse = null; // Clear context-specific evidence on portfolio switch
         if (detail) {
           this.researchService.loadProposals(detail.id);
           this.researchService.loadValuations(detail.id);
@@ -111,10 +124,29 @@ export class ResearchPaperComponent implements OnInit, OnDestroy {
   }
 
   ngOnDestroy(): void {
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('popstate', this.handlePopState);
+    }
     this.subscriptions.unsubscribe();
   }
 
+  private handlePopState = (): void => {
+    const id = this.extractPortfolioIdFromUrl();
+    if (id) {
+      this.researchService.selectPortfolio(id);
+    }
+  };
+
+  private extractPortfolioIdFromUrl(): string | null {
+    if (typeof window === 'undefined') return null;
+    const match = window.location.pathname.match(/\/research\/portfolios\/([a-zA-Z0-9_-]+)/);
+    return match ? match[1] : null;
+  }
+
   public onSelectPortfolio(id: string): void {
+    if (typeof window !== 'undefined') {
+      window.history.pushState({}, '', '/research/portfolios/' + id);
+    }
     this.researchService.selectPortfolio(id);
   }
 
@@ -126,8 +158,11 @@ export class ResearchPaperComponent implements OnInit, OnDestroy {
       baseCurrency: 'EUR',
       initialCash: this.newPortCash.trim(),
     }).subscribe({
-      next: () => {
+      next: (created) => {
         this.showCreateModal = false;
+        if (created?.id) {
+          this.onSelectPortfolio(created.id);
+        }
       },
       error: (err) => {
         this.errorMessage = 'Failed to create paper portfolio: ' + (err.error?.message || err.message);
@@ -216,7 +251,13 @@ export class ResearchPaperComponent implements OnInit, OnDestroy {
       approvalMode: newMode,
       notes,
     }).subscribe({
-      next: () => {},
+      next: () => {
+        if (newMode === 'MANUAL') {
+          this.modeNotice = 'AUTO_PAPER disabled: pending previously accepted execution intents remain intact, but no new proposals will be automatically generated.';
+        } else {
+          this.modeNotice = 'AUTO_PAPER enabled: future proposals will be automatically scheduled and executed at eligible market opens.';
+        }
+      },
       error: (err) => {
         this.errorMessage = 'Mode toggle error: ' + (err.error?.message || err.message);
       },
@@ -235,7 +276,11 @@ export class ResearchPaperComponent implements OnInit, OnDestroy {
 
   public exportAuditZip(): void {
     if (!this.selectedPortfolio) return;
-    this.researchService.exportAuditZip(this.selectedPortfolio.id);
+    this.researchService.exportAuditZip(this.selectedPortfolio.id).subscribe({
+      error: (err) => {
+        this.errorMessage = 'Failed to download audit archive: ' + (err.error?.message || err.message);
+      },
+    });
   }
 
   public sendAssistantQuery(): void {
@@ -244,7 +289,7 @@ export class ResearchPaperComponent implements OnInit, OnDestroy {
     this.isAssistantThinking = true;
     this.assistantResponse = null;
 
-    const req: any = {
+    const req: AssistantChatRequest = {
       message: msg,
     };
     if (this.selectedPortfolio) {
