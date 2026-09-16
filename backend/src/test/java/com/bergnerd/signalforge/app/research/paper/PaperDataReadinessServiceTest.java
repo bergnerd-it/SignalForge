@@ -120,6 +120,8 @@ class PaperDataReadinessServiceTest {
                 .thenReturn(List.of("list-1"));
         when(jdbcTemplate.queryForObject(contains("historical_bars"), eq(Integer.class), eq("ds-1"), eq("list-1"), eq("2026-08-31"), anyString()))
                 .thenReturn(1);
+        when(jdbcTemplate.queryForObject(contains("historical_bars"), eq(Integer.class), eq("ds-1"), eq("list-1"), eq("2026-09-12"), anyString()))
+                .thenReturn(1);
         when(jdbcTemplate.queryForObject(contains("COUNT(DISTINCT"), eq(Integer.class), eq("ds-1"), eq("list-1"), eq("2026-08-31"), anyString()))
                 .thenReturn(10);
 
@@ -153,6 +155,30 @@ class PaperDataReadinessServiceTest {
 
         assertFalse(result.isReady());
         assertEquals("INCOMPLETE_WARMUP", result.status());
+    }
+
+    @Test
+    void checkReadiness_monthlyStrategyBlocksMissingCurrentCompletedSession() {
+        when(jdbcTemplate.queryForList(contains("paper_portfolio_segments"), eq("port-1")))
+                .thenReturn(List.of(Map.of(
+                        "id", "seg-1", "strategy_id", "ETF_TREND_10M_V1", "universe_id", "uni-1",
+                        "benchmark_listing_id", "list-1", "adopted_dataset_id", "ds-1")));
+        when(jdbcTemplate.queryForList(contains("dataset_sessions"), eq("ds-1")))
+                .thenReturn(List.of(
+                        Map.of("session_date", "2026-08-31", "open_time", "09:00:00", "close_time", "17:30:00"),
+                        Map.of("session_date", "2026-09-12", "open_time", "09:00:00", "close_time", "17:30:00"),
+                        Map.of("session_date", "2026-09-16", "open_time", "09:00:00", "close_time", "17:30:00")));
+        when(jdbcTemplate.queryForList(contains("validation_status"), eq("ds-1")))
+                .thenReturn(List.of(Map.of("validation_status", "VALID")));
+        when(jdbcTemplate.queryForList(contains("universe_listings"), eq(String.class), eq("uni-1")))
+                .thenReturn(List.of("list-1"));
+        when(jdbcTemplate.queryForObject(contains("historical_bars"), eq(Integer.class), eq("ds-1"), eq("list-1"), eq("2026-08-31"), anyString()))
+                .thenReturn(1);
+
+        ReadinessResult result = readinessService.checkReadiness("port-1");
+        assertFalse(result.isReady());
+        assertEquals("MISSING_BARS", result.status());
+        assertTrue(result.details().contains("2026-09-12"));
     }
 
     @Test

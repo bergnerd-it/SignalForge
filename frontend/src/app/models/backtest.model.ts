@@ -301,6 +301,8 @@ export interface CreateExperimentRequest {
   strategyId: string;
   strategyVersion: string;
   datasetId: string;
+  universeId?: string | null;
+  candidateListingId?: string | null;
   benchmarkListingId: string;
   developmentStartDate: string;
   developmentEndDate: string;

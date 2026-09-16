@@ -367,6 +367,23 @@
         </div>
         <div class="form-row">
           <div class="form-group">
+            <label class="form-label font-mono" for="experiment-benchmark">Benchmark Listing ID</label>
+            <input id="experiment-benchmark" type="text" class="form-input font-mono"
+              [(ngModel)]="newExperiment.benchmarkListingId" placeholder="Listing in selected dataset" />
+          </div>
+          <div class="form-group" *ngIf="newExperiment.strategyId === 'ETF_TREND_10M_V1'">
+            <label class="form-label font-mono" for="experiment-candidate">Candidate Listing ID</label>
+            <input id="experiment-candidate" type="text" class="form-input font-mono"
+              [(ngModel)]="newExperiment.candidateListingId" placeholder="Listing in selected dataset" />
+          </div>
+          <div class="form-group" *ngIf="newExperiment.strategyId === 'ETF_MOMENTUM_12_1_V1'">
+            <label class="form-label font-mono" for="experiment-universe">Universe ID</label>
+            <input id="experiment-universe" type="text" class="form-input font-mono"
+              [(ngModel)]="newExperiment.universeId" placeholder="Universe for selected dataset" />
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
             <label class="form-label font-mono">Dev Period Start</label>
             <input type="date" class="form-input font-mono" [(ngModel)]="newExperiment.developmentStartDate" />
           </div>

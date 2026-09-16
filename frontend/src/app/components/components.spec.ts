@@ -591,6 +591,15 @@ describe('Component Unit Tests', () => {
     const el = fixture.nativeElement as HTMLElement;
     expect(el.textContent).toContain('STRATEGY REPOSITORY');
     expect(el.textContent).toContain('ETF_MOMENTUM_12_1_V1');
+    fixture.componentInstance.selectSubTab('experiments');
+    fixture.componentInstance.openCreateExperiment();
+    fixture.detectChanges();
+    expect(el.querySelector('#experiment-benchmark')).not.toBeNull();
+    expect(el.querySelector('#experiment-universe')).not.toBeNull();
+    fixture.componentInstance.newExperiment.name = 'Fixture experiment';
+    fixture.componentInstance.newExperiment.datasetId = 'ds-1';
+    fixture.componentInstance.submitCreateExperiment();
+    expect(fixture.componentInstance.error).toContain('benchmark listing ID');
   });
 
   it('ResearchCompareComponent should render side-by-side comparison and rolling disclaimer', () => {

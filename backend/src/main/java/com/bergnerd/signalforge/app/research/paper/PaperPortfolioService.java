@@ -20,7 +20,6 @@ import java.math.RoundingMode;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
-import java.time.LocalTime;
 import java.time.ZoneId;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -187,9 +186,8 @@ public class PaperPortfolioService {
         Map<String, Object> nextSession = jdbcTemplate.queryForMap(
                 "SELECT open_time FROM dataset_sessions WHERE dataset_id = ? AND calendar_id = ? AND session_date = ?",
                 datasetId, calendarId, nextSessionDate);
-        String scheduledOpenInstant = LocalDate.parse(nextSessionDate)
-                .atTime(LocalTime.parse((String) nextSession.get("open_time")))
-                .atZone(exchangeZone(calendarId)).toInstant().toString();
+        String scheduledOpenInstant = PaperDataReadinessService.sessionInstant(
+                nextSessionDate, (String) nextSession.get("open_time"), exchangeZone(calendarId)).toString();
         String cycleId = "cycle-" + evalSessionDate + "-open-" + nextSessionDate;
 
         String payloadHash = PaperMutationService.computeHash(
@@ -437,6 +435,9 @@ public class PaperPortfolioService {
         String uid = normalizeUser(ownerId);
         validatePortfolioOwnership(portfolioId, uid);
 
+        ReentrantLock lock = portfolioLocks.computeIfAbsent(portfolioId, ignored -> new ReentrantLock(true));
+        lock.lock();
+        try {
         Map<String, Object> seg = getActiveSegmentRow(portfolioId);
         String currentMode = (String) seg.get("approval_mode");
         String targetMode = request.approvalMode().trim().toUpperCase();
@@ -453,10 +454,14 @@ public class PaperPortfolioService {
         if (!currentMode.equals(targetMode)) {
             String now = clock.instant().toString();
             transactionTemplate.executeWithoutResult(status -> {
-                jdbcTemplate.update(
-                        "UPDATE paper_portfolio_segments SET approval_mode = ? WHERE id = ?",
-                        targetMode, seg.get("id")
+                int updated = jdbcTemplate.update(
+                        "UPDATE paper_portfolio_segments SET approval_mode = ? " +
+                                "WHERE id = ? AND status = 'ACTIVE' AND approval_mode = ?",
+                        targetMode, seg.get("id"), currentMode
                 );
+                if (updated != 1) {
+                    throw new ResponseStatusException(HttpStatus.CONFLICT, "Approval mode changed concurrently");
+                }
                 jdbcTemplate.update(
                         "INSERT INTO paper_mode_history (id, portfolio_id, from_mode, to_mode, transition_instant, trigger_type, notes) " +
                                 "VALUES (?, ?, ?, ?, ?, 'USER', ?)",
@@ -472,6 +477,9 @@ public class PaperPortfolioService {
         }
 
         return getActiveSegment(portfolioId, uid);
+        } finally {
+            lock.unlock();
+        }
     }
 
     public void runAutomaticCycle(String portfolioId, String ownerId) {
@@ -583,9 +591,27 @@ public class PaperPortfolioService {
 
                 String now = clock.instant().toString();
                 String currentSessionDate = LocalDate.ofInstant(clock.instant(), PaperDataReadinessService.EXCHANGE_ZONE).toString();
-                processCorporateActions(portfolioId, datasetId, currentSessionDate, now);
-                settleDueReceivables(portfolioId, uid, seg, datasetId, currentSessionDate, now);
-                executePendingIntents(portfolioId, seg, datasetId, currentSessionDate, now);
+                List<Map<String, Object>> dueOpens = jdbcTemplate.queryForList(
+                        "SELECT DISTINCT scheduled_session_date, scheduled_open_instant FROM paper_execution_intents " +
+                                "WHERE portfolio_id = ? AND status IN ('PENDING', 'WAITING_FOR_OBSERVATION') " +
+                                "AND scheduled_open_instant <= ? ORDER BY scheduled_open_instant",
+                        portfolioId, now);
+                boolean waitingForEarlierOpen = false;
+                for (Map<String, Object> dueOpen : dueOpens) {
+                    String sessionDate = (String) dueOpen.get("scheduled_session_date");
+                    String openInstant = (String) dueOpen.get("scheduled_open_instant");
+                    // Ex-date actions take effect before that session's opening trades.
+                    processCorporateActions(portfolioId, datasetId, sessionDate, now);
+                    if (!executePendingIntents(portfolioId, seg, datasetId, openInstant, now)) {
+                        waitingForEarlierOpen = true;
+                        break;
+                    }
+                }
+                if (!waitingForEarlierOpen) {
+                    processCorporateActions(portfolioId, datasetId, currentSessionDate, now);
+                    // Cash first observed during this processing pass cannot fund an earlier opening fill.
+                    settleDueReceivables(portfolioId, uid, seg, datasetId, currentSessionDate, now);
+                }
                 calculateAndRecordValuation(portfolioId, datasetId, currentSessionDate, now);
                 mutationService.recordCommitted(uid, "PROCESS_EVENTS", idempotencyKey, payloadHash, portfolioId,
                         Map.of("processedAt", now));
@@ -764,8 +790,8 @@ public class PaperPortfolioService {
         String openTime = jdbcTemplate.queryForObject(
                 "SELECT open_time FROM dataset_sessions WHERE dataset_id = ? AND calendar_id = ? AND session_date = ?",
                 String.class, datasetId, calendarId, readiness.nextSession());
-        String scheduledOpen = LocalDate.parse(readiness.nextSession()).atTime(LocalTime.parse(openTime))
-                .atZone(exchangeZone(calendarId)).toInstant().toString();
+        String scheduledOpen = PaperDataReadinessService.sessionInstant(
+                readiness.nextSession(), openTime, exchangeZone(calendarId)).toString();
         int revision = Optional.ofNullable(jdbcTemplate.queryForObject(
                 "SELECT revision FROM portfolio_state WHERE portfolio_id = ?", Integer.class, portfolioId)).orElse(0);
         String proposalId = "prop-" + UUID.randomUUID();
@@ -805,7 +831,9 @@ public class PaperPortfolioService {
 
     private BigDecimal quantityAtEvent(String portfolioId, String listingId, String effectiveDate) {
         BigDecimal quantity = BigDecimal.ZERO;
-        String boundary = effectiveDate + "T23:59:59.999999999Z";
+        // Entitlement is established before this session's opening trades.
+        // A split booked at midnight remains visible to a same-day distribution.
+        String boundary = effectiveDate + "T00:00:00Z";
         for (String delta : jdbcTemplate.queryForList(
                 "SELECT signed_quantity_delta FROM ledger_entries WHERE portfolio_id = ? AND listing_id = ? AND business_at <= ? ORDER BY business_at, sequence",
                 String.class, portfolioId, listingId, boundary)) {
@@ -814,11 +842,12 @@ public class PaperPortfolioService {
         return quantity;
     }
 
-    private void executePendingIntents(String portfolioId, Map<String, Object> seg, String datasetId, String currentSessionDate, String now) {
+    private boolean executePendingIntents(String portfolioId, Map<String, Object> seg, String datasetId, String dueThroughInstant, String now) {
         List<Map<String, Object>> intents = jdbcTemplate.queryForList(
                 "SELECT id, proposal_id, reinvestment_receivable_id, scheduled_session_date, scheduled_open_instant, status FROM paper_execution_intents " +
-                        "WHERE portfolio_id = ? AND status IN ('PENDING', 'WAITING_FOR_OBSERVATION') AND scheduled_open_instant <= ?",
-                portfolioId, now
+                        "WHERE portfolio_id = ? AND status IN ('PENDING', 'WAITING_FOR_OBSERVATION') AND scheduled_open_instant <= ? " +
+                        "ORDER BY scheduled_open_instant, id",
+                portfolioId, dueThroughInstant
         );
 
         ResearchDtos.CostPolicyDto costPolicy = parseCostPolicy((String) seg.get("cost_policy_json"));
@@ -876,7 +905,8 @@ public class PaperPortfolioService {
                         );
                     }
                 }
-                continue;
+                // Later batches must not size against holdings that an earlier intent has not booked.
+                return false;
             }
 
             // Sizing against current holdings: Sells first, then Buys
@@ -1025,6 +1055,7 @@ public class PaperPortfolioService {
                     "trans-" + UUID.randomUUID(), intentId, currentStatus, now
             );
         }
+        return true;
     }
 
     private void calculateAndRecordValuation(String portfolioId, String datasetId, String currentSessionDate, String now) {

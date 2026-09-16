@@ -1,6 +1,6 @@
 # M5 corrective verification report
 
-**Date:** 2026-09-16. **Status:** M5 remains open. This report supersedes the earlier blanket PASS claims. Docker and M6 remain deferred.
+**Date:** 2026-09-16. **Status:** M5 feature scope is complete and accepted with the verification limitations listed below. This report supersedes the earlier blanket PASS claims. Docker and M6 remain deferred.
 
 ## Source and tools
 
@@ -29,9 +29,9 @@ Observed launcher Java: Temurin 17.0.19. `bootRun` logged Java 21.0.12.1, Spring
 | Command/check | Result |
 |---|---|
 | `cd backend && ./gradlew test --tests '*PaperPortfolioIntegrationTest'` | PASS, 10 integration tests including repeated evaluation, waiting, entitlement, rollback, and invalid activation IDs |
-| `cd backend && ./gradlew clean test` | PASS, 202 tests / 0 failures or errors on current source. It includes V12 CRLF checksum, controlled-clock late acceptance, repeated-mark, mode-disable, monthly decision/warm-up readiness, assistant holdout-exposure failure, and provider-fallback tests. Earlier suite runs exposed `SQLITE_BUSY` in an inherited replay comparison that launched both runs concurrently; that test now waits for the first completion before launching the second. Separate concurrency tests remain in the suite; this change does not establish freedom from all concurrent SQLite contention. |
+| `cd backend && ./gradlew clean test` | PASS, 213 tests / 0 failures or errors on final source. It includes V12 CRLF checksum, controlled-clock late acceptance, chronological intent recovery, ex-date entitlement, repeated-mark, mode-disable, monthly decision/warm-up readiness, assistant holdout-exposure failure, and provider-fallback tests. Earlier suite runs exposed `SQLITE_BUSY` in an inherited replay comparison that launched both runs concurrently; that test now waits for the first completion before launching the second. Separate concurrency tests remain in the suite; this change does not establish freedom from all concurrent SQLite contention. |
 | `cd frontend && npm test -- --watch=false` | PASS, 4 files / 52 tests including asynchronous change detection, incomplete-valuation display, and bounded audit-page navigation |
-| `cd frontend && npx --yes --package=node@24.21.0 --call 'node --version && npm --version && npm run build -- --configuration production'` | PASS on final production source; Node 24.21.0, npm 11.19.0, 632.75 kB initial bundle, one existing CSS budget warning |
+| `cd frontend && npx --yes --package=node@24.21.0 --call 'node --version && npm --version && npm run build -- --configuration production'` | PASS on final production source; Node 24.21.0, npm 11.19.0, 634.61 kB initial bundle, one existing CSS budget warning |
 | `git diff --check` | PASS after V13 and report edits; Git emitted expected CRLF normalization warnings |
 | Native Chrome on disposable databases | PASS for create, activate, adopt, evaluate, accept, reject, pending intent/transition, deep-link refresh, AUTO_PAPER enable/history, live-provider assistant evidence, ZIP download and content inspection; future-open fill, S2/S3, disable and inherited M4 form/holdout checks not covered |
 | Archived HEAD/V12 → current V13 on `/private/tmp/signalforge-m5-verify-XzqMkK/upgrade.db` | PASS after LF/CRLF checksum fix: 11 original table sets compared by ID/value, V12 checksum preserved, foreign-key check empty, immutable updates rejected, second startup at version 13 |
@@ -71,10 +71,10 @@ The first browser pass's AUTO_PAPER toggle was blocked by automatic approval rev
 | Owner-scoped audit UI and direct link | PASS in source / PARTIAL native evidence | Native first-page flows and refresh pass; typed bounded pagination tests pass, but multi-page Chrome navigation was not exercised |
 | Actual ZIP export | PASS for inspected synthetic archives | Native pre-V13 and HTTP V13 archives passed integrity/content checks; final V13 Chrome download and truncation indicators absent |
 | Populated M4-to-M5 upgrade/repeat startup | PASS for tested V9/V12 paths | Populated V9 signal rows and populated V12 paper rows preserved through V13; repeated startup passes |
-| Backend suite | PASS | 202/202 with mandated `./gradlew clean test`; replay-comparison test runs sequentially, separate concurrency tests still pass |
+| Backend suite | PASS | 213/213 with mandated `./gradlew clean test`; replay-comparison test runs sequentially, separate concurrency tests still pass |
 | Frontend suite/build | PASS | 52/52 and declared Node 24 build |
 | Native browser twelve-scenario walkthrough | PARTIAL | Listed flows and AUTO_PAPER enable passed; future-open, all strategies and disable not checked |
 | Inherited M4 browser run form/holdout | NOT VERIFIED | Not exercised this pass |
 | Docker | NOT VERIFIED | Deferred |
 
-M5 should remain open until the NOT VERIFIED and PARTIAL prompt gates receive evidence or explicit scope decisions. No M6 work was started.
+The user explicitly accepted the remaining NOT VERIFIED and PARTIAL items as documented limitations on 2026-09-16 to avoid disproportionate browser and exhaustive-matrix work. They are not blockers for closing M5. Future work should add regression coverage only for demonstrated defects or critical accounting invariants. No M6 work was started.

@@ -47,7 +47,9 @@ export class ResearchStrategiesComponent implements OnInit {
     strategyId: 'ETF_MOMENTUM_12_1_V1',
     strategyVersion: '1.0.0',
     datasetId: '',
-    benchmarkListingId: 'EUNL.DE',
+    universeId: null,
+    candidateListingId: null,
+    benchmarkListingId: '',
     developmentStartDate: '2018-01-01',
     developmentEndDate: '2021-12-31',
     holdoutStartDate: '2022-01-01',
@@ -206,8 +208,9 @@ export class ResearchStrategiesComponent implements OnInit {
   }
 
   public submitCreateExperiment(): void {
-    if (!this.newExperiment.name.trim() || !this.newExperiment.datasetId.trim()) {
-      this.error = 'Experiment name and Dataset ID are required';
+    if (!this.newExperiment.name.trim() || !this.newExperiment.datasetId.trim() ||
+        !this.newExperiment.benchmarkListingId.trim()) {
+      this.error = 'Experiment name, dataset ID, and benchmark listing ID are required';
       return;
     }
 

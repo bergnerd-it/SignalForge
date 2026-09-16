@@ -90,7 +90,8 @@ public class ExperimentService {
                 request.datasetId().trim(), request.benchmarkListingId().trim(),
                 devStart.toString(), devEnd.toString(), holdStart.toString(), holdEnd.toString()
         );
-        if (validDates.size() < 4) {
+        if (!new java.util.HashSet<>(validDates).containsAll(
+                List.of(devStart.toString(), devEnd.toString(), holdStart.toString(), holdEnd.toString()))) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "One or more boundary dates are not trading sessions in dataset sessions");
         }
 

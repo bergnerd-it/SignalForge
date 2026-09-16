@@ -397,6 +397,17 @@ class BacktestM4IntegrationTest {
                 expResult.getResponse().getContentAsString(), BacktestDtos.ExperimentDto.class
         );
 
+        // A single trading session may be both boundaries of a one-session period.
+        String oneSessionPayload = expPayload
+                .replace("Buy Hold Holdout Study", "One Session Holdout Study")
+                .replace("\"developmentEndDate\": \"2022-12-30\"", "\"developmentEndDate\": \"2020-01-02\"")
+                .replace("\"holdoutEndDate\": \"2024-12-30\"", "\"holdoutEndDate\": \"2023-01-02\"");
+        mockMvc.perform(post("/api/research/experiments")
+                        .header("X-User-Id", "exp-tester")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(oneSessionPayload))
+                .andExpect(status().isCreated());
+
         // Record exposure directly
         experimentService.recordExposure(exp.id(), "run-dummy", "VIEW_DETAIL", "exp-tester", "{\"reason\":\"audit test\"}");
 
