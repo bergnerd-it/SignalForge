@@ -1,162 +1,31 @@
-# SignalForge Milestone M5: Prospective Paper Tracking Architecture & Reference Guide
+# M5 paper tracking reference
 
-This document defines the architecture, relational database schema, lifecycle state machines, corporate actions handling, execution coordination, downtime recovery, and grounded AI assistant integration for Milestone M5 (Prospective Paper Tracking).
+Paper portfolios are separate EUR `PAPER` portfolios. They use the existing `portfolios`, `portfolio_state`, `positions`, `operations`, `ledger_entries`, and `executions` accounting tables. V12 adds tracking segments, dataset adoptions, proposals and observations, execution intents and transitions, execution results, corporate-action receivables and processing records, valuations, mode history, and paper mutation requests. V13 preserves V12 checksums while adding corrective provenance, exact valuation revisions, and execution-result identity. Existing `LEGACY_DEMO` portfolios are not activated as paper segments.
 
----
+## Lifecycle and time authority
 
-## 1. Core Architecture & Schema
+Activation freezes a strategy, version, universe, benchmark, cost policy, approval mode, opening equity, and opening observation. A dataset must be explicitly adopted. Adoption records the dataset ID and content checksum and rejects an invalid dataset, missing required EUR listings, an empty calendar, inadequate per-listing strategy warm-up, or conflicting terms for an already processed action. S1 readiness uses the latest completed session. S2/S3 readiness uses the latest eligible completed month end and requires 13/10 observed months through that decision for every universe and benchmark listing. Every path also requires a strictly future scheduled session. No historical date is invented as a future open.
 
-Milestone M5 extends SignalForge with prospective paper portfolio tracking (`mode = 'PAPER'`) while strictly preserving the single ledger source of truth established in M1b (`portfolios`, `portfolio_state`, `positions`, `operations`, `transactions`). Paper portfolios operate exclusively in base currency `EUR`.
+Evaluation reuses the M4 strategy adapter. A proposal stores source identity, calendar, cutoff, reason, target weights, cutoff-estimated units, and observation evidence. Its cycle identity includes the decision session and proposed open. Repeating evaluation for the same decision session, open, portfolio revision, and adopted dataset returns the existing proposal; a different dataset for that identity returns a conflict. The units are estimates; execution sizes against the observed opening prices and then applies affordability and costs. A proposal can be accepted only before its scheduled open. Acceptance commits the `ACCEPTED` transition and a durable `PENDING` intent together. Rejection records `REJECTED`. Late acceptance supersedes the proposal and returns a conflict. A new evaluation can propose the next supported future open after that conflict.
 
-### 1.1 Relational Schema (Migration V12)
+At or after its scheduled open, an accepted intent waits if a required opening observation is not yet available. A later processing pass can move `WAITING_FOR_OBSERVATION` to `EXECUTED` once all required bars are available. The processor sells before buying, applies the segment's commission, half-spread and slippage, records the raw reference and modeled fill, and reduces a buy to an affordable whole-unit quantity. Core operations, ledger entries, positions, cash, paper execution results, intent transition, valuation, and the processing mutation record commit in one SQLite transaction. The paper execution result distinguishes market-effective, observed, and booked instants. Per-portfolio in-process locks serialize processors; SQLite and compare-and-set/unique constraints provide the durable barrier.
 
-The prospective paper tracking engine introduces 9 dedicated relational tables in `V12__paper_tracking_and_proposals.sql`:
+`AUTO_PAPER` is explicit opt-in. The coordinator uses each portfolio's recorded owner, processes existing events and accepted intents, evaluates a ready cycle when no open intent exists, and accepts a new proposal before its scheduled open. An expired unaccepted automatic proposal is marked `BLOCKED` with a `MISSED` intent. Disabling the mode does not cancel previously accepted intents. Startup invokes the same recovery path. There is no broker execution.
 
-1. **`paper_portfolio_segments`**:
-   - Stores tracking parameters: `dataset_id`, `strategy_id`, `strategy_version`, `universe_id`, `benchmark_listing_id`, `rebalance_cycle_id`, `mode_history_json`, `created_at`, `updated_at`.
-   - Foreign keys to `portfolios(id)` and `datasets(id)`.
+## Corporate actions and valuations
 
-2. **`paper_proposals`**:
-   - Immutable strategy proposals generated at evaluation cutoffs.
-   - Key attributes: `id`, `portfolio_id`, `cycle_id`, `strategy_id`, `strategy_version`, `dataset_id`, `dataset_checksum`, `evaluation_session_date`, `input_cutoff_instant`, `evaluation_instant`, `scheduled_open_session_date`, `scheduled_open_instant`, `status` (`PROPOSED`, `ACCEPTED`, `REJECTED`, `SUPERSEDED`), `reason_code`, `portfolio_state_version`.
-   - SQLite triggers enforce immutability once accepted or rejected.
+The scanner uses only adopted-snapshot actions whose `available_at` has passed. It preserves source namespace, dataset ID/checksum, and terms hash. Identity is scoped by portfolio, source, listing, type, and action ID; conflicting terms block processing. Historical ledger quantity at the event date determines split/distribution entitlement, so a delayed import after a sale does not erase an earlier entitlement. Splits precede distributions on a date. A distribution becomes a `PENDING` receivable; precise `payment_instant`, when present, controls settlement, otherwise payment date does. Payment credits the core cash ledger once and marks the receivable `PAID` in the same processing transaction. S1 can propose reinvestment of the payment at a future open; S2 remains cash; S3 proposes it only while invested. Reinvestment spending is limited to the paid amount, including costs. It cannot be backdated to a past open.
 
-3. **`paper_proposal_items`**:
-   - Asset-level target allocations: `listing_id`, `rank`, `target_weight`, `prior_weight`, `score`, `reason_code`, `observation_kind`.
+Valuations use decimal arithmetic for cash, holdings, receivables, equity, return, high-water mark, and drawdown. Missing prices produce `PARTIAL_STALE` with detail rather than a complete mark. Valuation identities include observation instant and portfolio state revision, so a later same-session fill appends a fresh mark without replacing the earlier immutable row. Repeated processing skips a new mark when revision, source, prices, balances, readiness and calculated metrics are unchanged. Portfolio detail derives market value and unrealized P&L from the latest complete mark and current basis; it does not invent them from cash. The opening valuation predates dataset adoption and therefore has no adopted source checksum.
 
-4. **`paper_proposal_observations`**:
-   - Exact price and signal indicators used during proposal evaluation for complete auditability.
+## Read API, UI, assistant, and export
 
-5. **`paper_execution_intents`**:
-   - Represents scheduled market rebalances created upon proposal acceptance.
-   - Status: `PENDING`, `FILLED`, `BLOCKED`, `MISSED`.
+The owner-scoped API exposes paged proposals, valuations, intents with transitions/results, receivables, processed actions, and adoptions. The paper page displays those records, holdings, a prospective equity plot, approval controls, archive download, and previous/next controls driven by each response's total, limit, offset, and completion flag. A direct `/research/portfolios/:id` refresh resolves the selected portfolio. Its manual RxJS subscriptions mark the component for change detection when asynchronous results arrive.
 
-6. **`paper_intent_transitions`**:
-   - Append-only state transition audit trail for execution intents (`from_status`, `to_status`, `trigger_type`, `transition_instant`, `notes`).
+The research assistant reads owner-scoped run, portfolio, proposal, or comparison context. It emits deterministic fact cards and evidence references, records holdout exposure for run reads, returns `UNAVAILABLE` for missing metrics, and persists completed chat response replay by owner and idempotency key. LLM output is prose only and falls back to the deterministic explanation on failure. It cannot post financial operations. These handlers are context-specific reads; they are not a separate typed tool registry.
 
-7. **`paper_execution_results`**:
-   - Fills booked at scheduled market open: `requested_quantity`, `executed_quantity`, `raw_open_price`, `fill_price`, `commission`, `cost_basis`, `realized_gain`, `market_effective_instant`, `booked_instant`.
+`GET /api/research/portfolios/{id}/export.zip` returns a 13-entry archive: `manifest.json`, `adoptions.csv`, `proposals.csv`, `proposal_items.csv`, `proposal_observations.csv`, `intents.csv`, `intent_transitions.csv`, `execution_results.csv`, `receivables.csv`, `corporate_actions.csv`, `valuations.csv`, `holdings.csv`, and `mode_history.csv`. Queries cap each exported collection at 10,000 rows and run in a read-only transaction. The manifest reports that row cap; it does not indicate truncation per file. CSVs retain decimal strings and source identities.
 
-8. **`paper_receivables` & `paper_processed_corporate_actions`**:
-   - Prospective cash distribution ledger for tracking pending dividends between `ex_date` and `payment_date`.
-   - Idempotency tracking prevents duplicate corporate action application.
+## Verification boundary
 
-9. **`paper_valuations`**:
-   - Periodic marks: `observation_kind` (`OPENING`, `SESSION_CLOSE`), `cash_balance`, `positions_market_value`, `receivables_value`, `total_equity`, `cumulative_return`, `drawdown`, `data_readiness_status`.
-
----
-
-## 2. Proposal Lifecycle & State Machine
-
-```mermaid
-stateDiagram-v2
-    [*] --> PROPOSED: Evaluation at Cutoff
-    PROPOSED --> ACCEPTED: acceptProposal (now < scheduled_open)
-    PROPOSED --> SUPERSEDED: Late Accept (now >= scheduled_open)
-    PROPOSED --> SUPERSEDED: New Proposal Evaluated
-    PROPOSED --> REJECTED: User Rejection
-    ACCEPTED --> EXECUTED: Market Open Fill
-    ACCEPTED --> BLOCKED: Market Suspended / Missing Data
-    ACCEPTED --> MISSED: Downtime / Window Elapsed
-```
-
-### 2.1 Acceptance & Concurrency Control
-- **Temporal Enforcement**: A proposal can only be accepted *before* its `scheduled_open_instant`. If acceptance is attempted after the scheduled open, the proposal is marked `SUPERSEDED` and rejected with `409 Conflict`.
-- **Optimistic Concurrency**: Acceptance uses a Compare-And-Swap (CAS) update:
-  ```sql
-  UPDATE paper_proposals 
-  SET status = 'ACCEPTED', accepted_at = ? 
-  WHERE id = ? AND status = 'PROPOSED'
-  ```
-  In high-concurrency environments, exactly 1 thread succeeds and remaining parallel callers receive `409 Conflict`.
-
----
-
-## 3. Execution & Sizing Engine
-
-Fills are executed prospectively against raw market open prices:
-
-1. **Target Weight Sizing**:
-   $$\text{targetCash} = \text{portfolioCash} \times \text{targetWeight}$$
-   $$\text{shares} = \lfloor \frac{\text{targetCash} - \text{commission}}{\text{rawOpenPrice}} \rfloor$$
-2. **Execution Realization**:
-   - Buys and sells are booked through the core `OperationService` / `PaperPortfolioService`.
-   - Cost basis and realized P&L are tracked on a strict FIFO basis.
-   - Cash is updated atomically: $\text{cash} \leftarrow \text{cash} - (\text{shares} \times \text{price} + \text{commission})$.
-
----
-
-## 4. Corporate Actions & Receivables Lifecycle
-
-Corporate actions arriving prospectively follow a two-phase lifecycle:
-
-1. **Ex-Date Detection**:
-   - Stock splits: Applied immediately to existing share positions (quantity multiplied, cost basis adjusted).
-   - Cash dividends: Inserted into `paper_receivables` with status `PENDING`. No cash is credited prior to payment date.
-2. **Payment Date Settlement**:
-   - On or after `payment_date`, the receivable is marked `SETTLED` and net cash is credited to the portfolio.
-   - Processed events are recorded in `paper_processed_corporate_actions` to ensure complete idempotency across retries.
-
----
-
-## 5. Execution Coordination & Downtime Recovery
-
-The `PaperExecutionCoordinator` handles scheduled triggers and automated execution:
-
-- **AUTO_PAPER Mode**: When enabled, valid proposals are automatically scheduled and accepted.
-- **Pre-Open Scheduling**: Execution intents are persisted ahead of time.
-- **Catchup & Recovery**:
-  - On startup or cron cycle, `catchUpPendingIntents()` scans for intents whose `scheduled_open_instant` has passed.
-  - If current time is within a 1-hour grace window and fresh market open bars exist, the intent is filled.
-  - If market data is missing or the window has passed, the intent transitions to `MISSED` or `BLOCKED` with full audit trail in `paper_intent_transitions`.
-
----
-
-## 6. Grounded AI Research Assistant
-
-The research assistant provides real-time explanations without hallucination:
-
-- **Strict Tool Typing**: The assistant interacts with the engine via discriminated read tools (`PORTFOLIO_STATE`, `POSITION_DETAILS`, `PROPOSAL_INSPECTOR`, `VALUATION_HISTORY`, `STRATEGY_DETAILS`).
-- **Fact Cards**: Responses include verifiable cards containing exact cash balances, share counts, total equity, and proposal parameters.
-- **Evidence References**: Every claim links directly to immutable database entity IDs (`PORTFOLIO`, `PROPOSAL`, `EXECUTION`, `VALUATION`).
-- **Holdout Protection**: Read tools enforce owner boundary isolation and do not expose uncommitted holdout data.
-
----
-
-## 7. Mutation Idempotency & Concurrency Security
-
-To prevent duplicate processing across distributed retries, transient network faults, or rapid user clicks, all state-changing paper operations enforce deterministic idempotency:
-
-- **Idempotency Table (`paper_mutation_requests`)**:
-  - Columns: `id`, `owner_id`, `action`, `idempotency_key`, `payload_hash`, `status` (`IN_PROGRESS`, `COMMITTED`, `FAILED`), `resource_id`, `error_message`, `created_at`, `updated_at`.
-  - Constraint: `UNIQUE(owner_id, action, idempotency_key)` guarantees that identical action submissions by the same owner are serialized and deduplicated.
-- **Payload Verification**:
-  - The SHA-256 hash of the canonical request payload is compared against the stored hash. If the key matches but the payload differs, the request is rejected with `409 Conflict`.
-- **Cached Replay**:
-  - Once an operation transitions to `COMMITTED`, subsequent calls with the same key immediately return the original result without re-executing business logic or financial mutations.
-
----
-
-## 8. Bounded Audit Export Archive
-
-The audit archive (`GET /api/research/portfolios/{id}/export.zip`) produces a self-contained, owner-scoped ZIP containing exactly 13 audit artifacts:
-
-1. **`manifest.json`**: Engine version, git commit, build version, export timestamp, active segment config, cost policies, universe ID, calendar ID, and row limits.
-2. **`adoptions.csv`**: Historical dataset adoption audit trail with checksums and adoption timestamps.
-3. **`proposals.csv`**: Every generated proposal with evaluation sessions, cutoffs, status, and supersession links.
-4. **`proposal_items.csv`**: Asset-level weights, frozen desired units, scores, and observation indicators.
-5. **`proposal_observations.csv`**: Exact market observations captured at proposal evaluation cutoffs.
-6. **`intents.csv`**: Execution intents with scheduled session dates and target open instants.
-7. **`intent_transitions.csv`**: Comprehensive state transition log (`PENDING`, `WAITING_FOR_OBSERVATION`, `EXECUTED`, `BLOCKED`, `MISSED`).
-8. **`execution_results.csv`**: Prospective market open fills with requested vs. executed quantity, raw open, fill price, commission, cost basis, and basis delta.
-9. **`receivables.csv`**: Pending and settled cash distribution receivables.
-10. **`corporate_actions.csv`**: Processed corporate actions with terms hash and deduplication payload hash.
-11. **`valuations.csv`**: Time series of marks with cash balance, holdings market value, receivables value, total equity, return, and drawdown.
-12. **`holdings.csv`**: Current position holdings with share count, acquisition cost, and currency.
-13. **`mode_history.csv`**: Transition history between `MANUAL` and `AUTO_PAPER` approval modes with timestamps and trigger reasons.
-
-### CSV & Numeric Formatting Standards
-- **RFC 4180 Compliant**: All strings containing commas, newlines, or quotes are properly escaped and enclosed.
-- **Exact Numeric Representation**: Negative decimal values (e.g., `-100.50`) are preserved as raw numbers without prepended tab characters.
-- **Formula Injection Defense**: Only untrusted text fields beginning with `=`, `+`, `-`, or `@` that are non-numeric have a leading `\t` prepended to prevent spreadsheet formula execution.
-
+Automated tests exercise a subset of the twelve M5 prompt scenarios, including a resumed waiting intent, configured costs, monthly readiness, delayed distribution entitlement, reinvestment spending boundary, provider failure, pagination, and rollback after an injected execution-result failure. The native browser walkthrough uses disposable SQLite and confirms creation, activation, adoption, evaluation, accept/reject, AUTO_PAPER enable, a pending intent, direct-link refresh, live-provider assistant evidence, and an actual downloaded ZIP. A populated V12-to-V13 disposable upgrade was also verified. The walkthrough does not prove future-open execution in a production clock or all S2/S3 scenarios. See `planning/reports/research-M5.md` for the current gate status.

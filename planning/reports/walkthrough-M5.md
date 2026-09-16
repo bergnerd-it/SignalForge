@@ -1,76 +1,30 @@
-# Milestone M5: Prospective Paper Tracking & Grounded AI Explanations Walkthrough
+# M5 native browser walkthrough — corrective pass
 
-## Overview
-Milestone M5 delivers prospective paper portfolio tracking (`mode = 'PAPER'`) in EUR, maintaining the single ledger source of truth established in M1b (`portfolios`, `portfolio_state`, `positions`, `operations`, `transactions`). It adds server `Clock` authority, immutable strategy proposals, CAS-protected acceptance with late-acceptance guards, corporate action receivables, automated execution with downtime recovery (`AUTO_PAPER`), a grounded AI research assistant with typed read tools, full frontend management at `/research/portfolios/:id`, and audit archive export (`ZIP`/`CSV`).
+**Date:** 2026-09-16. Chrome native UI, Angular at `127.0.0.1:4200`, Spring Boot at `127.0.0.1:8000`, dedicated SQLite `/private/tmp/signalforge-m5-browser-oJE5jh`. A synthetic `dataset-browser-m5`, XAMS sessions for 2026-09-15/17, EUR listing `listing-eur-syn-1`, and universe `uni-default` were inserted only into this disposable database. The owner's database was not opened. The previous report's claim of a complete native walkthrough was unsupported; the observations below supersede it.
 
----
+| Native action | Observed result |
+|---|---|
+| Create `M5 disposable browser fund`, EUR 1000 | Portfolio `portfolio-02d90a35-62f9-4fb8-a978-d5238e18942c` created and shown on its direct URL. |
+| Activate S1 tracking | Initial attempt before fixture import hit a foreign-key error because the form's default universe/listing did not exist in a fresh install. With the disposable fixture inserted, activation succeeded. The backend was subsequently changed to validate those IDs and return HTTP 400; the revised error path passed an integration test but was not repeated in Chrome. The form still accepts free-text IDs. |
+| Adopt `dataset-browser-m5` | UI displayed `READY`, adopted snapshot ID, and S1/universe metadata. |
+| Evaluate S1 | Proposal `prop-d349d517-47e8-4b89-a98a-e555d73db524` displayed target weight 1, close 100, `browser-content` checksum, XAMS calendar, 2026-09-15 cutoff, and 2026-09-17 07:00Z scheduled open. |
+| Accept | Proposal showed `ACCEPTED`; Intents tab showed `REBALANCE — PENDING`, `NONE → PENDING`, `USER_ACCEPT`, and future open. No production-clock fill was attempted. |
+| Reload the portfolio URL | The selected portfolio, controls, valuation count, and pending intent reappeared after the change-detection fix. |
+| Create second EUR 500 portfolio and reject | `portfolio-7d955b18-ab0e-41bb-b656-6148ca7ea85d` activated/adopted/evaluated; its proposal showed `REJECTED` with timestamp and reason. |
+| Ask assistant about EUR 500 portfolio | Rendered EUR 500 cash and equity, MANUAL, S1, no holdings/receivables/intents, and references to the portfolio and valuation IDs. The first attempt had persisted a completed response but remained visually `Analyzing`; marking async callbacks for change detection fixed the display. |
+| Download audit ZIP | Chrome showed a completed 4.6 KB download. The actual file passed `ZipFile.testzip()` and contained all 13 expected entries. Parsed manifest and CSVs matched the selected EUR 1000 portfolio, dataset/checksum, accepted proposal, pending intent/transition, and opening valuation. |
+| AUTO_PAPER toggle | NOT VERIFIED. Automatic approval review rejected the direct toggle as a consequential persistent mode change, even for this disposable portfolio. No alternate route was used. |
 
-## Key Deliverables
+The browser did not observe an executed fill, WAITING recovery, split/receivable display, S2/S3 decision, populated upgrade, or inherited M4 run-form/holdout flow. Those remain NOT VERIFIED in this native walkthrough. Focused disposable SQLite integration tests cover some of the temporal and accounting behavior separately; see `research-M5.md` for their exact scope and the M5 gate.
 
-### 1. Database Schema & Migrations
-- Added `backend/src/main/resources/db/migration/V12__paper_tracking_and_proposals.sql` (schema version 12):
-  - `paper_portfolio_segments`
-  - `paper_proposals`, `paper_proposal_items`, `paper_proposal_observations`
-  - `paper_execution_intents`, `paper_intent_transitions`, `paper_execution_results`
-  - `paper_receivables`, `paper_processed_corporate_actions`
-  - `paper_valuations`
-  - Database triggers enforcing immutability on accepted/rejected proposals and terminal intent transitions.
-- Updated `MigrationRunner.java` to `CODE_VERSION = "2.0.0-M5"`.
+## Approved AUTO_PAPER and live-provider follow-up
 
-### 2. Backend Services & Controllers
-- **`ClockConfig.java`**: Configurable injectable `Clock` bean for temporal testing and server-side authority.
-- **`PaperDataReadinessService.java`**: Validates exchange calendar coverage, listing prices, corporate action alignment, and dataset snapshot terms hash.
-- **`PaperPortfolioService.java`**: Orchestrates portfolio creation, activation, cutoff evaluation, CAS proposal acceptance, intent sizing against raw open prices, corporate actions (splits and dividend receivables), and valuation snapshots.
-- **`PaperExecutionCoordinator.java`**: In-process scheduler for `AUTO_PAPER` mode, pre-open scheduling, and downtime catch-up recovery.
-- **`PaperExportService.java`**: Generates RFC 4180-compliant audit archive ZIP containing `manifest.json` plus 12 CSV files (`adoptions.csv`, `proposals.csv`, `proposal_items.csv`, `proposal_observations.csv`, `intents.csv`, `intent_transitions.csv`, `execution_results.csv`, `receivables.csv`, `corporate_actions.csv`, `valuations.csv`, `holdings.csv`, `mode_history.csv`).
-- **`ResearchAssistantService.java`**: Discriminated read-only tools (`PORTFOLIO_STATE`, `POSITION_DETAILS`, `PROPOSAL_INSPECTOR`, `VALUATION_HISTORY`, `STRATEGY_DETAILS`) scoped by owner, emitting structured fact cards and evidence references.
-- **`ResearchPortfolioController.java` & `ResearchAssistantController.java`**: REST API endpoints for paper portfolio management, proposal review, export, and chat assistance.
+After the user explicitly approved the disposable mode change and use of the configured OpenAI API key, a second native Chrome pass used `/private/tmp/signalforge-m5-verify-XzqMkK/browser.db` with the current V13 backend. Chrome created `portfolio-8ad37af8-f2a3-46e1-842d-5cfcc25380c1` with EUR 1000, activated S1 MANUAL, adopted `dataset-browser-m5`, and showed READY. Clicking `AUTO_PAPER: OFF` changed the display to `AUTO_PAPER: ON`; Mode History showed a USER transition from MANUAL at `2026-09-16T15:29:20.915126Z`. The coordinator created an ACCEPTED proposal and one PENDING AUTO_PAPER intent for the future open.
 
-### 3. Frontend UI & Services
-- **`research.model.ts`**: TypeScript interfaces for paper portfolios, proposals, execution intents, corporate actions, valuations, and assistant chat.
-- **`research.service.ts`**: Angular HTTP service methods for all paper operations and audit export blob streaming.
-- **`ResearchPaperComponent`** (`research-paper.component.ts`, `.html`, `.css`): Complete UI with KPI cards, mode toggle, data readiness card, proposal action controls, holdings table, pending receivables, prospective chart, and audit ZIP download.
-- **Routing & Navigation**: Added `/research/portfolios` and `/research/portfolios/:id` in `app.routes.ts` and `header.component.ts`, resolving portfolio ID from `ActivatedRoute` and handling browser popstate navigation.
+Clicking Evaluate Strategy again initially produced a raw SQLite UNIQUE error on `(portfolio_id, cycle_id, portfolio_state_version)`. The service now returns the existing proposal when cycle, revision, and dataset identity match; a focused integration test passed and a retest of the local HTTP endpoint returned 200 with the same accepted proposal ID. Chrome was in use by the owner during that retest, so the revised response was not observed a second time in native UI.
 
-### 4. Documentation & Reports
-- **`docs/paper-tracking.md`** & **`planning/docs/paper-tracking.md`**: Complete architecture guide, schema definition, lifecycle state machines, corporate actions lifecycle, downtime recovery, and assistant integration.
-- **`planning/reports/research-M5.md`**: Comprehensive M5 closeout report meeting all prompt specifications.
+The Chrome Research Assistant used the configured OpenAI-compatible provider and displayed EUR 1000 cash, AUTO_PAPER, zero holdings, one pending intent, and three evidence references. A separate local HTTP prompt-injection check asked it to invent EUR 1,000,000 cash and an executed trade; the live response instead said EUR 1,000 and no executed trade. The database still had zero paper execution-result rows. This checks one bounded attack, not general language-model reliability. The assistant call sent only the synthetic disposable portfolio context; the API key was never printed. No disable-with-pending-intent, executed fill, S2/S3, or final V13 ZIP download was observed in this follow-up.
 
----
+## Post-walkthrough implementation verification
 
-## Verification Results
-
-### Backend Automated Verification
-```bash
-cd backend
-./gradlew clean test
-```
-- **Result:** `BUILD SUCCESSFUL in 10s`
-- **Total Tests:** 191 tests completed, 0 failed.
-- **Highlights:**
-  - `multiPortfolioIsolationAndLegacyDemoIntegrity_scenario1`: Verified multi-portfolio funding isolation and demonstrated that existing `LEGACY_DEMO` portfolios remain completely unmodified.
-  - `exactArithmeticAffordability_scenario4`: Verified EUR 1,000.00 funding with EUR 1.00 fee and raw open 100.00 EUR buys exactly 9 units, leaves exactly EUR 99.00 cash, books EUR 901.00 acquisition cost, and repeat event execution is idempotent.
-  - `assistantSecurityAndHoldoutIntegrity_scenario10`: Verified assistant read tools strictly enforce owner isolation and reject foreign contexts.
-  - `boundedAuditZipComprehensiveVerification_scenario11`: Verified the audit ZIP archive produces exactly 13 non-empty files with RFC 4180 escaping and negative numeric decimal preservation.
-  - `PaperPortfolioIntegrationTest.completePaperPortfolioLifecycleWorkflow`: Verified schema, full prospective lifecycle, corporate action dividend receivable, and an 8-thread concurrent acceptance barrier where exactly 1 thread succeeds and 7 receive `409 Conflict`.
-  - `MigrationRecoveryIntegrationTest`: Verified clean upgrade of populated legacy databases to V12 with foreign keys enforced.
-  - `PaperDataReadinessServiceTest`: Verified readiness checks, calendar boundary alignment, and terms hash validation.
-
-### Frontend Automated Verification
-```bash
-cd frontend
-npm test -- --watch=false
-```
-- **Result:** 4 test files passed, 48 passed tests (100% pass rate in 978ms).
-- **Production Build:** `npm run build -- --configuration production` completed with exit code 0 in 2.173s on declared Node 24.21.0 toolchain.
-
-### Browser Walkthrough Status
-- Background execution of backend (`bootRun` on port 8000) and frontend (`ng serve` on port 4200) was verified with HTTP 200 responses.
-- Native browser walkthrough using Chrome DevTools Protocol subagent on port 9222 encountered protocol limitation (`Browser.setDownloadBehavior: Browser context management is not supported`). In accordance with prompt guidelines, Docker and unconfigured real LLM are kept explicitly **NOT VERIFIED**, and browser walkthrough status is recorded with exact diagnostic.
-
----
-
-## Checkpoint & Next Steps
-- Baseline M4 preserved under git tag `m4-checkpoint`.
-- Backlog task `TASK-17` updated with verified evidence.
-- As instructed, M6 has NOT been started.
+The final source adds typed previous/next navigation for every paged paper audit collection and preserves each response's total, limit, offset, and completion state. Component/service tests cover a second proposal page; a populated multi-page state was not revisited in Chrome. Controlled-clock backend tests now select the latest completed month end for S2/S3 and reject a listing without the required observed warm-up months. A provider-failure test confirms deterministic grounded fallback and no financial-table mutation. These are automated checks and do not extend the native observations above.

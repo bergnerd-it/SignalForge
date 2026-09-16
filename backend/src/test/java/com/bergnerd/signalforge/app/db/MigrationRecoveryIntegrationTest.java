@@ -264,6 +264,20 @@ class MigrationRecoveryIntegrationTest {
     }
 
     @Test
+    void v12CrLfCheckoutChecksum_isAcceptedWithoutChangingMigrationContent() {
+        migrationRunner.runMigration();
+        String v12 = resource("db/migration/V12__paper_tracking_and_proposals.sql");
+        String crlfChecksum = migrationRunner.computeSqlChecksum(
+                v12.replace("\r\n", "\n").replace("\n", "\r\n"));
+        jdbcTemplate.update("UPDATE schema_migrations SET checksum = ? WHERE version = 12", crlfChecksum);
+
+        assertDoesNotThrow(migrationRunner::runMigration);
+        assertEquals(13, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM schema_migrations", Integer.class));
+        assertEquals(crlfChecksum, jdbcTemplate.queryForObject(
+                "SELECT checksum FROM schema_migrations WHERE version = 12", String.class));
+    }
+
+    @Test
     void repeatStartup_isIdempotent() {
         migrationRunner.runMigration();
 
@@ -532,7 +546,7 @@ class MigrationRecoveryIntegrationTest {
         ));
 
         assertDoesNotThrow(migrationRunner::runMigration);
-        assertEquals(12, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM schema_migrations", Integer.class));
+        assertEquals(13, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM schema_migrations", Integer.class));
     }
 
     @Test
@@ -725,7 +739,7 @@ class MigrationRecoveryIntegrationTest {
 
         dataSource.setEnforceForeignKeys(true);
         migrationRunner.runMigration();
-        assertEquals(12, jdbcTemplate.queryForObject("SELECT MAX(version) FROM schema_migrations", Integer.class));
+        assertEquals(13, jdbcTemplate.queryForObject("SELECT MAX(version) FROM schema_migrations", Integer.class));
         assertEquals("COMPLETED", jdbcTemplate.queryForObject("SELECT status FROM backtest_runs WHERE id = 'run-v9-pop'", String.class));
         assertEquals("2025-01-03", jdbcTemplate.queryForObject("SELECT scheduled_execution_date FROM backtest_signals WHERE id = 'signal-v9-pop'", String.class));
         assertEquals("100.00000000", jdbcTemplate.queryForObject("SELECT index_value FROM backtest_signal_items WHERE id = 'item-v9-pop'", String.class));
@@ -749,7 +763,7 @@ class MigrationRecoveryIntegrationTest {
         assertNull(jdbcTemplate.queryForObject("SELECT scheduled_execution_date FROM backtest_signals WHERE id = 'signal-v10-final'", String.class));
         jdbcTemplate.update("UPDATE backtest_runs SET status = 'COMPLETED', progress_pct = 100 WHERE id = 'run-v10-open'");
         assertDoesNotThrow(migrationRunner::runMigration);
-        assertEquals(12, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM schema_migrations", Integer.class));
+        assertEquals(13, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM schema_migrations", Integer.class));
         assertEquals(1, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM backtest_signal_items WHERE id = 'item-v9-pop'", Integer.class));
     }
 

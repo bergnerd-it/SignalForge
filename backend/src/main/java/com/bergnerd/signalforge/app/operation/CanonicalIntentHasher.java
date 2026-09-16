@@ -61,6 +61,26 @@ public final class CanonicalIntentHasher {
         return sha256(canonical);
     }
 
+    public static String hashPaperTrade(
+            String portfolioId,
+            String listingId,
+            String side,
+            BigDecimal quantity,
+            BigDecimal referencePrice,
+            BigDecimal fillPrice,
+            BigDecimal commission,
+            BigDecimal modeledSpreadSlippage,
+            String marketEffectiveInstant
+    ) {
+        String canonical = String.format(
+                "PAPER_TRADE|portfolio:%s|listing:%s|side:%s|quantity:%s|reference:%s|fill:%s|commission:%s|modeled:%s|effective:%s",
+                portfolioId.trim(), listingId.trim(), side.trim().toLowerCase(),
+                quantity.stripTrailingZeros().toPlainString(), referencePrice.stripTrailingZeros().toPlainString(),
+                fillPrice.stripTrailingZeros().toPlainString(), commission.stripTrailingZeros().toPlainString(),
+                modeledSpreadSlippage.stripTrailingZeros().toPlainString(), marketEffectiveInstant);
+        return sha256(canonical);
+    }
+
     public static String hashSplit(
             String portfolioId,
             String listingId,

@@ -307,6 +307,46 @@ public class ResearchPortfolioController {
         return ResponseEntity.ok(valuations);
     }
 
+    @GetMapping("/portfolios/{id}/intents")
+    public ResponseEntity<ResearchDtos.PagedResponse<ResearchDtos.PaperExecutionIntentDto>> listIntents(
+            @PathVariable String id,
+            @RequestHeader(value = "X-User-Id", required = false, defaultValue = "default") String ownerId,
+            @RequestParam(value = "limit", defaultValue = "50") int limit,
+            @RequestParam(value = "offset", defaultValue = "0") int offset
+    ) {
+        return ResponseEntity.ok(paperPortfolioService.listIntents(id, ownerId, limit, offset));
+    }
+
+    @GetMapping("/portfolios/{id}/receivables")
+    public ResponseEntity<ResearchDtos.PagedResponse<ResearchDtos.PaperReceivableDto>> listReceivables(
+            @PathVariable String id,
+            @RequestHeader(value = "X-User-Id", required = false, defaultValue = "default") String ownerId,
+            @RequestParam(value = "limit", defaultValue = "50") int limit,
+            @RequestParam(value = "offset", defaultValue = "0") int offset
+    ) {
+        return ResponseEntity.ok(paperPortfolioService.listReceivables(id, ownerId, limit, offset));
+    }
+
+    @GetMapping("/portfolios/{id}/actions")
+    public ResponseEntity<ResearchDtos.PagedResponse<ResearchDtos.PaperProcessedActionDto>> listProcessedActions(
+            @PathVariable String id,
+            @RequestHeader(value = "X-User-Id", required = false, defaultValue = "default") String ownerId,
+            @RequestParam(value = "limit", defaultValue = "50") int limit,
+            @RequestParam(value = "offset", defaultValue = "0") int offset
+    ) {
+        return ResponseEntity.ok(paperPortfolioService.listProcessedActions(id, ownerId, limit, offset));
+    }
+
+    @GetMapping("/portfolios/{id}/adoptions")
+    public ResponseEntity<ResearchDtos.PagedResponse<ResearchDtos.PaperDatasetAdoptionDto>> listAdoptions(
+            @PathVariable String id,
+            @RequestHeader(value = "X-User-Id", required = false, defaultValue = "default") String ownerId,
+            @RequestParam(value = "limit", defaultValue = "50") int limit,
+            @RequestParam(value = "offset", defaultValue = "0") int offset
+    ) {
+        return ResponseEntity.ok(paperPortfolioService.listAdoptions(id, ownerId, limit, offset));
+    }
+
     @GetMapping({"/portfolios/{id}/export", "/portfolios/{id}/export.zip"})
     public ResponseEntity<byte[]> exportPaperPortfolio(
             @PathVariable String id,
@@ -428,6 +468,33 @@ public class ResearchPortfolioController {
                 view.id()
         );
 
+        String paperStartedAt = jdbcTemplate.queryForObject(
+                "SELECT paper_started_at FROM portfolios WHERE id = ?", String.class, view.id());
+        List<Map<String, Object>> valuationRows = jdbcTemplate.queryForList(
+                "SELECT positions_market_value, receivables_value, total_equity, data_readiness_status, is_complete " +
+                        "FROM paper_valuations WHERE portfolio_id = ? " +
+                        "ORDER BY observation_instant DESC, portfolio_state_revision DESC, id DESC LIMIT 1",
+                view.id());
+        String valuationStatus = "UNAVAILABLE";
+        String marketValue = null;
+        String unrealizedPnl = null;
+        String receivablesValue = null;
+        String totalEquity = null;
+        if (!valuationRows.isEmpty()) {
+            Map<String, Object> valuation = valuationRows.get(0);
+            receivablesValue = (String) valuation.get("receivables_value");
+            totalEquity = (String) valuation.get("total_equity");
+            if (((Number) valuation.get("is_complete")).intValue() == 1) {
+                valuationStatus = "AVAILABLE";
+                marketValue = (String) valuation.get("positions_market_value");
+                BigDecimal basis = BigDecimal.ZERO;
+                for (OperationService.PositionView position : view.positions()) {
+                    basis = basis.add(new BigDecimal(position.totalAcquisitionCost()));
+                }
+                unrealizedPnl = new BigDecimal(marketValue).subtract(basis).toPlainString();
+            }
+        }
+
         return new ResearchDtos.ResearchPortfolioDetail(
                 view.id(),
                 view.ownerId(),
@@ -437,15 +504,15 @@ public class ResearchPortfolioController {
                 view.cashBalance(),
                 view.revision(),
                 createdAt,
-                null,
+                paperStartedAt,
                 trackingStatus,
-                readinessStatus,
-                view.cashBalance(),
-                "0.00",
+                valuationStatus,
+                marketValue,
+                unrealizedPnl,
                 positions,
                 activeSegment,
-                "0.00",
-                view.cashBalance(),
+                receivablesValue,
+                totalEquity,
                 readinessStatus,
                 pendingProps != null ? pendingProps : 0,
                 pendingIntents != null ? pendingIntents : 0

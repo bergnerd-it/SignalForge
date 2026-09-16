@@ -3,6 +3,7 @@ package com.bergnerd.signalforge.app.research.paper;
 import com.bergnerd.signalforge.app.TemporarySqliteInitializer;
 import com.bergnerd.signalforge.app.operation.OperationService;
 import com.bergnerd.signalforge.app.research.ResearchDtos.*;
+import com.bergnerd.signalforge.app.research.ResearchPortfolioController;
 import com.bergnerd.signalforge.app.research.assistant.ResearchAssistantDtos.*;
 import com.bergnerd.signalforge.app.research.assistant.ResearchAssistantService;
 import org.junit.jupiter.api.BeforeEach;
@@ -46,6 +47,9 @@ class PaperPortfolioIntegrationTest {
 
     @Autowired
     private ResearchAssistantService assistantService;
+
+    @Autowired
+    private ResearchPortfolioController portfolioController;
 
     private static final String OWNER = "test-owner-m5";
     private static final String TICKER = "IWDA.AS";
@@ -139,6 +143,22 @@ class PaperPortfolioIntegrationTest {
     }
 
     @Test
+    void activationRejectsMissingFixtureIdsWithoutDatabaseError() {
+        String owner = "activation-validation-owner";
+        OperationService.PortfolioCreationResult port = operationService.createPortfolio(
+                owner, "Missing Fixture Fund", "PAPER", "EUR", new BigDecimal("1000.00"), "missing-fixture-create");
+        org.springframework.web.server.ResponseStatusException error = assertThrows(
+                org.springframework.web.server.ResponseStatusException.class,
+                () -> paperPortfolioService.activatePortfolio(port.portfolioId(), owner, "missing-fixture-activate",
+                        new ActivatePortfolioRequest("ETF_BUY_HOLD_V1", "1.0.0", "missing-universe",
+                                LISTING_ID, new CostPolicyDto("1.00", "0", "0"), "MANUAL")));
+        assertEquals(400, error.getStatusCode().value());
+        assertEquals(0, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM paper_portfolio_segments WHERE portfolio_id = ?",
+                Integer.class, port.portfolioId()));
+    }
+
+    @Test
     void completePaperPortfolioLifecycleWorkflow() throws Exception {
         // Step 1: Create separate EUR paper portfolio
         OperationService.PortfolioCreationResult created = operationService.createPortfolio(
@@ -179,6 +199,11 @@ class PaperPortfolioIntegrationTest {
         PaperProposalDto proposal = paperPortfolioService.evaluatePortfolio(portfolioId, OWNER, "idemp-eval-m5");
         assertNotNull(proposal);
         assertEquals("PROPOSED", proposal.status());
+        PaperProposalDto repeatedEvaluation = paperPortfolioService.evaluatePortfolio(
+                portfolioId, OWNER, "idemp-eval-m5-again");
+        assertEquals(proposal.id(), repeatedEvaluation.id());
+        assertEquals(1, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM paper_proposals WHERE portfolio_id = ?", Integer.class, portfolioId));
 
         // Step 6: Timely proposal acceptance
         PaperProposalDto accepted = paperPortfolioService.acceptProposal(
@@ -194,8 +219,11 @@ class PaperPortfolioIntegrationTest {
         // Step 7: Corporate action receivable & idempotency
         String recId = UUID.randomUUID().toString();
         jdbcTemplate.update(
-                "INSERT INTO paper_receivables (id, portfolio_id, action_id, listing_id, action_type, record_instant, ex_date, payment_date, gross_amount, withholding_tax, net_amount, status, created_at) " +
-                        "VALUES (?, ?, 'ca-div-1', ?, 'CASH_DISTRIBUTION', '2026-09-15T09:00:00Z', '2026-09-15', '2026-09-15', '10.00', '0.00', '10.00', 'PENDING', '2026-09-15T09:00:00Z')",
+                "INSERT INTO paper_receivables (id, portfolio_id, action_id, listing_id, source_namespace, action_type, record_instant, ex_date, " +
+                        "payment_date, availability_instant, gross_amount, withholding_tax, net_amount, status, created_at, dataset_id, dataset_checksum, terms_hash) " +
+                        "VALUES (?, ?, 'ca-div-1', ?, 'SYNTHETIC', 'CASH_DISTRIBUTION', '2026-09-15T09:00:00Z', '2026-09-15', " +
+                        "'2026-09-15', '2026-09-15T09:00:00Z', '10.00', '0.00', '10.00', 'PENDING', '2026-09-15T09:00:00Z', " +
+                        "'ds-test-m5', 'chk-content', 'fixture-terms')",
                 recId, portfolioId, LISTING_ID
         );
 
@@ -223,11 +251,15 @@ class PaperPortfolioIntegrationTest {
         assertEquals(0, new BigDecimal("100").compareTo(positionQty));
 
         // Second process run -> duplicate processing rejected / no duplicate cash credited
+        Integer valuationCountBeforeRetry = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM paper_valuations WHERE portfolio_id = ?", Integer.class, portfolioId);
         paperPortfolioService.processPortfolioEvents(portfolioId, OWNER, "idemp-ca-2");
         BigDecimal cashAfterSecondProcess = jdbcTemplate.queryForObject(
                 "SELECT cash_amount FROM portfolio_state WHERE portfolio_id = ?",
                 BigDecimal.class, portfolioId);
         assertEquals(0, cashAfterDiv.compareTo(cashAfterSecondProcess));
+        assertEquals(valuationCountBeforeRetry, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM paper_valuations WHERE portfolio_id = ?", Integer.class, portfolioId));
 
         // Step 8: Concurrency barrier: 8 threads attempting to accept/modify the same proposal
         PaperProposalDto prop2 = paperPortfolioService.evaluatePortfolio(portfolioId, OWNER, "idemp-eval-m5-2");
@@ -399,6 +431,266 @@ class PaperPortfolioIntegrationTest {
                 Integer.class, portId
         );
         assertEquals(1, fillCount, "Repeat event processing must leave exactly one fill");
+    }
+
+    @Test
+    void waitingIntentResumesOnceWithConfiguredCostsAndCausalTimestamps() {
+        String owner = "waiting-owner";
+        String missingSession = java.time.LocalDate.parse(SESSION_1).minusDays(1).toString();
+        OperationService.PortfolioCreationResult port = operationService.createPortfolio(
+                owner, "Waiting Observation Fund", "PAPER", "EUR", new BigDecimal("1000.00"), "waiting-create");
+        paperPortfolioService.activatePortfolio(
+                port.portfolioId(), owner, "waiting-activate",
+                new ActivatePortfolioRequest(
+                        "ETF_BUY_HOLD_V1", "1.0.0", "uni-default", LISTING_ID,
+                        new CostPolicyDto("2.00", "20", "10"), "MANUAL"));
+        dataReadinessService.adoptDataset(port.portfolioId(), "ds-test-m5", owner, "waiting-adopt");
+        PaperProposalDto proposal = paperPortfolioService.evaluatePortfolio(port.portfolioId(), owner, "waiting-evaluate");
+        paperPortfolioService.acceptProposal(
+                port.portfolioId(), proposal.id(), owner, "waiting-accept", new AcceptProposalRequest("test"));
+        jdbcTemplate.update(
+                "INSERT OR IGNORE INTO dataset_sessions (dataset_id, calendar_id, session_date, open_time, close_time, session_type) " +
+                        "VALUES ('ds-test-m5', 'XAMS', ?, '09:00:00', '17:30:00', 'TRADING')",
+                missingSession);
+        jdbcTemplate.update(
+                "UPDATE paper_execution_intents SET scheduled_session_date = ?, scheduled_open_instant = ? WHERE portfolio_id = ?",
+                missingSession, missingSession + "T08:00:00Z", port.portfolioId());
+
+        paperPortfolioService.processPortfolioEvents(port.portfolioId(), owner, "waiting-process-1");
+        assertEquals("WAITING_FOR_OBSERVATION", jdbcTemplate.queryForObject(
+                "SELECT status FROM paper_execution_intents WHERE portfolio_id = ?", String.class, port.portfolioId()));
+        assertEquals(0, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM paper_execution_results r JOIN paper_execution_intents i ON i.id = r.intent_id " +
+                        "WHERE i.portfolio_id = ?", Integer.class, port.portfolioId()));
+
+        jdbcTemplate.update(
+                "INSERT INTO historical_bars (dataset_id, listing_id, session_date, open, high, low, close, volume, available_at) " +
+                        "VALUES ('ds-test-m5', ?, ?, '100.00', '101.00', '99.00', '100.00', 10000, ?)",
+                LISTING_ID, missingSession, java.time.Instant.now().minusSeconds(1).toString());
+        paperPortfolioService.processPortfolioEvents(port.portfolioId(), owner, "waiting-process-2");
+
+        Map<String, Object> result = jdbcTemplate.queryForMap(
+                    "SELECT r.raw_open_price, r.fill_price, r.commission, r.spread_slippage_cost, " +
+                            "r.market_effective_instant, r.observed_instant, r.booked_instant, i.status " +
+                            "FROM paper_execution_results r JOIN paper_execution_intents i ON i.id = r.intent_id " +
+                            "WHERE i.portfolio_id = ?", port.portfolioId());
+        assertEquals("EXECUTED", result.get("status"));
+        assertEquals(0, new BigDecimal("100.00").compareTo(new BigDecimal((String) result.get("raw_open_price"))));
+        assertEquals(0, new BigDecimal("100.20").compareTo(new BigDecimal((String) result.get("fill_price"))));
+        assertEquals(0, new BigDecimal("2.00").compareTo(new BigDecimal((String) result.get("commission"))));
+        assertEquals(0, new BigDecimal("1.80").compareTo(new BigDecimal((String) result.get("spread_slippage_cost"))));
+        assertEquals(missingSession + "T08:00:00Z", result.get("market_effective_instant"));
+        assertNotEquals(result.get("market_effective_instant"), result.get("observed_instant"));
+        assertEquals(result.get("observed_instant"), result.get("booked_instant"));
+
+        paperPortfolioService.processPortfolioEvents(port.portfolioId(), owner, "waiting-process-3");
+        assertEquals(1, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM paper_execution_results r JOIN paper_execution_intents i ON i.id = r.intent_id " +
+                        "WHERE i.portfolio_id = ?", Integer.class, port.portfolioId()));
+        assertEquals(1, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM paper_intent_transitions t JOIN paper_execution_intents i ON i.id = t.intent_id " +
+                        "WHERE i.portfolio_id = ? AND t.to_status = 'EXECUTED'", Integer.class, port.portfolioId()));
+        ResearchPortfolioDetail detail = portfolioController.getPortfolio(port.portfolioId(), owner).getBody();
+        assertNotNull(detail);
+        assertNotNull(detail.paperStartedAt());
+        assertEquals("AVAILABLE", detail.valuationStatus());
+        assertEquals(0, new BigDecimal("900.00").compareTo(new BigDecimal(detail.marketValue())));
+        assertEquals(0, new BigDecimal("-3.80").compareTo(new BigDecimal(detail.unrealizedPnl())));
+    }
+
+    @Test
+    void lateAcceptanceSupersedesOldOpenAndReevaluatesSameDecisionSession() {
+        String owner = "late-owner";
+        String laterSession = java.time.LocalDate.parse(SESSION_2).plusDays(1).toString();
+        jdbcTemplate.update(
+                "INSERT OR IGNORE INTO dataset_sessions (dataset_id, calendar_id, session_date, open_time, close_time, session_type) " +
+                        "VALUES ('ds-test-m5', 'XAMS', ?, '09:00:00', '17:30:00', 'TRADING')",
+                laterSession);
+        java.time.Clock originalPaperClock = (java.time.Clock) org.springframework.test.util.ReflectionTestUtils
+                .getField(paperPortfolioService, "clock");
+        java.time.Clock originalReadinessClock = (java.time.Clock) org.springframework.test.util.ReflectionTestUtils
+                .getField(dataReadinessService, "clock");
+        java.time.ZoneId exchangeZone = java.time.ZoneId.of("Europe/Berlin");
+        java.time.Clock beforeOpen = java.time.Clock.fixed(
+                java.time.LocalDate.parse(SESSION_1).plusDays(1).atTime(12, 0)
+                        .atZone(exchangeZone).toInstant(), exchangeZone);
+        java.time.Clock afterOpen = java.time.Clock.fixed(
+                java.time.LocalDate.parse(SESSION_2).atTime(10, 0)
+                        .atZone(exchangeZone).toInstant(), exchangeZone);
+        try {
+            org.springframework.test.util.ReflectionTestUtils.setField(paperPortfolioService, "clock", beforeOpen);
+            org.springframework.test.util.ReflectionTestUtils.setField(dataReadinessService, "clock", beforeOpen);
+            OperationService.PortfolioCreationResult portfolio = operationService.createPortfolio(
+                    owner, "Late Acceptance Fund", "PAPER", "EUR", new BigDecimal("1000.00"), "late-create");
+            paperPortfolioService.activatePortfolio(portfolio.portfolioId(), owner, "late-activate",
+                    new ActivatePortfolioRequest("ETF_BUY_HOLD_V1", "1.0.0", "uni-default", LISTING_ID,
+                            new CostPolicyDto("1.00", "0", "0"), "MANUAL"));
+            dataReadinessService.adoptDataset(portfolio.portfolioId(), "ds-test-m5", owner, "late-adopt");
+            PaperProposalDto first = paperPortfolioService.evaluatePortfolio(
+                    portfolio.portfolioId(), owner, "late-evaluate-first");
+            assertEquals(SESSION_2, first.scheduledOpenSessionDate());
+
+            org.springframework.test.util.ReflectionTestUtils.setField(paperPortfolioService, "clock", afterOpen);
+            org.springframework.test.util.ReflectionTestUtils.setField(dataReadinessService, "clock", afterOpen);
+            assertThrows(org.springframework.web.server.ResponseStatusException.class, () ->
+                    paperPortfolioService.acceptProposal(portfolio.portfolioId(), first.id(), owner,
+                            "late-accept-first", new AcceptProposalRequest("too late")));
+            assertEquals("SUPERSEDED", jdbcTemplate.queryForObject(
+                    "SELECT status FROM paper_proposals WHERE id = ?", String.class, first.id()));
+
+            PaperProposalDto later = paperPortfolioService.evaluatePortfolio(
+                    portfolio.portfolioId(), owner, "late-evaluate-next-open");
+            assertNotEquals(first.id(), later.id());
+            assertEquals(laterSession, later.scheduledOpenSessionDate());
+            assertEquals("ACCEPTED", paperPortfolioService.acceptProposal(
+                    portfolio.portfolioId(), later.id(), owner, "late-accept-next-open",
+                    new AcceptProposalRequest("future open")).status());
+            assertEquals(0, jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM paper_execution_intents WHERE proposal_id = ?", Integer.class, first.id()));
+        } finally {
+            org.springframework.test.util.ReflectionTestUtils.setField(paperPortfolioService, "clock", originalPaperClock);
+            org.springframework.test.util.ReflectionTestUtils.setField(dataReadinessService, "clock", originalReadinessClock);
+        }
+    }
+
+    @Test
+    void disablingAutoPaperKeepsPreviouslyAcceptedFutureIntent() {
+        String owner = "mode-owner";
+        OperationService.PortfolioCreationResult portfolio = operationService.createPortfolio(
+                owner, "Mode Transition Fund", "PAPER", "EUR", new BigDecimal("1000.00"), "mode-create");
+        paperPortfolioService.activatePortfolio(portfolio.portfolioId(), owner, "mode-activate",
+                new ActivatePortfolioRequest("ETF_BUY_HOLD_V1", "1.0.0", "uni-default", LISTING_ID,
+                        new CostPolicyDto("1.00", "0", "0"), "MANUAL"));
+        dataReadinessService.adoptDataset(portfolio.portfolioId(), "ds-test-m5", owner, "mode-adopt");
+        PaperProposalDto proposal = paperPortfolioService.evaluatePortfolio(
+                portfolio.portfolioId(), owner, "mode-evaluate");
+        paperPortfolioService.acceptProposal(portfolio.portfolioId(), proposal.id(), owner,
+                "mode-accept", new AcceptProposalRequest("future order"));
+
+        paperPortfolioService.changeApprovalMode(portfolio.portfolioId(), owner, "mode-enable",
+                new ChangeApprovalModeRequest("AUTO_PAPER", "test opt-in"));
+        paperPortfolioService.changeApprovalMode(portfolio.portfolioId(), owner, "mode-disable",
+                new ChangeApprovalModeRequest("MANUAL", "keep accepted order"));
+
+        assertEquals("PENDING", jdbcTemplate.queryForObject(
+                "SELECT status FROM paper_execution_intents WHERE proposal_id = ?", String.class, proposal.id()));
+        assertEquals("MANUAL", jdbcTemplate.queryForObject(
+                "SELECT approval_mode FROM paper_portfolio_segments WHERE portfolio_id = ? AND status = 'ACTIVE'",
+                String.class, portfolio.portfolioId()));
+        assertEquals(3, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM paper_mode_history WHERE portfolio_id = ?", Integer.class,
+                portfolio.portfolioId()));
+    }
+
+    @Test
+    void failedExecutionProvenanceRollsBackTradeAndCanRetry() {
+        String owner = "rollback-owner";
+        OperationService.PortfolioCreationResult port = operationService.createPortfolio(
+                owner, "Rollback Fund", "PAPER", "EUR", new BigDecimal("1000.00"), "rollback-create");
+        paperPortfolioService.activatePortfolio(port.portfolioId(), owner, "rollback-activate",
+                new ActivatePortfolioRequest("ETF_BUY_HOLD_V1", "1.0.0", "uni-default", LISTING_ID,
+                        new CostPolicyDto("1.00", "0", "0"), "MANUAL"));
+        dataReadinessService.adoptDataset(port.portfolioId(), "ds-test-m5", owner, "rollback-adopt");
+        PaperProposalDto proposal = paperPortfolioService.evaluatePortfolio(port.portfolioId(), owner, "rollback-evaluate");
+        paperPortfolioService.acceptProposal(port.portfolioId(), proposal.id(), owner, "rollback-accept",
+                new AcceptProposalRequest("test"));
+        jdbcTemplate.update(
+                "UPDATE paper_execution_intents SET scheduled_session_date = ?, scheduled_open_instant = ? WHERE portfolio_id = ?",
+                SESSION_1, SESSION_1 + "T08:00:00Z", port.portfolioId());
+
+        jdbcTemplate.execute("CREATE TRIGGER test_fail_paper_provenance BEFORE INSERT ON paper_execution_results " +
+                "BEGIN SELECT RAISE(ABORT, 'injected paper provenance failure'); END");
+        try {
+            assertThrows(Exception.class, () -> paperPortfolioService.processPortfolioEvents(
+                    port.portfolioId(), owner, "rollback-process"));
+            assertEquals("1000.00", jdbcTemplate.queryForObject(
+                    "SELECT cash_amount FROM portfolio_state WHERE portfolio_id = ?", String.class, port.portfolioId()));
+            assertEquals(0, jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM operations WHERE portfolio_id = ? AND kind = 'TRADE'",
+                    Integer.class, port.portfolioId()));
+            assertEquals("PENDING", jdbcTemplate.queryForObject(
+                    "SELECT status FROM paper_execution_intents WHERE portfolio_id = ?", String.class, port.portfolioId()));
+            assertEquals(0, jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM paper_mutation_requests WHERE owner_id = ? AND action = 'PROCESS_EVENTS' " +
+                            "AND idempotency_key = 'rollback-process'", Integer.class, owner));
+        } finally {
+            jdbcTemplate.execute("DROP TRIGGER test_fail_paper_provenance");
+        }
+
+        paperPortfolioService.processPortfolioEvents(port.portfolioId(), owner, "rollback-process");
+        assertEquals("EXECUTED", jdbcTemplate.queryForObject(
+                "SELECT status FROM paper_execution_intents WHERE portfolio_id = ?", String.class, port.portfolioId()));
+        assertEquals(1, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM paper_execution_results r JOIN paper_execution_intents i ON i.id = r.intent_id " +
+                        "WHERE i.portfolio_id = ?", Integer.class, port.portfolioId()));
+    }
+
+    @Test
+    void delayedDistributionUsesHistoricalEntitlementAndCreatesManualReinvestmentProposal() {
+        String owner = "distribution-owner";
+        String entitlementDate = java.time.LocalDate.parse(SESSION_1).minusDays(20).toString();
+        String saleDate = java.time.LocalDate.parse(SESSION_1).minusDays(19).toString();
+        OperationService.PortfolioCreationResult port = operationService.createPortfolio(
+                owner, "Distribution Fund", "PAPER", "EUR", new BigDecimal("1000.00"), "distribution-create");
+        paperPortfolioService.activatePortfolio(
+                port.portfolioId(), owner, "distribution-activate",
+                new ActivatePortfolioRequest(
+                        "ETF_BUY_HOLD_V1", "1.0.0", "uni-default", LISTING_ID,
+                        new CostPolicyDto("1.00", "0", "0"), "MANUAL"));
+        dataReadinessService.adoptDataset(port.portfolioId(), "ds-test-m5", owner, "distribution-adopt");
+        operationService.executePaperTrade(
+                port.portfolioId(), TICKER, "BUY", new BigDecimal("2"), new BigDecimal("100"),
+                new BigDecimal("100"), BigDecimal.ZERO, BigDecimal.ZERO, "distribution-seed-trade",
+                "TEST_OPEN", entitlementDate + "T08:00:00Z");
+        operationService.executePaperTrade(
+                port.portfolioId(), TICKER, "SELL", new BigDecimal("2"), new BigDecimal("100"),
+                new BigDecimal("100"), BigDecimal.ZERO, BigDecimal.ZERO, "distribution-later-sale",
+                "TEST_OPEN", saleDate + "T08:00:00Z");
+
+        String actionId = "distribution-delayed-action";
+        jdbcTemplate.update(
+                    "INSERT INTO historical_actions (dataset_id, action_id, listing_id, action_type, effective_date, available_at, " +
+                            "distribution_amount, distribution_currency, payment_date, payment_instant) " +
+                            "VALUES ('ds-test-m5', ?, ?, 'CASH_DISTRIBUTION', ?, '2026-09-01T18:00:00Z', " +
+                            "'1.25', 'EUR', ?, '2026-09-01T19:00:00Z')",
+                actionId, LISTING_ID, entitlementDate, entitlementDate);
+        paperPortfolioService.processPortfolioEvents(port.portfolioId(), owner, "distribution-process");
+
+        Map<String, Object> receivable = jdbcTemplate.queryForMap(
+                    "SELECT source_namespace, gross_amount, net_amount, status, dataset_id, dataset_checksum, terms_hash " +
+                            "FROM paper_receivables WHERE portfolio_id = ? AND action_id = ?",
+                    port.portfolioId(), actionId);
+        assertEquals("SYNTHETIC", receivable.get("source_namespace"));
+            assertEquals(0, new BigDecimal("2.50").compareTo(new BigDecimal((String) receivable.get("gross_amount"))));
+            assertEquals(0, new BigDecimal("2.50").compareTo(new BigDecimal((String) receivable.get("net_amount"))));
+            assertEquals("PAID", receivable.get("status"));
+            assertEquals("ds-test-m5", receivable.get("dataset_id"));
+            assertEquals("chk-content", receivable.get("dataset_checksum"));
+        assertFalse(((String) receivable.get("terms_hash")).isBlank());
+
+        Map<String, Object> reinvestment = jdbcTemplate.queryForMap(
+                    "SELECT p.id, p.status, p.reason_code, p.reinvestment_receivable_id " +
+                            "FROM paper_proposals p JOIN paper_receivables r ON r.id = p.reinvestment_receivable_id " +
+                            "WHERE r.portfolio_id = ? AND r.action_id = ?",
+                    port.portfolioId(), actionId);
+        assertEquals("PROPOSED", reinvestment.get("status"));
+        assertEquals("DISTRIBUTION_REINVESTMENT", reinvestment.get("reason_code"));
+        assertNotNull(reinvestment.get("reinvestment_receivable_id"));
+
+        paperPortfolioService.acceptProposal(port.portfolioId(), (String) reinvestment.get("id"), owner,
+                "distribution-accept", new AcceptProposalRequest("Reinvest only the payment"));
+        jdbcTemplate.update(
+                "UPDATE paper_execution_intents SET scheduled_session_date = ?, scheduled_open_instant = ? " +
+                        "WHERE reinvestment_receivable_id = ?",
+                SESSION_1, SESSION_1 + "T08:00:00Z", reinvestment.get("reinvestment_receivable_id"));
+
+        paperPortfolioService.processPortfolioEvents(port.portfolioId(), owner, "distribution-process-repeat");
+        assertEquals(1, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM paper_receivables WHERE portfolio_id = ? AND action_id = ?",
+                Integer.class, port.portfolioId(), actionId));
+        assertEquals(0, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM paper_execution_results WHERE reinvestment_receivable_id = ?",
+                Integer.class, reinvestment.get("reinvestment_receivable_id")));
     }
 
     @Test

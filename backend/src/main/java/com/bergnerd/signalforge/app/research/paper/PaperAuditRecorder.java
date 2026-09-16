@@ -27,6 +27,33 @@ public class PaperAuditRecorder {
             String rejectionReason,
             String adoptedAt
     ) {
+        return insertAdoption(portfolioId, datasetId, checksum, coverageStart, coverageEnd, status, rejectionReason, adoptedAt);
+    }
+
+    @Transactional
+    public String recordAdoption(
+            String portfolioId,
+            String datasetId,
+            String checksum,
+            String coverageStart,
+            String coverageEnd,
+            String status,
+            String rejectionReason,
+            String adoptedAt
+    ) {
+        return insertAdoption(portfolioId, datasetId, checksum, coverageStart, coverageEnd, status, rejectionReason, adoptedAt);
+    }
+
+    private String insertAdoption(
+            String portfolioId,
+            String datasetId,
+            String checksum,
+            String coverageStart,
+            String coverageEnd,
+            String status,
+            String rejectionReason,
+            String adoptedAt
+    ) {
         String adoptionId = "adopt-" + UUID.randomUUID();
         jdbcTemplate.update(
                 "INSERT INTO paper_dataset_adoptions (id, portfolio_id, dataset_id, dataset_checksum, " +

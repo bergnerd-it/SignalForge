@@ -769,6 +769,21 @@ class BacktestIntegrationTest {
                 .andReturn();
         String runId1 = objectMapper.readValue(res1.getResponse().getContentAsString(), BacktestDtos.BacktestSummaryResponse.class).id();
 
+        // This test checks replay determinism, not concurrent writers. Complete the first run
+        // before starting the second so SQLite writer contention cannot obscure the comparison.
+        BacktestDtos.BacktestSummaryResponse summary1 = null;
+        for (int i = 0; i < 100; i++) {
+            Thread.sleep(100);
+            var s = objectMapper.readValue(mockMvc.perform(get("/api/research/backtests/" + runId1))
+                    .andReturn().getResponse().getContentAsString(), BacktestDtos.BacktestSummaryResponse.class);
+            if ("COMPLETED".equals(s.status())) {
+                summary1 = s;
+                break;
+            }
+            assertNotEquals("FAILED", s.status(), s.failureReason());
+        }
+        assertNotNull(summary1);
+
         // Run 2 (different key, identical parameters)
         String key2 = "replay-run-2-" + UUID.randomUUID();
         MvcResult res2 = mockMvc.perform(post("/api/research/backtests")
@@ -781,22 +796,16 @@ class BacktestIntegrationTest {
         String runId2 = objectMapper.readValue(res2.getResponse().getContentAsString(), BacktestDtos.BacktestSummaryResponse.class).id();
 
         // Wait for both to complete
-        BacktestDtos.BacktestSummaryResponse summary1 = null;
         BacktestDtos.BacktestSummaryResponse summary2 = null;
         for (int i = 0; i < 100; i++) {
             Thread.sleep(100);
-            if (summary1 == null) {
-                var s = objectMapper.readValue(mockMvc.perform(get("/api/research/backtests/" + runId1)).andReturn().getResponse().getContentAsString(), BacktestDtos.BacktestSummaryResponse.class);
-                if ("COMPLETED".equals(s.status())) summary1 = s;
-            }
             if (summary2 == null) {
                 var s = objectMapper.readValue(mockMvc.perform(get("/api/research/backtests/" + runId2)).andReturn().getResponse().getContentAsString(), BacktestDtos.BacktestSummaryResponse.class);
                 if ("COMPLETED".equals(s.status())) summary2 = s;
             }
-            if (summary1 != null && summary2 != null) break;
+            if (summary2 != null) break;
         }
 
-        assertNotNull(summary1);
         assertNotNull(summary2);
 
         // Verify identical financial analytics

@@ -1,6 +1,6 @@
 import { Injectable } from '@angular/core';
 import { HttpClient, HttpHeaders } from '@angular/common/http';
-import { Observable, BehaviorSubject, Subject, switchMap, tap, of, catchError } from 'rxjs';
+import { Observable, BehaviorSubject, Subject, switchMap, tap, of, catchError, forkJoin } from 'rxjs';
 import {
   ResearchPortfolioSummary,
   ResearchPortfolioDetail,
@@ -17,6 +17,16 @@ import {
   PagedResponse,
   AssistantChatRequest,
   AssistantChatResponse,
+  DatasetAdoptionResult,
+  ModeChangeResponse,
+  ProcessEventsResponse,
+  PaperExecutionIntent,
+  PaperReceivable,
+  PaperProcessedAction,
+  PaperDatasetAdoption,
+  PaperPageMetadata,
+  PaperPageName,
+  PaperPageState,
 } from '../models/research.model';
 
 @Injectable({
@@ -38,6 +48,29 @@ export class ResearchService {
   private readonly modeHistorySubject = new BehaviorSubject<PaperModeHistory[]>([]);
   public readonly modeHistory$: Observable<PaperModeHistory[]> = this.modeHistorySubject.asObservable();
 
+  private readonly intentsSubject = new BehaviorSubject<PaperExecutionIntent[]>([]);
+  public readonly intents$: Observable<PaperExecutionIntent[]> = this.intentsSubject.asObservable();
+
+  private readonly receivablesSubject = new BehaviorSubject<PaperReceivable[]>([]);
+  public readonly receivables$: Observable<PaperReceivable[]> = this.receivablesSubject.asObservable();
+
+  private readonly actionsSubject = new BehaviorSubject<PaperProcessedAction[]>([]);
+  public readonly actions$: Observable<PaperProcessedAction[]> = this.actionsSubject.asObservable();
+
+  private readonly adoptionsSubject = new BehaviorSubject<PaperDatasetAdoption[]>([]);
+  public readonly adoptions$: Observable<PaperDatasetAdoption[]> = this.adoptionsSubject.asObservable();
+
+  private readonly initialPaperPages: PaperPageState = {
+    proposals: { total: 0, limit: 50, offset: 0, isComplete: true },
+    valuations: { total: 0, limit: 200, offset: 0, isComplete: true },
+    intents: { total: 0, limit: 100, offset: 0, isComplete: true },
+    receivables: { total: 0, limit: 100, offset: 0, isComplete: true },
+    actions: { total: 0, limit: 100, offset: 0, isComplete: true },
+    adoptions: { total: 0, limit: 100, offset: 0, isComplete: true },
+  };
+  private readonly paperPagesSubject = new BehaviorSubject<PaperPageState>(this.initialPaperPages);
+  public readonly paperPages$: Observable<PaperPageState> = this.paperPagesSubject.asObservable();
+
   private readonly loadingSubject = new BehaviorSubject<boolean>(false);
   public readonly loading$: Observable<boolean> = this.loadingSubject.asObservable();
 
@@ -51,9 +84,27 @@ export class ResearchService {
       tap(() => {
         this.loadingSubject.next(true);
         this.errorSubject.next(null);
+        this.selectedPortfolioSubject.next(null);
+        this.proposalsSubject.next([]);
+        this.valuationsSubject.next([]);
+        this.modeHistorySubject.next([]);
+        this.intentsSubject.next([]);
+        this.receivablesSubject.next([]);
+        this.actionsSubject.next([]);
+        this.adoptionsSubject.next([]);
+        this.paperPagesSubject.next(this.initialPaperPages);
       }),
       switchMap((id) =>
-        this.http.get<ResearchPortfolioDetail>(`/api/research/portfolios/${id}`).pipe(
+        forkJoin({
+          detail: this.http.get<ResearchPortfolioDetail>(`/api/research/portfolios/${id}`),
+          proposals: this.http.get<PagedResponse<PaperProposal>>(`/api/research/portfolios/${id}/proposals?limit=50&offset=0`),
+          valuations: this.http.get<PagedResponse<PaperValuation>>(`/api/research/portfolios/${id}/valuations?limit=200&offset=0`),
+          modeHistory: this.http.get<PaperModeHistory[]>(`/api/research/portfolios/${id}/mode-history`),
+          intents: this.http.get<PagedResponse<PaperExecutionIntent>>(`/api/research/portfolios/${id}/intents?limit=100&offset=0`),
+          receivables: this.http.get<PagedResponse<PaperReceivable>>(`/api/research/portfolios/${id}/receivables?limit=100&offset=0`),
+          actions: this.http.get<PagedResponse<PaperProcessedAction>>(`/api/research/portfolios/${id}/actions?limit=100&offset=0`),
+          adoptions: this.http.get<PagedResponse<PaperDatasetAdoption>>(`/api/research/portfolios/${id}/adoptions?limit=100&offset=0`),
+        }).pipe(
           catchError((error: unknown) => {
             console.error(`Failed to load portfolio detail ${id}:`, error);
             this.errorSubject.next('Failed to load portfolio detail');
@@ -61,9 +112,24 @@ export class ResearchService {
           })
         )
       )
-    ).subscribe((detail) => {
-      if (detail) {
-        this.selectedPortfolioSubject.next(detail);
+    ).subscribe((state) => {
+      if (state) {
+        this.selectedPortfolioSubject.next(state.detail);
+        this.proposalsSubject.next(state.proposals.items);
+        this.valuationsSubject.next(state.valuations.items);
+        this.modeHistorySubject.next(state.modeHistory);
+        this.intentsSubject.next(state.intents.items);
+        this.receivablesSubject.next(state.receivables.items);
+        this.actionsSubject.next(state.actions.items);
+        this.adoptionsSubject.next(state.adoptions.items);
+        this.paperPagesSubject.next({
+          proposals: this.pageMetadata(state.proposals),
+          valuations: this.pageMetadata(state.valuations),
+          intents: this.pageMetadata(state.intents),
+          receivables: this.pageMetadata(state.receivables),
+          actions: this.pageMetadata(state.actions),
+          adoptions: this.pageMetadata(state.adoptions),
+        });
       }
       this.loadingSubject.next(false);
     });
@@ -128,14 +194,14 @@ export class ResearchService {
     );
   }
 
-  public adoptDataset(id: string, req: AdoptDatasetRequest): Observable<any> {
+  public adoptDataset(id: string, req: AdoptDatasetRequest): Observable<DatasetAdoptionResult> {
     const key = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : 'adopt-' + Date.now();
     const headers = new HttpHeaders({
       'Content-Type': 'application/json',
       'Idempotency-Key': key,
     });
 
-    return this.http.post<any>(`/api/research/portfolios/${id}/adopt-dataset`, req, { headers }).pipe(
+    return this.http.post<DatasetAdoptionResult>(`/api/research/portfolios/${id}/adopt-dataset`, req, { headers }).pipe(
       tap(() => {
         this.selectPortfolio(id);
       })
@@ -151,7 +217,6 @@ export class ResearchService {
 
     return this.http.post<PaperProposal>(`/api/research/portfolios/${id}/evaluate`, {}, { headers }).pipe(
       tap(() => {
-        this.loadProposals(id);
         this.selectPortfolio(id);
       })
     );
@@ -161,6 +226,7 @@ export class ResearchService {
     this.http.get<PagedResponse<PaperProposal>>(`/api/research/portfolios/${id}/proposals?limit=${limit}&offset=${offset}`).subscribe({
       next: (res) => {
         this.proposalsSubject.next(res.items || []);
+        this.updatePage('proposals', res);
       },
       error: (err) => console.error('Failed to load proposals', err),
     });
@@ -175,7 +241,6 @@ export class ResearchService {
 
     return this.http.post<PaperProposal>(`/api/research/portfolios/${id}/proposals/${proposalId}/accept`, req || {}, { headers }).pipe(
       tap(() => {
-        this.loadProposals(id);
         this.selectPortfolio(id);
       })
     );
@@ -190,23 +255,21 @@ export class ResearchService {
 
     return this.http.post<PaperProposal>(`/api/research/portfolios/${id}/proposals/${proposalId}/reject`, req, { headers }).pipe(
       tap(() => {
-        this.loadProposals(id);
         this.selectPortfolio(id);
       })
     );
   }
 
-  public changeApprovalMode(id: string, req: ChangeApprovalModeRequest): Observable<any> {
+  public changeApprovalMode(id: string, req: ChangeApprovalModeRequest): Observable<ModeChangeResponse> {
     const key = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : 'mode-' + Date.now();
     const headers = new HttpHeaders({
       'Content-Type': 'application/json',
       'Idempotency-Key': key,
     });
 
-    return this.http.post<any>(`/api/research/portfolios/${id}/mode`, req, { headers }).pipe(
+    return this.http.post<ModeChangeResponse>(`/api/research/portfolios/${id}/mode`, req, { headers }).pipe(
       tap(() => {
         this.selectPortfolio(id);
-        this.loadModeHistory(id);
       })
     );
   }
@@ -218,26 +281,67 @@ export class ResearchService {
     });
   }
 
-  public processPortfolioEvents(id: string): Observable<any> {
+  public processPortfolioEvents(id: string): Observable<ProcessEventsResponse> {
     const key = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : 'proc-' + Date.now();
     const headers = new HttpHeaders({
       'Content-Type': 'application/json',
       'Idempotency-Key': key,
     });
 
-    return this.http.post<any>(`/api/research/portfolios/${id}/process`, {}, { headers }).pipe(
+    return this.http.post<ProcessEventsResponse>(`/api/research/portfolios/${id}/process`, {}, { headers }).pipe(
       tap(() => {
         this.selectPortfolio(id);
-        this.loadValuations(id);
       })
     );
   }
 
   public loadValuations(id: string, limit: number = 100, offset: number = 0): void {
     this.http.get<PagedResponse<PaperValuation>>(`/api/research/portfolios/${id}/valuations?limit=${limit}&offset=${offset}`).subscribe({
-      next: (res) => this.valuationsSubject.next(res.items || []),
+      next: (res) => {
+        this.valuationsSubject.next(res.items || []);
+        this.updatePage('valuations', res);
+      },
       error: (err) => console.error('Failed to load valuations', err),
     });
+  }
+
+  public loadIntents(id: string, limit = 100, offset = 0): void {
+    this.loadPaperPage(id, 'intents', limit, offset, this.intentsSubject);
+  }
+
+  public loadReceivables(id: string, limit = 100, offset = 0): void {
+    this.loadPaperPage(id, 'receivables', limit, offset, this.receivablesSubject);
+  }
+
+  public loadActions(id: string, limit = 100, offset = 0): void {
+    this.loadPaperPage(id, 'actions', limit, offset, this.actionsSubject);
+  }
+
+  public loadAdoptions(id: string, limit = 100, offset = 0): void {
+    this.loadPaperPage(id, 'adoptions', limit, offset, this.adoptionsSubject);
+  }
+
+  private loadPaperPage<T>(id: string, name: PaperPageName, limit: number, offset: number, subject: BehaviorSubject<T[]>): void {
+    this.http.get<PagedResponse<T>>(`/api/research/portfolios/${id}/${name}?limit=${limit}&offset=${offset}`).subscribe({
+      next: (response) => {
+        subject.next(response.items || []);
+        this.updatePage(name, response);
+      },
+      error: (error) => console.error(`Failed to load ${name}`, error),
+    });
+  }
+
+  private updatePage(name: PaperPageName, response: PagedResponse<unknown>): void {
+    this.paperPagesSubject.next({ ...this.paperPagesSubject.value, [name]: this.pageMetadata(response) });
+  }
+
+  private pageMetadata(response: PagedResponse<unknown>): PaperPageMetadata {
+    return {
+      total: response.total,
+      limit: response.limit,
+      offset: response.offset,
+      isComplete: response.isComplete,
+    };
   }
 
   public exportAuditZip(id: string): Observable<Blob> {

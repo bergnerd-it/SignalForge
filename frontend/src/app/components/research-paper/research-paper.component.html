@@ -144,7 +144,23 @@
       [class.active]="activeTab === 'positions'"
       (click)="activeTab = 'positions'"
     >
-      Holdings & Receivables ({{ selectedPortfolio?.positions?.length || 0 }})
+      Holdings & Receivables ({{ (selectedPortfolio?.positions?.length || 0) + receivables.length }})
+    </button>
+    <button
+      id="tab-intents"
+      class="tab-btn"
+      [class.active]="activeTab === 'intents'"
+      (click)="activeTab = 'intents'"
+    >
+      Intents & Executions ({{ intents.length }})
+    </button>
+    <button
+      id="tab-events"
+      class="tab-btn"
+      [class.active]="activeTab === 'events'"
+      (click)="activeTab = 'events'"
+    >
+      Data & Events ({{ processedActions.length + adoptions.length }})
     </button>
     <button
       id="tab-mode-history"
@@ -183,7 +199,7 @@
           <span class="badge" [ngClass]="{
             'badge-warning': p.status === 'PROPOSED',
             'badge-success': p.status === 'ACCEPTED',
-            'badge-danger': p.status === 'REJECTED' || p.status === 'MISSED',
+            'badge-danger': p.status === 'REJECTED' || p.status === 'BLOCKED',
             'badge-neutral': p.status === 'SUPERSEDED'
           }">
             {{ p.status }}
@@ -210,6 +226,9 @@
       <div class="proposal-meta">
         <span>Scheduled Open: <strong>{{ p.scheduledOpenSessionDate }} ({{ p.scheduledOpenInstant }})</strong></span>
         <span>Reason: {{ p.reasonCode }}</span>
+        <span>Dataset: {{ p.datasetId }} / {{ p.datasetChecksum }}</span>
+        <span>Calendar: {{ p.calendarId }} / {{ p.calendarVersion }}</span>
+        <span>Input cutoff: {{ p.inputCutoffInstant }}</span>
         <span *ngIf="p.acceptedAt">Accepted At: {{ p.acceptedAt }}</span>
         <span *ngIf="p.rejectedAt">Rejected At: {{ p.rejectedAt }} ({{ p.rejectionReason }})</span>
       </div>
@@ -234,11 +253,29 @@
           </tr>
         </tbody>
       </table>
+      <table class="table proposal-table" *ngIf="p.observations.length > 0">
+        <thead><tr><th>Observation Date</th><th>Listing</th><th>Type</th><th>Value</th><th>Observed At</th></tr></thead>
+        <tbody><tr *ngFor="let observation of p.observations">
+          <td>{{ observation.observationSessionDate }}</td><td>{{ observation.listingId }}</td>
+          <td>{{ observation.observationType }}</td><td>{{ observation.observationValue }}</td><td>{{ observation.observedAt }}</td>
+        </tr></tbody>
+      </table>
+    </div>
+    <div class="pagination-controls" *ngIf="paperPages.proposals.total > paperPages.proposals.limit">
+      <button class="btn btn-sm" [disabled]="paperPages.proposals.offset === 0" (click)="changePage('proposals', -1)">Previous</button>
+      <span>{{ pageStart(paperPages.proposals) }}–{{ pageEnd(paperPages.proposals) }} of {{ paperPages.proposals.total }}</span>
+      <button class="btn btn-sm" [disabled]="paperPages.proposals.isComplete" (click)="changePage('proposals', 1)">Next</button>
     </div>
   </section>
 
   <!-- TAB 2: Valuations -->
   <section *ngIf="activeTab === 'valuations'" class="tab-content">
+    <div *ngIf="valuationChartPoints" aria-label="Prospective equity chart">
+      <h3 class="section-title">Prospective Equity History</h3>
+      <svg viewBox="0 0 100 40" role="img" aria-label="Prospective total equity over recorded observations" style="width: 100%; height: 180px">
+        <polyline [attr.points]="valuationChartPoints" fill="none" stroke="currentColor" stroke-width="1.5"></polyline>
+      </svg>
+    </div>
     <table class="table valuations-table" *ngIf="valuations.length > 0">
       <thead>
         <tr>
@@ -256,15 +293,20 @@
           <td>{{ v.sessionDate }}</td>
           <td><span class="badge badge-neutral">{{ v.observationKind }}</span></td>
           <td>EUR {{ v.cashBalance }}</td>
-          <td><strong>EUR {{ v.totalEquity || v.cashBalance }}</strong></td>
-          <td>{{ v.cumulativeReturn || '0.0%' }}</td>
-          <td>{{ v.drawdown || '0.0%' }}</td>
-          <td><span class="badge badge-success">{{ v.dataReadinessStatus }}</span></td>
+          <td><strong>{{ v.totalEquity === null ? 'UNAVAILABLE' : 'EUR ' + v.totalEquity }}</strong></td>
+          <td>{{ v.cumulativeReturn ?? 'UNAVAILABLE' }}</td>
+          <td>{{ v.drawdown ?? 'UNAVAILABLE' }}</td>
+          <td><span class="badge" [ngClass]="v.isComplete ? 'badge-success' : 'badge-warning'">{{ v.dataReadinessStatus }}</span><span *ngIf="v.missingRequirementsDetail"> {{ v.missingRequirementsDetail }}</span></td>
         </tr>
       </tbody>
     </table>
     <div *ngIf="valuations.length === 0" class="empty-state">
       <p>No prospective valuations recorded yet.</p>
+    </div>
+    <div class="pagination-controls" *ngIf="paperPages.valuations.total > paperPages.valuations.limit">
+      <button class="btn btn-sm" [disabled]="paperPages.valuations.offset === 0" (click)="changePage('valuations', -1)">Previous</button>
+      <span>{{ pageStart(paperPages.valuations) }}–{{ pageEnd(paperPages.valuations) }} of {{ paperPages.valuations.total }}</span>
+      <button class="btn btn-sm" [disabled]="paperPages.valuations.isComplete" (click)="changePage('valuations', 1)">Next</button>
     </div>
   </section>
 
@@ -296,6 +338,75 @@
     <div *ngIf="!selectedPortfolio?.positions || selectedPortfolio!.positions.length === 0" class="empty-state">
       <p>No securities held in this portfolio. Portfolio is 100% in cash.</p>
     </div>
+    <h3 class="section-title">Distribution Receivables</h3>
+    <table class="table" *ngIf="receivables.length > 0">
+      <thead><tr><th>Listing</th><th>Action</th><th>Gross</th><th>Net</th><th>Payment</th><th>Status</th><th>Source</th></tr></thead>
+      <tbody><tr *ngFor="let receivable of receivables">
+        <td>{{ receivable.listingId }}</td><td>{{ receivable.actionId }}</td>
+        <td>EUR {{ receivable.grossAmount }}</td><td>EUR {{ receivable.netAmount }}</td>
+        <td>{{ receivable.paymentInstant || receivable.paymentDate }}</td><td>{{ receivable.status }}</td>
+        <td>{{ receivable.sourceNamespace }} / {{ receivable.datasetChecksum }}</td>
+      </tr></tbody>
+    </table>
+    <div *ngIf="receivables.length === 0" class="empty-state"><p>No distribution receivables.</p></div>
+    <div class="pagination-controls" *ngIf="paperPages.receivables.total > paperPages.receivables.limit">
+      <button class="btn btn-sm" [disabled]="paperPages.receivables.offset === 0" (click)="changePage('receivables', -1)">Previous</button>
+      <span>{{ pageStart(paperPages.receivables) }}–{{ pageEnd(paperPages.receivables) }} of {{ paperPages.receivables.total }}</span>
+      <button class="btn btn-sm" [disabled]="paperPages.receivables.isComplete" (click)="changePage('receivables', 1)">Next</button>
+    </div>
+  </section>
+
+  <section *ngIf="activeTab === 'intents'" class="tab-content">
+    <div *ngFor="let intent of intents" class="proposal-card">
+      <div class="proposal-header"><strong>{{ intent.orderType }} — {{ intent.status }}</strong><span>{{ intent.id }}</span></div>
+      <div class="proposal-meta">
+        <span>Scheduled: {{ intent.scheduledOpenInstant }}</span><span>Approval: {{ intent.approvalMode }}</span>
+        <span>Created: {{ intent.createdAt }}</span>
+      </div>
+      <table class="table" *ngIf="intent.transitions.length > 0">
+        <thead><tr><th>Time</th><th>Transition</th><th>Trigger</th><th>Notes</th></tr></thead>
+        <tbody><tr *ngFor="let transition of intent.transitions"><td>{{ transition.transitionInstant }}</td>
+          <td>{{ transition.fromStatus }} → {{ transition.toStatus }}</td><td>{{ transition.triggerType }}</td><td>{{ transition.notes }}</td></tr></tbody>
+      </table>
+      <table class="table" *ngIf="intent.results.length > 0">
+        <thead><tr><th>Side</th><th>Listing</th><th>Requested / Executed</th><th>Raw / Fill</th><th>Costs</th><th>Effective / Observed / Booked</th></tr></thead>
+        <tbody><tr *ngFor="let result of intent.results"><td>{{ result.side }}</td><td>{{ result.listingId }}</td>
+          <td>{{ result.requestedQuantity }} / {{ result.executedQuantity }} {{ result.shortfallReason || '' }}</td>
+          <td>{{ result.rawOpenPrice }} / {{ result.fillPrice }}</td>
+          <td>{{ result.commission }} + {{ result.spreadSlippageCost }}</td>
+          <td>{{ result.marketEffectiveInstant }} / {{ result.observedInstant }} / {{ result.bookedInstant }}</td></tr></tbody>
+      </table>
+    </div>
+    <div *ngIf="intents.length === 0" class="empty-state"><p>No execution intents.</p></div>
+    <div class="pagination-controls" *ngIf="paperPages.intents.total > paperPages.intents.limit">
+      <button class="btn btn-sm" [disabled]="paperPages.intents.offset === 0" (click)="changePage('intents', -1)">Previous</button>
+      <span>{{ pageStart(paperPages.intents) }}–{{ pageEnd(paperPages.intents) }} of {{ paperPages.intents.total }}</span>
+      <button class="btn btn-sm" [disabled]="paperPages.intents.isComplete" (click)="changePage('intents', 1)">Next</button>
+    </div>
+  </section>
+
+  <section *ngIf="activeTab === 'events'" class="tab-content">
+    <h3 class="section-title">Dataset Adoption History</h3>
+    <table class="table" *ngIf="adoptions.length > 0"><thead><tr><th>Adopted At</th><th>Dataset</th><th>Checksum</th><th>Coverage</th><th>Status</th><th>Reason</th></tr></thead>
+      <tbody><tr *ngFor="let adoption of adoptions"><td>{{ adoption.adoptedAt }}</td><td>{{ adoption.datasetId }}</td>
+        <td>{{ adoption.datasetChecksum }}</td><td>{{ adoption.coverageStartSession }} – {{ adoption.coverageEndSession }}</td>
+        <td>{{ adoption.validationStatus }}</td><td>{{ adoption.rejectionReason || '' }}</td></tr></tbody></table>
+    <div class="pagination-controls" *ngIf="paperPages.adoptions.total > paperPages.adoptions.limit">
+      <button class="btn btn-sm" [disabled]="paperPages.adoptions.offset === 0" (click)="changePage('adoptions', -1)">Previous</button>
+      <span>{{ pageStart(paperPages.adoptions) }}–{{ pageEnd(paperPages.adoptions) }} of {{ paperPages.adoptions.total }}</span>
+      <button class="btn btn-sm" [disabled]="paperPages.adoptions.isComplete" (click)="changePage('adoptions', 1)">Next</button>
+    </div>
+    <h3 class="section-title">Processed Corporate Actions</h3>
+    <table class="table" *ngIf="processedActions.length > 0"><thead><tr><th>Effective</th><th>Available</th><th>Processed</th><th>Listing</th><th>Action</th><th>Status</th><th>Dataset</th></tr></thead>
+      <tbody><tr *ngFor="let action of processedActions"><td>{{ action.effectiveDate }}</td><td>{{ action.availabilityInstant }}</td>
+        <td>{{ action.processingInstant }}</td><td>{{ action.listingId }}</td><td>{{ action.actionType }} / {{ action.actionId }}</td>
+        <td>{{ action.status }}</td><td>{{ action.sourceNamespace }} / {{ action.datasetChecksum }}</td></tr></tbody></table>
+    <div class="pagination-controls" *ngIf="paperPages.actions.total > paperPages.actions.limit">
+      <button class="btn btn-sm" [disabled]="paperPages.actions.offset === 0" (click)="changePage('actions', -1)">Previous</button>
+      <span>{{ pageStart(paperPages.actions) }}–{{ pageEnd(paperPages.actions) }} of {{ paperPages.actions.total }}</span>
+      <button class="btn btn-sm" [disabled]="paperPages.actions.isComplete" (click)="changePage('actions', 1)">Next</button>
+    </div>
+    <div *ngIf="adoptions.length === 0 && processedActions.length === 0" class="empty-state"><p>No adoption or corporate-action events.</p></div>
   </section>
 
   <!-- TAB 4: Mode History -->

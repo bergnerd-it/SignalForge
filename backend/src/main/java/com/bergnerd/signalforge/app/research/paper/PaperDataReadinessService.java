@@ -5,7 +5,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.nio.charset.StandardCharsets;
@@ -13,7 +13,9 @@ import java.security.MessageDigest;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalTime;
 import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.util.*;
 
 @Slf4j
@@ -25,6 +27,7 @@ public class PaperDataReadinessService {
     private final Clock clock;
     private final PaperAuditRecorder auditRecorder;
     private final PaperMutationService mutationService;
+    private final TransactionTemplate transactionTemplate;
 
     public static final ZoneId EXCHANGE_ZONE = ZoneId.of("Europe/Berlin");
 
@@ -98,7 +101,7 @@ public class PaperDataReadinessService {
 
         // 3. Validate dataset existence and validation_status
         List<Map<String, Object>> dsRows = jdbcTemplate.queryForList(
-                "SELECT id, input_checksum, content_checksum, coverage_start, coverage_end, validation_status FROM datasets WHERE id = ?",
+                "SELECT id, source, input_checksum, content_checksum, coverage_start, coverage_end, validation_status FROM datasets WHERE id = ?",
                 datasetId
         );
         if (dsRows.isEmpty()) {
@@ -112,6 +115,7 @@ public class PaperDataReadinessService {
         String covStart = (String) ds.get("coverage_start");
         String covEnd = (String) ds.get("coverage_end");
         String valStatus = (String) ds.get("validation_status");
+        String sourceNamespace = (String) ds.get("source");
 
         if (!"VALID".equalsIgnoreCase(valStatus)) {
             String reason = "Dataset validation status is " + valStatus + ", requires VALID";
@@ -167,20 +171,31 @@ public class PaperDataReadinessService {
             }
         }
 
-        if (strategyId != null && strategyId.contains("MOMENTUM") && yearMonths.size() < 13) {
-            String reason = "Insufficient historical warm-up for S2 momentum: requires at least 13 months, found " + yearMonths.size();
+        int requiredWarmupMonths = requiredWarmupMonths(strategyId);
+        if (requiredWarmupMonths > 0 && yearMonths.size() < requiredWarmupMonths) {
+            String reason = "Insufficient historical warm-up for " + strategyId + ": requires at least "
+                    + requiredWarmupMonths + " calendar months, found " + yearMonths.size();
             auditRecorder.recordAdoptionInNewTx(portfolioId, datasetId, checksum, covStart, covEnd, "REJECTED_INCOMPATIBLE", reason, now);
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, reason);
-        } else if (strategyId != null && strategyId.contains("TREND") && yearMonths.size() < 10) {
-            String reason = "Insufficient historical warm-up for S3 trend: requires at least 10 months, found " + yearMonths.size();
-            auditRecorder.recordAdoptionInNewTx(portfolioId, datasetId, checksum, covStart, covEnd, "REJECTED_INCOMPATIBLE", reason, now);
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, reason);
+        }
+        if (requiredWarmupMonths > 0) {
+            for (String listingId : requiredListings) {
+                Integer observedMonths = jdbcTemplate.queryForObject(
+                        "SELECT COUNT(DISTINCT substr(session_date, 1, 7)) FROM historical_bars " +
+                                "WHERE dataset_id = ? AND listing_id = ? AND available_at <= ?",
+                        Integer.class, datasetId, listingId, now);
+                if (observedMonths != null && observedMonths >= requiredWarmupMonths) continue;
+                String reason = "Insufficient usable warm-up for listing " + listingId + ": requires at least "
+                        + requiredWarmupMonths + " observed months, found " + (observedMonths == null ? 0 : observedMonths);
+                auditRecorder.recordAdoptionInNewTx(portfolioId, datasetId, checksum, covStart, covEnd, "REJECTED_INCOMPATIBLE", reason, now);
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, reason);
+            }
         }
 
         // 7. Corporate action conflict check
         List<Map<String, Object>> newActions = jdbcTemplate.queryForList(
                 "SELECT action_id, listing_id, action_type, effective_date, split_ratio_numerator, split_ratio_denominator, " +
-                        "distribution_amount, distribution_currency, payment_date FROM historical_actions WHERE dataset_id = ?",
+                        "distribution_amount, distribution_currency, payment_date, payment_instant FROM historical_actions WHERE dataset_id = ?",
                 datasetId
         );
 
@@ -191,8 +206,9 @@ public class PaperDataReadinessService {
             String termsHash = computeTermsHash(na);
 
             List<Map<String, Object>> existing = jdbcTemplate.queryForList(
-                    "SELECT terms_hash FROM paper_processed_corporate_actions WHERE portfolio_id = ? AND action_id = ? AND listing_id = ?",
-                    portfolioId, actionId, lid
+                    "SELECT terms_hash FROM paper_processed_corporate_actions WHERE portfolio_id = ? AND source_namespace = ? " +
+                            "AND action_id = ? AND listing_id = ? AND action_type = ?",
+                    portfolioId, sourceNamespace, actionId, lid, actionType
             );
             for (Map<String, Object> ex : existing) {
                 String existingTerms = (String) ex.get("terms_hash");
@@ -204,19 +220,23 @@ public class PaperDataReadinessService {
             }
         }
 
-        // 8. Record successful adoption
-        String adoptionId = auditRecorder.recordAdoptionInNewTx(portfolioId, datasetId, checksum, covStart, covEnd, "ADOPTED", null, now);
-        jdbcTemplate.update(
-                "UPDATE paper_portfolio_segments SET adopted_dataset_id = ?, adopted_at = ? WHERE id = ?",
-                datasetId, now, segmentId
-        );
-
-        DatasetAdoptionResult result = new DatasetAdoptionResult(
-                adoptionId, portfolioId, datasetId, "ADOPTED", covStart, covEnd, now, null
-        );
-
-        mutationService.recordCommitted(uid, "ADOPT_DATASET", idempotencyKey, payloadHash, adoptionId, result);
-        return result;
+        final String adoptedChecksum = checksum;
+        return transactionTemplate.execute(status -> {
+            String adoptionId = auditRecorder.recordAdoption(
+                    portfolioId, datasetId, adoptedChecksum, covStart, covEnd, "ADOPTED", null, now);
+            int updated = jdbcTemplate.update(
+                    "UPDATE paper_portfolio_segments SET adopted_dataset_id = ?, adopted_at = ? WHERE id = ? AND status = 'ACTIVE'",
+                    datasetId, now, segmentId
+            );
+            if (updated != 1) {
+                throw new IllegalStateException("Active segment changed while adopting dataset");
+            }
+            DatasetAdoptionResult result = new DatasetAdoptionResult(
+                    adoptionId, portfolioId, datasetId, "ADOPTED", covStart, covEnd, now, null
+            );
+            mutationService.recordCommitted(uid, "ADOPT_DATASET", idempotencyKey, payloadHash, adoptionId, result);
+            return result;
+        });
     }
 
     public ReadinessResult checkReadiness(String portfolioId) {
@@ -235,6 +255,13 @@ public class PaperDataReadinessService {
         String strategyId = (String) seg.get("strategy_id");
         String universeId = (String) seg.get("universe_id");
         String benchmarkListingId = (String) seg.get("benchmark_listing_id");
+
+        List<Map<String, Object>> datasetRows = jdbcTemplate.queryForList(
+                "SELECT validation_status FROM datasets WHERE id = ?", datasetId);
+        if (datasetRows.isEmpty() || !"VALID".equals(datasetRows.get(0).get("validation_status"))) {
+            return new ReadinessResult(false, "INVALID_DATASET", null, null,
+                    "Adopted dataset is missing or is not VALID");
+        }
 
         List<Map<String, Object>> sessions = jdbcTemplate.queryForList(
                 "SELECT session_date, open_time, close_time FROM dataset_sessions WHERE dataset_id = ? AND session_type = 'TRADING' ORDER BY session_date ASC",
@@ -259,27 +286,21 @@ public class PaperDataReadinessService {
             } else if (sDate.compareTo(todayStr) > 0) {
                 futureSessions.add(sDate);
             } else {
-                // Same day session: check close_time vs now
+                // A same-day open is eligible only while it is still strictly in the future.
+                String openTime = (String) s.get("open_time");
                 String closeTime = (String) s.get("close_time");
-                if (closeTime != null && closeTime.length() >= 5) {
-                    java.time.LocalTime closeLt = java.time.LocalTime.parse(closeTime.substring(0, 5));
-                    java.time.ZonedDateTime closeZdt = today.atTime(closeLt).atZone(EXCHANGE_ZONE);
-                    if (nowInstant.isAfter(closeZdt.toInstant())) {
-                        completedSessions.add(sDate);
-                    } else {
+                if (openTime != null && closeTime != null) {
+                    LocalTime openLt = LocalTime.parse(openTime);
+                    LocalTime closeLt = LocalTime.parse(closeTime);
+                    ZonedDateTime openZdt = today.atTime(openLt).atZone(EXCHANGE_ZONE);
+                    ZonedDateTime closeZdt = today.atTime(closeLt).atZone(EXCHANGE_ZONE);
+                    if (nowInstant.isBefore(openZdt.toInstant())) {
                         futureSessions.add(sDate);
+                    } else if (!nowInstant.isBefore(closeZdt.toInstant())) {
+                        completedSessions.add(sDate);
                     }
-                } else {
-                    completedSessions.add(sDate);
                 }
             }
-        }
-
-        // Fallback for historical test datasets where all dates precede today
-        if (futureSessions.isEmpty() && completedSessions.size() >= 2) {
-            String latestCompleted = completedSessions.get(completedSessions.size() - 2);
-            String nextSession = completedSessions.get(completedSessions.size() - 1);
-            return new ReadinessResult(true, "READY", latestCompleted, nextSession, "Data snapshot ready for evaluation (historical simulation bounds)");
         }
 
         if (completedSessions.isEmpty()) {
@@ -287,29 +308,73 @@ public class PaperDataReadinessService {
         }
 
         String latestCompleted = completedSessions.get(completedSessions.size() - 1);
+        if (requiredWarmupMonths(strategyId) > 0) {
+            latestCompleted = latestCompletedMonthEnd(completedSessions, sessions);
+            if (latestCompleted == null) {
+                return new ReadinessResult(false, "NO_COMPLETED_MONTH_END", null, null,
+                        "Adopted dataset has no completed monthly decision session");
+            }
+        }
         String nextSession = futureSessions.isEmpty() ? null : futureSessions.get(0);
+        if (nextSession == null) {
+            return new ReadinessResult(false, "NO_FUTURE_SESSION", latestCompleted, null,
+                    "Adopted dataset has no eligible future trading session");
+        }
 
         // Check bars exist for latestCompletedSession across universe listings
         List<String> universeListings = jdbcTemplate.queryForList(
                 "SELECT listing_id FROM universe_listings WHERE universe_id = ?",
                 String.class, universeId
         );
-        if (universeListings.isEmpty() && benchmarkListingId != null) {
-            universeListings = List.of(benchmarkListingId);
+        if (benchmarkListingId != null && !universeListings.contains(benchmarkListingId)) {
+            universeListings = new ArrayList<>(universeListings);
+            universeListings.add(benchmarkListingId);
         }
 
         for (String lid : universeListings) {
             Integer barCount = jdbcTemplate.queryForObject(
-                    "SELECT COUNT(*) FROM historical_bars WHERE dataset_id = ? AND listing_id = ? AND session_date = ?",
-                    Integer.class, datasetId, lid, latestCompleted
+                    "SELECT COUNT(*) FROM historical_bars WHERE dataset_id = ? AND listing_id = ? AND session_date = ? AND available_at <= ?",
+                    Integer.class, datasetId, lid, latestCompleted, nowInstant.toString()
             );
             if (barCount == null || barCount == 0) {
                 return new ReadinessResult(false, "MISSING_BARS", latestCompleted, nextSession,
                         "Missing bars for listing " + lid + " on latest completed session " + latestCompleted);
             }
+            int warmupMonths = requiredWarmupMonths(strategyId);
+            if (warmupMonths > 0) {
+                Integer observedMonths = jdbcTemplate.queryForObject(
+                        "SELECT COUNT(DISTINCT substr(session_date, 1, 7)) FROM historical_bars " +
+                                "WHERE dataset_id = ? AND listing_id = ? AND session_date <= ? AND available_at <= ?",
+                        Integer.class, datasetId, lid, latestCompleted, nowInstant.toString());
+                if (observedMonths == null || observedMonths < warmupMonths) {
+                    return new ReadinessResult(false, "INCOMPLETE_WARMUP", latestCompleted, nextSession,
+                            "Listing " + lid + " has " + (observedMonths == null ? 0 : observedMonths)
+                                    + " observed months; strategy requires " + warmupMonths);
+                }
+            }
         }
 
         return new ReadinessResult(true, "READY", latestCompleted, nextSession, "Data snapshot ready for evaluation");
+    }
+
+    private static int requiredWarmupMonths(String strategyId) {
+        if (strategyId == null) return 0;
+        if (strategyId.contains("MOMENTUM")) return 13;
+        if (strategyId.contains("TREND")) return 10;
+        return 0;
+    }
+
+    private static String latestCompletedMonthEnd(List<String> completedSessions, List<Map<String, Object>> allSessions) {
+        Set<String> completed = new HashSet<>(completedSessions);
+        String latest = null;
+        for (int index = 0; index < allSessions.size() - 1; index++) {
+            String current = (String) allSessions.get(index).get("session_date");
+            String next = (String) allSessions.get(index + 1).get("session_date");
+            if (completed.contains(current) && !current.substring(0, 7).equals(next.substring(0, 7))) {
+                latest = current;
+            }
+        }
+        return latest;
     }
 
     public static String computeTermsHash(Map<String, Object> action) {
@@ -320,8 +385,9 @@ public class PaperDataReadinessService {
         String distAmt = String.valueOf(action.get("distribution_amount"));
         String distCurr = String.valueOf(action.get("distribution_currency"));
         String payDate = String.valueOf(action.get("payment_date"));
+        String payInstant = String.valueOf(action.get("payment_instant"));
 
-        String raw = actionType + "|" + effectiveDate + "|" + splitNum + "|" + splitDen + "|" + distAmt + "|" + distCurr + "|" + payDate;
+        String raw = actionType + "|" + effectiveDate + "|" + splitNum + "|" + splitDen + "|" + distAmt + "|" + distCurr + "|" + payDate + "|" + payInstant;
         try {
             MessageDigest md = MessageDigest.getInstance("SHA-256");
             byte[] digest = md.digest(raw.getBytes(StandardCharsets.UTF_8));

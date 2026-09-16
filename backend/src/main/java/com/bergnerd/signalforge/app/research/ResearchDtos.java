@@ -111,7 +111,7 @@ public class ResearchDtos {
             String listingId,
             int rank,
             String targetWeight,
-            String desiredUnits,
+            String cutoffEstimatedUnits,
             String score,
             String reasonCode,
             String reasonDescription,
@@ -150,6 +150,7 @@ public class ResearchDtos {
             String rejectedAt,
             String rejectionReason,
             String supersedingProposalId,
+            String reinvestmentReceivableId,
             String createdAt,
             List<PaperProposalItemDto> items,
             List<PaperProposalObservationDto> observations
@@ -169,18 +170,79 @@ public class ResearchDtos {
             String id,
             String portfolioId,
             String listingId,
+            String sourceNamespace,
             String actionId,
             String actionType,
             String recordInstant,
             String exDate,
             String paymentDate,
+            String paymentInstant,
+            String availabilityInstant,
             String grossAmount,
             String withholdingTax,
             String netAmount,
             String status,
             String paidOperationId,
             String paidAt,
-            String createdAt
+            String createdAt,
+            String datasetId,
+            String datasetChecksum,
+            String termsHash
+    ) {}
+
+    public record PaperIntentTransitionDto(
+            String id,
+            String intentId,
+            String fromStatus,
+            String toStatus,
+            String triggerType,
+            String transitionInstant,
+            String notes
+    ) {}
+
+    public record PaperExecutionIntentDto(
+            String id,
+            String portfolioId,
+            String proposalId,
+            String reinvestmentReceivableId,
+            String orderType,
+            String scheduledSessionDate,
+            String scheduledOpenInstant,
+            String approvalMode,
+            String status,
+            String createdAt,
+            List<PaperIntentTransitionDto> transitions,
+            List<PaperExecutionResultDto> results
+    ) {}
+
+    public record PaperProcessedActionDto(
+            String id,
+            String portfolioId,
+            String sourceNamespace,
+            String listingId,
+            String actionId,
+            String actionType,
+            String termsHash,
+            String effectiveDate,
+            String availabilityInstant,
+            String processingInstant,
+            String datasetId,
+            String datasetChecksum,
+            String status,
+            String linkedOperationId,
+            String linkedReceivableId
+    ) {}
+
+    public record PaperDatasetAdoptionDto(
+            String id,
+            String portfolioId,
+            String datasetId,
+            String datasetChecksum,
+            String coverageStartSession,
+            String coverageEndSession,
+            String validationStatus,
+            String rejectionReason,
+            String adoptedAt
     ) {}
 
     public record PaperExecutionResultDto(

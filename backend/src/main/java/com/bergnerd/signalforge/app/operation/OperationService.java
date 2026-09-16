@@ -35,7 +35,29 @@ public class OperationService {
 
     // Reentrant fair lock coordinating SQLite writers through full commit/rollback completion
     private final ReentrantLock writerLock = new ReentrantLock(true);
+    private final ThreadLocal<Boolean> coordinatedBatch = ThreadLocal.withInitial(() -> false);
     private volatile Consumer<String> failureInjector = ignored -> {};
+
+    /**
+     * Runs a paper-accounting batch in the same top-level transaction as its audit records.
+     * Financial methods may join only transactions opened through this entry point.
+     */
+    public <T> T executeCoordinatedBatch(Supplier<T> work) {
+        rejectOuterTransaction();
+        writerLock.lock();
+        try {
+            return executeWithBusyRetry(() -> transactionTemplate.execute(status -> {
+                coordinatedBatch.set(true);
+                try {
+                    return work.get();
+                } finally {
+                    coordinatedBatch.remove();
+                }
+            }));
+        } finally {
+            writerLock.unlock();
+        }
+    }
 
     public record PortfolioCreationResult(
             String portfolioId,
@@ -280,16 +302,56 @@ public class OperationService {
             String idempotencyKey,
             String executionModel
     ) {
+        return executeTradeInternal(portfolioId, ticker, side, quantity, fillPrice, fillPrice, commission,
+                BigDecimal.ZERO, idempotencyKey, executionModel, null, false);
+    }
+
+    public TradeExecutionResult executePaperTrade(
+            String portfolioId,
+            String ticker,
+            String side,
+            BigDecimal quantity,
+            BigDecimal referencePrice,
+            BigDecimal fillPrice,
+            BigDecimal commission,
+            BigDecimal modeledSpreadSlippage,
+            String idempotencyKey,
+            String executionModel,
+            String businessAt
+    ) {
+        return executeTradeInternal(portfolioId, ticker, side, quantity, referencePrice, fillPrice, commission,
+                modeledSpreadSlippage, idempotencyKey, executionModel, businessAt, true);
+    }
+
+    private TradeExecutionResult executeTradeInternal(
+            String portfolioId,
+            String ticker,
+            String side,
+            BigDecimal quantity,
+            BigDecimal referencePrice,
+            BigDecimal fillPrice,
+            BigDecimal commission,
+            BigDecimal modeledSpreadSlippage,
+            String idempotencyKey,
+            String executionModel,
+            String businessAt,
+            boolean includeExecutionTerms
+    ) {
         if (idempotencyKey == null || idempotencyKey.isBlank()) {
             throw new IdempotencyExceptions.MissingIdempotencyKeyException("Idempotency key is required for trade execution");
         }
 
         BigDecimal normalizedQuantity = AccountingCore.normalizeQuantity(quantity);
+        BigDecimal normalizedReferencePrice = AccountingCore.normalizePrice(referencePrice);
         BigDecimal normalizedFillPrice = AccountingCore.normalizePrice(fillPrice);
         BigDecimal normalizedCommission = AccountingCore.normalizeCash(commission, "commission");
+        BigDecimal normalizedModeledCost = AccountingCore.normalizeCash(modeledSpreadSlippage, "modeledSpreadSlippage");
         String symbol = ticker.trim().toUpperCase();
         String tradeSide = side.trim().toLowerCase();
-        String canonicalHash = CanonicalIntentHasher.hashTrade(portfolioId, symbol, tradeSide, normalizedQuantity);
+        String canonicalHash = includeExecutionTerms
+                ? CanonicalIntentHasher.hashPaperTrade(portfolioId, symbol, tradeSide, normalizedQuantity,
+                        normalizedReferencePrice, normalizedFillPrice, normalizedCommission, normalizedModeledCost, businessAt)
+                : CanonicalIntentHasher.hashTrade(portfolioId, symbol, tradeSide, normalizedQuantity);
 
         // 1. Preliminary check: lookup existing operation
         try {
@@ -355,7 +417,8 @@ public class OperationService {
                     listingId = resolveResearchListing(symbol, currency);
                 }
 
-                String now = Instant.now().toString();
+                String recordedAt = Instant.now().toString();
+                String effectiveAt = businessAt != null ? businessAt : recordedAt;
                 String opId = "op-" + UUID.randomUUID();
 
                 // 2. Insert operation row FIRST to acquire DB write lock & enforce uniqueness
@@ -363,7 +426,7 @@ public class OperationService {
                     jdbcTemplate.update(
                             "INSERT INTO operations (id, portfolio_id, kind, idempotency_key, payload_hash, result_json, business_at, created_at) " +
                                     "VALUES (?, ?, 'TRADE', ?, ?, '', ?, ?)",
-                            opId, portfolioId, idempotencyKey, canonicalHash, now, now
+                            opId, portfolioId, idempotencyKey, canonicalHash, effectiveAt, recordedAt
                     );
                 } catch (DuplicateKeyException e) {
                     throw new IdempotencyExceptions.IdempotencyConflictException(
@@ -427,12 +490,12 @@ public class OperationService {
                     if (positionExists) {
                         jdbcTemplate.update(
                                 "UPDATE positions SET quantity = ?, total_acquisition_cost = ?, updated_at = ? WHERE portfolio_id = ? AND listing_id = ?",
-                                delta.newState().quantity().toPlainString(), delta.newState().totalBasis().toPlainString(), now, portfolioId, listingId
+                                delta.newState().quantity().toPlainString(), delta.newState().totalBasis().toPlainString(), recordedAt, portfolioId, listingId
                         );
                     } else {
                         jdbcTemplate.update(
                                 "INSERT INTO positions (portfolio_id, listing_id, quantity, total_acquisition_cost, updated_at) VALUES (?, ?, ?, ?, ?)",
-                                portfolioId, listingId, delta.newState().quantity().toPlainString(), delta.newState().totalBasis().toPlainString(), now
+                                portfolioId, listingId, delta.newState().quantity().toPlainString(), delta.newState().totalBasis().toPlainString(), recordedAt
                         );
                     }
                 }
@@ -442,10 +505,11 @@ public class OperationService {
                 String execId = "exec-" + UUID.randomUUID();
                 jdbcTemplate.update(
                         "INSERT INTO executions (id, portfolio_id, operation_id, listing_id, side, units, reference_price, fill_price, commission, modeled_spread_slippage, executed_at, execution_model, sequence) " +
-                                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '0.00', ?, ?, 1)",
+                                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
                         execId, portfolioId, opId, listingId, tradeSide, normalizedQuantity.toPlainString(),
-                        normalizedFillPrice.toPlainString(), normalizedFillPrice.toPlainString(), normalizedCommission.toPlainString(),
-                        now, executionModel != null ? executionModel : "SIMULATED_DEMO"
+                        normalizedReferencePrice.toPlainString(), normalizedFillPrice.toPlainString(), normalizedCommission.toPlainString(),
+                        normalizedModeledCost.toPlainString(),
+                        effectiveAt, executionModel != null ? executionModel : "SIMULATED_DEMO"
                 );
                 failureInjector.accept("execution");
 
@@ -458,7 +522,7 @@ public class OperationService {
                         delta.quantityDelta().stripTrailingZeros().toPlainString(),
                         delta.cashDelta().toPlainString(),
                         delta.basisDelta().toPlainString(),
-                        currency, now, now
+                        currency, effectiveAt, recordedAt
                 );
                 failureInjector.accept("ledger");
 
@@ -471,7 +535,7 @@ public class OperationService {
                         delta.realizedGain().toPlainString(),
                         delta.newState().cash().toPlainString(),
                         delta.newState().quantity().toPlainString(),
-                        now, false
+                        effectiveAt, false
                 );
 
                 // 10. Update operation result_json
@@ -491,7 +555,7 @@ public class OperationService {
                     jdbcTemplate.update(
                             "INSERT INTO trades (id, user_id, ticker, side, quantity, price, executed_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
                             execId, ownerIdForPortfolio(portfolioId), symbol, tradeSide,
-                            normalizedQuantity.doubleValue(), normalizedFillPrice.doubleValue(), now
+                            normalizedQuantity.doubleValue(), normalizedFillPrice.doubleValue(), effectiveAt
                     );
                     jdbcTemplate.update(
                             "UPDATE users_profile SET cash_balance = ? WHERE id = ?",
@@ -844,7 +908,7 @@ public class OperationService {
     }
 
     private void rejectOuterTransaction() {
-        if (TransactionSynchronizationManager.isActualTransactionActive()) {
+        if (TransactionSynchronizationManager.isActualTransactionActive() && !coordinatedBatch.get()) {
             throw new IllegalStateException("Financial operations require their own top-level transaction");
         }
     }

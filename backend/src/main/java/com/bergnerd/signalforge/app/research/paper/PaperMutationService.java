@@ -8,7 +8,6 @@ import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -57,7 +56,7 @@ public class PaperMutationService {
 
     public Optional<MutationEntry> checkMutation(String ownerId, String action, String idempotencyKey, String payloadHash) {
         if (idempotencyKey == null || idempotencyKey.isBlank()) {
-            return Optional.empty();
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Idempotency-Key is required for " + action);
         }
         try {
             Map<String, Object> row = jdbcTemplate.queryForMap(
@@ -84,10 +83,10 @@ public class PaperMutationService {
         }
     }
 
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    @Transactional
     public void recordCommitted(String ownerId, String action, String idempotencyKey, String payloadHash, String resourceId, Object result) {
         if (idempotencyKey == null || idempotencyKey.isBlank()) {
-            return;
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Idempotency-Key is required for " + action);
         }
         String now = clock.instant().toString();
         String resultJson;
@@ -103,7 +102,11 @@ public class PaperMutationService {
                     "mut-" + UUID.randomUUID(), ownerId, action, idempotencyKey, payloadHash, resourceId, resultJson, now, now
             );
         } catch (DuplicateKeyException e) {
-            // Already committed or concurrent duplicate
+            MutationEntry existing = checkMutation(ownerId, action, idempotencyKey, payloadHash)
+                    .orElseThrow(() -> e);
+            if ("COMMITTED".equals(existing.status())) {
+                return;
+            }
             jdbcTemplate.update(
                     "UPDATE paper_mutation_requests SET status = 'COMMITTED', resource_id = ?, result_json = ?, updated_at = ? " +
                             "WHERE owner_id = ? AND action = ? AND idempotency_key = ?",

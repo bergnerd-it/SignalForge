@@ -1,7 +1,8 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { ResearchPaperComponent } from './research-paper.component';
 import { ResearchService } from '../../services/research.service';
-import { BehaviorSubject, of } from 'rxjs';
+import { BehaviorSubject, Subject, of } from 'rxjs';
+import { provideRouter } from '@angular/router';
 import {
   ResearchPortfolioSummary,
   ResearchPortfolioDetail,
@@ -9,6 +10,7 @@ import {
   PaperValuation,
   PaperModeHistory,
   AssistantChatResponse,
+  PaperPageState,
 } from '../../models/research.model';
 
 describe('ResearchPaperComponent', () => {
@@ -91,6 +93,7 @@ describe('ResearchPaperComponent', () => {
       rejectedAt: null,
       rejectionReason: null,
       supersedingProposalId: null,
+      reinvestmentReceivableId: null,
       createdAt: '2026-09-15T09:00:00Z',
       items: [
         {
@@ -99,7 +102,7 @@ describe('ResearchPaperComponent', () => {
           listingId: 'listing-iwda',
           rank: 1,
           targetWeight: '0.10',
-          desiredUnits: '10',
+          cutoffEstimatedUnits: '10',
           score: '1.0',
           reasonCode: 'TARGET_ALLOCATION',
           reasonDescription: 'Initial allocation',
@@ -117,6 +120,7 @@ describe('ResearchPaperComponent', () => {
   let modeHistorySubject: BehaviorSubject<PaperModeHistory[]>;
   let loadingSubject: BehaviorSubject<boolean>;
   let errorSubject: BehaviorSubject<string | null>;
+  let paperPagesSubject: BehaviorSubject<PaperPageState>;
 
   let mockResearchService: Partial<ResearchService>;
 
@@ -128,6 +132,14 @@ describe('ResearchPaperComponent', () => {
     modeHistorySubject = new BehaviorSubject<PaperModeHistory[]>([]);
     loadingSubject = new BehaviorSubject<boolean>(false);
     errorSubject = new BehaviorSubject<string | null>(null);
+    paperPagesSubject = new BehaviorSubject<PaperPageState>({
+      proposals: { total: 0, limit: 50, offset: 0, isComplete: true },
+      valuations: { total: 0, limit: 200, offset: 0, isComplete: true },
+      intents: { total: 0, limit: 100, offset: 0, isComplete: true },
+      receivables: { total: 0, limit: 100, offset: 0, isComplete: true },
+      actions: { total: 0, limit: 100, offset: 0, isComplete: true },
+      adoptions: { total: 0, limit: 100, offset: 0, isComplete: true },
+    });
 
     mockResearchService = {
       portfolios$: portfoliosSubject.asObservable(),
@@ -135,12 +147,21 @@ describe('ResearchPaperComponent', () => {
       proposals$: proposalsSubject.asObservable(),
       valuations$: valuationsSubject.asObservable(),
       modeHistory$: modeHistorySubject.asObservable(),
+      intents$: of([]),
+      receivables$: of([]),
+      actions$: of([]),
+      adoptions$: of([]),
+      paperPages$: paperPagesSubject.asObservable(),
       loading$: loadingSubject.asObservable(),
       error$: errorSubject.asObservable(),
       selectPortfolio: vi.fn(),
       refreshPortfolios: vi.fn(),
       loadProposals: vi.fn(),
       loadValuations: vi.fn(),
+      loadIntents: vi.fn(),
+      loadReceivables: vi.fn(),
+      loadActions: vi.fn(),
+      loadAdoptions: vi.fn(),
       loadModeHistory: vi.fn(),
       acceptProposal: vi.fn().mockReturnValue(of({ message: 'Proposal accepted' })),
       rejectProposal: vi.fn().mockReturnValue(of({ message: 'Proposal rejected' })),
@@ -150,7 +171,7 @@ describe('ResearchPaperComponent', () => {
 
     TestBed.configureTestingModule({
       imports: [ResearchPaperComponent],
-      providers: [{ provide: ResearchService, useValue: mockResearchService }],
+      providers: [{ provide: ResearchService, useValue: mockResearchService }, provideRouter([])],
     });
 
     fixture = TestBed.createComponent(ResearchPaperComponent);
@@ -164,6 +185,45 @@ describe('ResearchPaperComponent', () => {
     expect(el.textContent).toContain('ETF_BUY_HOLD_V1');
     expect(el.textContent).toContain('MANUAL');
     expect(el.textContent).toContain('10000.00');
+  });
+
+  it('renders asynchronous portfolio and assistant emissions without another user event', async () => {
+    selectedPortfolioSubject.next(null);
+    await fixture.whenStable();
+    selectedPortfolioSubject.next(mockDetail);
+    await fixture.whenStable();
+    expect((fixture.nativeElement as HTMLElement).textContent).toContain('Alpha EUR Paper');
+
+    comp.activeTab = 'assistant';
+    fixture.detectChanges();
+    const response = new Subject<AssistantChatResponse>();
+    vi.mocked(mockResearchService.sendAssistantChat!).mockReturnValue(response.asObservable());
+    comp.assistantMessage = 'Show evidence';
+    comp.sendAssistantQuery();
+    response.next({ message: 'Grounded response', factCards: [], evidenceReferences: [] });
+    response.complete();
+    await fixture.whenStable();
+    expect((fixture.nativeElement as HTMLElement).textContent).toContain('Grounded response');
+    expect((fixture.nativeElement as HTMLElement).textContent).not.toContain('Analyzing...');
+  });
+
+  it('keeps incomplete valuation equity and chart points unavailable', async () => {
+    const incomplete: PaperValuation = {
+      id: 'val-missing', portfolioId: 'port-paper-1', sessionDate: '2026-09-15',
+      observationKind: 'SESSION_CLOSE', observationInstant: '2026-09-15T17:30:00Z',
+      cashBalance: '321.00', positionsMarketValue: '0.00', receivablesValue: '0.00',
+      totalEquity: null, cumulativeReturn: null, highWaterMark: null, drawdown: null,
+      dataReadinessStatus: 'PARTIAL_STALE', isComplete: false,
+      lastSupportedObservationInstant: null, missingRequirementsDetail: 'Missing close for listing-iwda',
+      adoptedDatasetId: 'ds-1', adoptedDatasetChecksum: 'chk-1',
+    };
+    comp.activeTab = 'valuations';
+    valuationsSubject.next([incomplete]);
+    await fixture.whenStable();
+    const el = fixture.nativeElement as HTMLElement;
+    expect(comp.valuationChartPoints).toBe('');
+    expect(el.querySelector('.valuations-table tbody tr td:nth-child(4)')?.textContent?.trim()).toBe('UNAVAILABLE');
+    expect(el.textContent).toContain('Missing close for listing-iwda');
   });
 
   it('should display proposals and handle proposal acceptance', () => {
@@ -197,6 +257,20 @@ describe('ResearchPaperComponent', () => {
     expect(el.textContent).toContain('Ask Assistant');
   });
 
+  it('loads the next bounded audit page and shows its range', async () => {
+    paperPagesSubject.next({
+      ...paperPagesSubject.value,
+      proposals: { total: 75, limit: 50, offset: 0, isComplete: false },
+    });
+    comp.activeTab = 'proposals';
+    await fixture.whenStable();
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.textContent).toContain('1–50 of 75');
+
+    comp.changePage('proposals', 1);
+    expect(mockResearchService.loadProposals).toHaveBeenCalledWith('port-paper-1', 50, 50);
+  });
+
   it('should handle grounded assistant interaction', async () => {
     comp.activeTab = 'assistant';
     fixture.detectChanges();
@@ -221,7 +295,7 @@ describe('ResearchPaperComponent', () => {
       ],
     };
 
-    (mockResearchService.sendAssistantChat as any).mockReturnValue(of(mockAssistantResponse));
+    vi.mocked(mockResearchService.sendAssistantChat!).mockReturnValue(of(mockAssistantResponse));
 
     comp.assistantMessage = 'What are my positions?';
     comp.sendAssistantQuery();

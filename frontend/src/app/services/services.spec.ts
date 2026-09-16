@@ -232,6 +232,31 @@ describe('ResearchService', () => {
     httpTesting.verify();
   });
 
+  function flushPortfolioState(id: string, detail: ResearchPortfolioDetail): void {
+    httpTesting.expectOne(`/api/research/portfolios/${id}`).flush(detail);
+    const emptyPage = { items: [], total: 0, limit: 100, offset: 0, isComplete: true };
+    httpTesting.expectOne(`/api/research/portfolios/${id}/proposals?limit=50&offset=0`).flush(emptyPage);
+    httpTesting.expectOne(`/api/research/portfolios/${id}/valuations?limit=200&offset=0`).flush(emptyPage);
+    httpTesting.expectOne(`/api/research/portfolios/${id}/mode-history`).flush([]);
+    httpTesting.expectOne(`/api/research/portfolios/${id}/intents?limit=100&offset=0`).flush(emptyPage);
+    httpTesting.expectOne(`/api/research/portfolios/${id}/receivables?limit=100&offset=0`).flush(emptyPage);
+    httpTesting.expectOne(`/api/research/portfolios/${id}/actions?limit=100&offset=0`).flush(emptyPage);
+    httpTesting.expectOne(`/api/research/portfolios/${id}/adoptions?limit=100&offset=0`).flush(emptyPage);
+  }
+
+  it('preserves bounded paper page metadata when navigating audit records', () => {
+    httpTesting.expectOne('/api/research/portfolios').flush([]);
+    let proposalPage = { total: 0, limit: 50, offset: 0, isComplete: true };
+    service.paperPages$.subscribe((pages) => proposalPage = pages.proposals);
+
+    service.loadProposals('port-1', 50, 50);
+    httpTesting.expectOne('/api/research/portfolios/port-1/proposals?limit=50&offset=50').flush({
+      items: [], total: 75, limit: 50, offset: 50, isComplete: true,
+    });
+
+    expect(proposalPage).toEqual({ total: 75, limit: 50, offset: 50, isComplete: true });
+  });
+
   it('should list research portfolios and select detail', () => {
     const mockList: ResearchPortfolioSummary[] = [
       {
@@ -267,9 +292,7 @@ describe('ResearchService', () => {
     };
 
     service.selectPortfolio('port-1');
-    const req = httpTesting.expectOne('/api/research/portfolios/port-1');
-    expect(req.request.method).toBe('GET');
-    req.flush(mockDetail);
+    flushPortfolioState('port-1', mockDetail);
 
     const receivedDetails: ResearchPortfolioDetail[] = [];
     service.selectedPortfolio$.subscribe((detail) => {
@@ -284,13 +307,13 @@ describe('ResearchService', () => {
   it('cancels an obsolete portfolio selection', () => {
     httpTesting.expectOne('/api/research/portfolios').flush([]);
     service.selectPortfolio('port-a');
-    const requestA = httpTesting.expectOne('/api/research/portfolios/port-a');
+    const requestsA = httpTesting.match((request) => request.url.includes('/api/research/portfolios/port-a'));
+    expect(requestsA.length).toBe(8);
 
     service.selectPortfolio('port-b');
-    const requestB = httpTesting.expectOne('/api/research/portfolios/port-b');
-    expect(requestA.cancelled).toBe(true);
+    expect(requestsA.every((request) => request.cancelled)).toBe(true);
 
-    requestB.flush({
+    flushPortfolioState('port-b', {
       id: 'port-b',
       ownerId: 'default',
       name: 'Portfolio B',

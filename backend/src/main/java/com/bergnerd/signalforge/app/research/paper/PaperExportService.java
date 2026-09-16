@@ -7,6 +7,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.io.ByteArrayOutputStream;
@@ -28,6 +29,7 @@ public class PaperExportService {
     private final Clock clock;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
+    @Transactional(readOnly = true)
     public byte[] createPaperAuditZip(String portfolioId, String ownerId) throws IOException {
         String uid = (ownerId == null || ownerId.isBlank()) ? "default" : ownerId.trim();
 
@@ -94,11 +96,11 @@ public class PaperExportService {
             List<Map<String, Object>> proposals = jdbcTemplate.queryForList(
                     "SELECT id, cycle_id, strategy_id, strategy_version, dataset_id, dataset_checksum, calendar_id, calendar_version, " +
                             "evaluation_session_date, input_cutoff_instant, evaluation_instant, scheduled_open_session_date, scheduled_open_instant, " +
-                            "reason_code, portfolio_state_version, status, accepted_at, rejected_at, rejection_reason, superseding_proposal_id, created_at " +
+                            "reason_code, portfolio_state_version, status, accepted_at, rejected_at, rejection_reason, superseding_proposal_id, reinvestment_receivable_id, created_at " +
                             "FROM paper_proposals WHERE portfolio_id = ? ORDER BY created_at ASC LIMIT 10000",
                     portfolioId
             );
-            StringBuilder propCsv = new StringBuilder("id,cycle_id,strategy_id,strategy_version,dataset_id,dataset_checksum,calendar_id,calendar_version,evaluation_session_date,input_cutoff_instant,evaluation_instant,scheduled_open_session_date,scheduled_open_instant,reason_code,portfolio_state_version,status,accepted_at,rejected_at,rejection_reason,superseding_proposal_id,created_at\n");
+            StringBuilder propCsv = new StringBuilder("id,cycle_id,strategy_id,strategy_version,dataset_id,dataset_checksum,calendar_id,calendar_version,evaluation_session_date,input_cutoff_instant,evaluation_instant,scheduled_open_session_date,scheduled_open_instant,reason_code,portfolio_state_version,status,accepted_at,rejected_at,rejection_reason,superseding_proposal_id,reinvestment_receivable_id,created_at\n");
             for (Map<String, Object> p : proposals) {
                 propCsv.append(escapeCsv((String) p.get("id"))).append(",")
                         .append(escapeCsv((String) p.get("cycle_id"))).append(",")
@@ -120,24 +122,25 @@ public class PaperExportService {
                         .append(escapeCsv((String) p.get("rejected_at"))).append(",")
                         .append(escapeCsv((String) p.get("rejection_reason"))).append(",")
                         .append(escapeCsv((String) p.get("superseding_proposal_id"))).append(",")
+                        .append(escapeCsv((String) p.get("reinvestment_receivable_id"))).append(",")
                         .append(escapeCsv((String) p.get("created_at"))).append("\n");
             }
             writeZipEntry(zos, "proposals.csv", propCsv.toString());
 
             // 4. Proposal Items CSV
             List<Map<String, Object>> items = jdbcTemplate.queryForList(
-                    "SELECT id, proposal_id, listing_id, rank, target_weight, desired_units, score, reason_code, reason_description, raw_price_reference, observation_kind " +
+                    "SELECT id, proposal_id, listing_id, rank, target_weight, cutoff_estimated_units, score, reason_code, reason_description, raw_price_reference, observation_kind " +
                             "FROM paper_proposal_items WHERE proposal_id IN (SELECT id FROM paper_proposals WHERE portfolio_id = ?) ORDER BY rank ASC LIMIT 10000",
                     portfolioId
             );
-            StringBuilder itemsCsv = new StringBuilder("id,proposal_id,listing_id,rank,target_weight,desired_units,score,reason_code,reason_description,raw_price_reference,observation_kind\n");
+            StringBuilder itemsCsv = new StringBuilder("id,proposal_id,listing_id,rank,target_weight,cutoff_estimated_units,score,reason_code,reason_description,raw_price_reference,observation_kind\n");
             for (Map<String, Object> it : items) {
                 itemsCsv.append(escapeCsv((String) it.get("id"))).append(",")
                         .append(escapeCsv((String) it.get("proposal_id"))).append(",")
                         .append(escapeCsv((String) it.get("listing_id"))).append(",")
                         .append(it.get("rank")).append(",")
                         .append(escapeCsv((String) it.get("target_weight"))).append(",")
-                        .append(escapeCsv((String) it.get("desired_units"))).append(",")
+                        .append(escapeCsv((String) it.get("cutoff_estimated_units"))).append(",")
                         .append(escapeCsv((String) it.get("score"))).append(",")
                         .append(escapeCsv((String) it.get("reason_code"))).append(",")
                         .append(escapeCsv((String) it.get("reason_description"))).append(",")
@@ -240,27 +243,34 @@ public class PaperExportService {
 
             // 9. Receivables CSV
             List<Map<String, Object>> receivables = jdbcTemplate.queryForList(
-                    "SELECT id, portfolio_id, listing_id, action_id, action_type, record_instant, ex_date, payment_date, gross_amount, withholding_tax, net_amount, status, paid_operation_id, paid_at, created_at " +
+                    "SELECT id, portfolio_id, listing_id, source_namespace, action_id, action_type, record_instant, ex_date, payment_date, payment_instant, " +
+                            "availability_instant, gross_amount, withholding_tax, net_amount, status, paid_operation_id, paid_at, created_at, dataset_id, dataset_checksum, terms_hash " +
                             "FROM paper_receivables WHERE portfolio_id = ? ORDER BY created_at ASC LIMIT 10000",
                     portfolioId
             );
-            StringBuilder recCsv = new StringBuilder("id,portfolio_id,listing_id,action_id,action_type,record_instant,ex_date,payment_date,gross_amount,withholding_tax,net_amount,status,paid_operation_id,paid_at,created_at\n");
+            StringBuilder recCsv = new StringBuilder("id,portfolio_id,listing_id,source_namespace,action_id,action_type,record_instant,ex_date,payment_date,payment_instant,availability_instant,gross_amount,withholding_tax,net_amount,status,paid_operation_id,paid_at,created_at,dataset_id,dataset_checksum,terms_hash\n");
             for (Map<String, Object> r : receivables) {
                 recCsv.append(escapeCsv((String) r.get("id"))).append(",")
                         .append(escapeCsv((String) r.get("portfolio_id"))).append(",")
                         .append(escapeCsv((String) r.get("listing_id"))).append(",")
+                        .append(escapeCsv((String) r.get("source_namespace"))).append(",")
                         .append(escapeCsv((String) r.get("action_id"))).append(",")
                         .append(escapeCsv((String) r.get("action_type"))).append(",")
                         .append(escapeCsv((String) r.get("record_instant"))).append(",")
                         .append(escapeCsv((String) r.get("ex_date"))).append(",")
                         .append(escapeCsv((String) r.get("payment_date"))).append(",")
+                        .append(escapeCsv((String) r.get("payment_instant"))).append(",")
+                        .append(escapeCsv((String) r.get("availability_instant"))).append(",")
                         .append(escapeCsv((String) r.get("gross_amount"))).append(",")
                         .append(escapeCsv((String) r.get("withholding_tax"))).append(",")
                         .append(escapeCsv((String) r.get("net_amount"))).append(",")
                         .append(escapeCsv((String) r.get("status"))).append(",")
                         .append(escapeCsv((String) r.get("paid_operation_id"))).append(",")
                         .append(escapeCsv((String) r.get("paid_at"))).append(",")
-                        .append(escapeCsv((String) r.get("created_at"))).append("\n");
+                        .append(escapeCsv((String) r.get("created_at"))).append(",")
+                        .append(escapeCsv((String) r.get("dataset_id"))).append(",")
+                        .append(escapeCsv((String) r.get("dataset_checksum"))).append(",")
+                        .append(escapeCsv((String) r.get("terms_hash"))).append("\n");
             }
             writeZipEntry(zos, "receivables.csv", recCsv.toString());
 
@@ -293,17 +303,18 @@ public class PaperExportService {
 
             // 11. Valuations CSV
             List<Map<String, Object>> valuations = jdbcTemplate.queryForList(
-                    "SELECT id, portfolio_id, session_date, observation_kind, observation_instant, cash_balance, positions_market_value, receivables_value, total_equity, cumulative_return, high_water_mark, drawdown, data_readiness_status, is_complete, last_supported_observation_instant, missing_requirements_detail, adopted_dataset_id, adopted_dataset_checksum " +
+                    "SELECT id, portfolio_id, session_date, observation_kind, observation_instant, portfolio_state_revision, cash_balance, positions_market_value, receivables_value, total_equity, cumulative_return, high_water_mark, drawdown, data_readiness_status, is_complete, last_supported_observation_instant, missing_requirements_detail, adopted_dataset_id, adopted_dataset_checksum " +
                             "FROM paper_valuations WHERE portfolio_id = ? ORDER BY observation_instant ASC LIMIT 10000",
                     portfolioId
             );
-            StringBuilder valCsv = new StringBuilder("id,portfolio_id,session_date,observation_kind,observation_instant,cash_balance,positions_market_value,receivables_value,total_equity,cumulative_return,high_water_mark,drawdown,data_readiness_status,is_complete,last_supported_observation_instant,missing_requirements_detail,adopted_dataset_id,adopted_dataset_checksum\n");
+            StringBuilder valCsv = new StringBuilder("id,portfolio_id,session_date,observation_kind,observation_instant,portfolio_state_revision,cash_balance,positions_market_value,receivables_value,total_equity,cumulative_return,high_water_mark,drawdown,data_readiness_status,is_complete,last_supported_observation_instant,missing_requirements_detail,adopted_dataset_id,adopted_dataset_checksum\n");
             for (Map<String, Object> v : valuations) {
                 valCsv.append(escapeCsv((String) v.get("id"))).append(",")
                         .append(escapeCsv((String) v.get("portfolio_id"))).append(",")
                         .append(escapeCsv((String) v.get("session_date"))).append(",")
                         .append(escapeCsv((String) v.get("observation_kind"))).append(",")
                         .append(escapeCsv((String) v.get("observation_instant"))).append(",")
+                        .append(v.get("portfolio_state_revision")).append(",")
                         .append(escapeCsv((String) v.get("cash_balance"))).append(",")
                         .append(escapeCsv((String) v.get("positions_market_value"))).append(",")
                         .append(escapeCsv((String) v.get("receivables_value"))).append(",")

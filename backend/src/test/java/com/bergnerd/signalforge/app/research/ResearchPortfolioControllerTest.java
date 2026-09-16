@@ -123,6 +123,7 @@ class ResearchPortfolioControllerTest {
                 null,
                 null,
                 null,
+                null,
                 "2026-09-15T09:00:00Z",
                 List.of(),
                 List.of()

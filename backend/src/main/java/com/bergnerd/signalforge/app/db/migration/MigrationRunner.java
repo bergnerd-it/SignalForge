@@ -21,8 +21,10 @@ import java.util.*;
 
 /**
  * Fixed ordered JDBC migration runner replacing DatabaseInitializer.
- * Detects genuinely empty databases, recognized legacy schemas, and supported versioned schemas.
- * Enforces atomic schema changes, checksum verification, WAL checkpoint backups before conversion,
+ * Detects genuinely empty databases, recognized legacy schemas, and supported
+ * versioned schemas.
+ * Enforces atomic schema changes, checksum verification, WAL checkpoint backups
+ * before conversion,
  * trigger-aware statement execution, and idempotent repeat startup.
  */
 @Slf4j
@@ -40,16 +42,14 @@ public class MigrationRunner {
     private String datasourceUrl;
 
     public static final String CODE_VERSION = "2.0.0-M5";
-    public static final int CURRENT_SCHEMA_VERSION = 12;
+    public static final int CURRENT_SCHEMA_VERSION = 13;
 
     public static final List<String> DEFAULT_TICKERS = List.of(
             "AAPL", "GOOGL", "MSFT", "AMZN", "TSLA",
-            "NVDA", "META", "JPM", "V", "NFLX"
-    );
+            "NVDA", "META", "JPM", "V", "NFLX");
 
     public static final Set<String> RECOGNIZED_LEGACY_TABLES = Set.of(
-            "users_profile", "watchlist", "positions", "trades", "portfolio_snapshots", "chat_messages"
-    );
+            "users_profile", "watchlist", "positions", "trades", "portfolio_snapshots", "chat_messages");
 
     public enum SchemaStatus {
         EMPTY,
@@ -75,11 +75,9 @@ public class MigrationRunner {
             case LEGACY_RECOGNIZED -> applyLegacyMigration();
             case VERSIONED -> verifyAndApplyVersionedMigrations();
             case NEWER_VERSION -> throw new IllegalStateException(
-                    "Database schema is newer than supported code version. Downgrade requires manual restore."
-            );
+                    "Database schema is newer than supported code version. Downgrade requires manual restore.");
             case UNKNOWN_OR_PARTIAL -> throw new IllegalStateException(
-                    "Database contains an unrecognized, partial, or corrupted schema: " + existingTables
-            );
+                    "Database contains an unrecognized, partial, or corrupted schema: " + existingTables);
         }
     }
 
@@ -100,8 +98,7 @@ public class MigrationRunner {
     private Set<String> getExistingTables() {
         List<String> tables = jdbcTemplate.query(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
-                (rs, rowNum) -> rs.getString(1)
-        );
+                (rs, rowNum) -> rs.getString(1));
         return new HashSet<>(tables);
     }
 
@@ -113,8 +110,7 @@ public class MigrationRunner {
         if (tables.contains("schema_migrations")) {
             Integer maxVersion = jdbcTemplate.queryForObject(
                     "SELECT MAX(version) FROM schema_migrations",
-                    Integer.class
-            );
+                    Integer.class);
             if (maxVersion != null && maxVersion > CURRENT_SCHEMA_VERSION) {
                 return SchemaStatus.NEWER_VERSION;
             }
@@ -179,56 +175,46 @@ public class MigrationRunner {
             String now = Instant.now().toString();
             jdbcTemplate.update(
                     "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (1, 'M1b initial schema', ?, ?, ?)",
-                    v1Checksum, now, CODE_VERSION
-            );
+                    v1Checksum, now, CODE_VERSION);
             jdbcTemplate.update(
                     "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (2, 'M1b review corrections', ?, ?, ?)",
-                    v2Checksum, now, CODE_VERSION
-            );
+                    v2Checksum, now, CODE_VERSION);
             jdbcTemplate.update(
                     "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (3, 'M2 historical datasets and import', ?, ?, ?)",
-                    v3Checksum, now, CODE_VERSION
-            );
+                    v3Checksum, now, CODE_VERSION);
             jdbcTemplate.update(
                     "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (4, 'M3 backtest engine and baseline', ?, ?, ?)",
-                    v4Checksum, now, CODE_VERSION
-            );
+                    v4Checksum, now, CODE_VERSION);
             jdbcTemplate.update(
                     "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (5, 'M3 backtest engine hardening', ?, ?, ?)",
-                    v5Checksum, now, CODE_VERSION
-            );
+                    v5Checksum, now, CODE_VERSION);
             jdbcTemplate.update(
                     "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (6, 'M3 backtest listing integrity', ?, ?, ?)",
-                    v6Checksum, now, CODE_VERSION
-            );
+                    v6Checksum, now, CODE_VERSION);
             jdbcTemplate.update(
                     "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (7, 'M3 funded observation timing', ?, ?, ?)",
-                    v7Checksum, now, CODE_VERSION
-            );
+                    v7Checksum, now, CODE_VERSION);
             jdbcTemplate.update(
                     "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (8, 'M4 strategy versions and comparisons', ?, ?, ?)",
-                    v8Checksum, now, CODE_VERSION
-            );
+                    v8Checksum, now, CODE_VERSION);
             jdbcTemplate.update(
                     "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (9, 'M4 strategy schema and integrity fix', ?, ?, ?)",
-                    v9Checksum, now, CODE_VERSION
-            );
+                    v9Checksum, now, CODE_VERSION);
             jdbcTemplate.update(
                     "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (10, 'M4 immutable trend version restoration', ?, ?, ?)",
-                    v10Checksum, now, CODE_VERSION
-            );
+                    v10Checksum, now, CODE_VERSION);
             jdbcTemplate.update(
                     "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (11, 'M4 terminal signal item integrity', ?, ?, ?)",
-                    v11Checksum, now, CODE_VERSION
-            );
+                    v11Checksum, now, CODE_VERSION);
             jdbcTemplate.update(
                     "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (12, 'M5 paper tracking and proposals', ?, ?, ?)",
-                    v12Checksum, now, CODE_VERSION
-            );
+                    v12Checksum, now, CODE_VERSION);
 
             // Seed default user legacy demo portfolio and initial cash
             seedFreshDefaults(now);
         });
+        String v13Sql = loadResource("db/migration/V13__paper_corrective_provenance.sql");
+        executeMigrationWithFkToggle(v13Sql, 13, "M5 corrective paper provenance", computeSqlChecksum(v13Sql));
         validateCurrentSchema();
 
         log.info("Fresh M4 installation completed successfully.");
@@ -298,53 +284,43 @@ public class MigrationRunner {
             String now = Instant.now().toString();
             jdbcTemplate.update(
                     "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (1, 'M1b legacy migration', ?, ?, ?)",
-                    v1Checksum, now, CODE_VERSION
-            );
+                    v1Checksum, now, CODE_VERSION);
             jdbcTemplate.update(
                     "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (2, 'M1b review corrections', ?, ?, ?)",
-                    v2Checksum, now, CODE_VERSION
-            );
+                    v2Checksum, now, CODE_VERSION);
             jdbcTemplate.update(
                     "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (3, 'M2 historical datasets and import', ?, ?, ?)",
-                    v3Checksum, now, CODE_VERSION
-            );
+                    v3Checksum, now, CODE_VERSION);
             jdbcTemplate.update(
                     "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (4, 'M3 backtest engine and baseline', ?, ?, ?)",
-                    v4Checksum, now, CODE_VERSION
-            );
+                    v4Checksum, now, CODE_VERSION);
             jdbcTemplate.update(
                     "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (5, 'M3 backtest engine hardening', ?, ?, ?)",
-                    v5Checksum, now, CODE_VERSION
-            );
+                    v5Checksum, now, CODE_VERSION);
             jdbcTemplate.update(
                     "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (6, 'M3 backtest listing integrity', ?, ?, ?)",
-                    v6Checksum, now, CODE_VERSION
-            );
+                    v6Checksum, now, CODE_VERSION);
             jdbcTemplate.update(
                     "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (7, 'M3 funded observation timing', ?, ?, ?)",
-                    v7Checksum, now, CODE_VERSION
-            );
+                    v7Checksum, now, CODE_VERSION);
             jdbcTemplate.update(
                     "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (8, 'M4 strategy versions and comparisons', ?, ?, ?)",
-                    v8Checksum, now, CODE_VERSION
-            );
+                    v8Checksum, now, CODE_VERSION);
             jdbcTemplate.update(
                     "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (9, 'M4 strategy schema and integrity fix', ?, ?, ?)",
-                    v9Checksum, now, CODE_VERSION
-            );
+                    v9Checksum, now, CODE_VERSION);
             jdbcTemplate.update(
                     "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (10, 'M4 immutable trend version restoration', ?, ?, ?)",
-                    v10Checksum, now, CODE_VERSION
-            );
+                    v10Checksum, now, CODE_VERSION);
             jdbcTemplate.update(
                     "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (11, 'M4 terminal signal item integrity', ?, ?, ?)",
-                    v11Checksum, now, CODE_VERSION
-            );
+                    v11Checksum, now, CODE_VERSION);
             jdbcTemplate.update(
                     "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (12, 'M5 paper tracking and proposals', ?, ?, ?)",
-                    v12Checksum, now, CODE_VERSION
-            );
+                    v12Checksum, now, CODE_VERSION);
         });
+        String v13Sql = loadResource("db/migration/V13__paper_corrective_provenance.sql");
+        executeMigrationWithFkToggle(v13Sql, 13, "M5 corrective paper provenance", computeSqlChecksum(v13Sql));
         validateCurrentSchema();
 
         log.info("Legacy migration and reconciliation completed successfully.");
@@ -363,6 +339,7 @@ public class MigrationRunner {
         String v10Sql = loadResource("db/migration/V10__restore_immutable_trend_version.sql");
         String v11Sql = loadResource("db/migration/V11__protect_terminal_signal_items.sql");
         String v12Sql = loadResource("db/migration/V12__paper_tracking_and_proposals.sql");
+        String v13Sql = loadResource("db/migration/V13__paper_corrective_provenance.sql");
         String expectedV1Checksum = computeV1MigrationChecksum(v1Sql);
         String candidateV1Checksum = computeCandidateV1MigrationChecksum(v1Sql);
         String expectedV2Checksum = computeSqlChecksum(v2Sql);
@@ -376,10 +353,12 @@ public class MigrationRunner {
         String expectedV10Checksum = computeSqlChecksum(v10Sql);
         String expectedV11Checksum = computeSqlChecksum(v11Sql);
         String expectedV12Checksum = computeSqlChecksum(v12Sql);
+        String expectedV12CrLfChecksum = computeSqlChecksum(
+                v12Sql.replace("\r\n", "\n").replace("\n", "\r\n"));
+        String expectedV13Checksum = computeSqlChecksum(v13Sql);
 
         List<Map<String, Object>> migrations = jdbcTemplate.queryForList(
-                "SELECT version, checksum, description, applied_at FROM schema_migrations ORDER BY version ASC"
-        );
+                "SELECT version, checksum, description, applied_at FROM schema_migrations ORDER BY version ASC");
 
         if (migrations.isEmpty()) {
             throw new IllegalStateException("schema_migrations exists but contains no applied versions");
@@ -392,55 +371,72 @@ public class MigrationRunner {
 
             if (version == 1) {
                 if (!expectedV1Checksum.equals(recordedChecksum) && !candidateV1Checksum.equals(recordedChecksum)
-                        && !"b0054244d143eb27dfadd4346c8285ab34db5ead5eed7fe48adea3bae7f23424".equals(recordedChecksum)) {
+                        && !"b0054244d143eb27dfadd4346c8285ab34db5ead5eed7fe48adea3bae7f23424"
+                                .equals(recordedChecksum)) {
                     throw new IllegalStateException(String.format(
                             "Migration version 1 checksum mismatch! Recorded: %s",
-                            recordedChecksum
-                    ));
+                            recordedChecksum));
                 }
             } else if (version == 2) {
                 if (!expectedV2Checksum.equals(recordedChecksum)) {
-                    throw new IllegalStateException("Migration version 2 checksum mismatch! Recorded: " + recordedChecksum);
+                    throw new IllegalStateException(
+                            "Migration version 2 checksum mismatch! Recorded: " + recordedChecksum);
                 }
             } else if (version == 3) {
                 if (!expectedV3Checksum.equals(recordedChecksum)) {
-                    throw new IllegalStateException("Migration version 3 checksum mismatch! Recorded: " + recordedChecksum);
+                    throw new IllegalStateException(
+                            "Migration version 3 checksum mismatch! Recorded: " + recordedChecksum);
                 }
             } else if (version == 4) {
                 if (!expectedV4Checksum.equals(recordedChecksum)) {
-                    throw new IllegalStateException("Migration version 4 checksum mismatch! Recorded: " + recordedChecksum);
+                    throw new IllegalStateException(
+                            "Migration version 4 checksum mismatch! Recorded: " + recordedChecksum);
                 }
             } else if (version == 5) {
                 if (!expectedV5Checksum.equals(recordedChecksum)) {
-                    throw new IllegalStateException("Migration version 5 checksum mismatch! Recorded: " + recordedChecksum);
+                    throw new IllegalStateException(
+                            "Migration version 5 checksum mismatch! Recorded: " + recordedChecksum);
                 }
             } else if (version == 6) {
                 if (!expectedV6Checksum.equals(recordedChecksum)) {
-                    throw new IllegalStateException("Migration version 6 checksum mismatch! Recorded: " + recordedChecksum);
+                    throw new IllegalStateException(
+                            "Migration version 6 checksum mismatch! Recorded: " + recordedChecksum);
                 }
             } else if (version == 7) {
                 if (!expectedV7Checksum.equals(recordedChecksum)) {
-                    throw new IllegalStateException("Migration version 7 checksum mismatch! Recorded: " + recordedChecksum);
+                    throw new IllegalStateException(
+                            "Migration version 7 checksum mismatch! Recorded: " + recordedChecksum);
                 }
             } else if (version == 8) {
                 if (!expectedV8Checksum.equals(recordedChecksum)) {
-                    throw new IllegalStateException("Migration version 8 checksum mismatch! Recorded: " + recordedChecksum);
+                    throw new IllegalStateException(
+                            "Migration version 8 checksum mismatch! Recorded: " + recordedChecksum);
                 }
             } else if (version == 9) {
                 if (!expectedV9Checksum.equals(recordedChecksum)) {
-                    throw new IllegalStateException("Migration version 9 checksum mismatch! Recorded: " + recordedChecksum);
+                    throw new IllegalStateException(
+                            "Migration version 9 checksum mismatch! Recorded: " + recordedChecksum);
                 }
             } else if (version == 10) {
                 if (!expectedV10Checksum.equals(recordedChecksum)) {
-                    throw new IllegalStateException("Migration version 10 checksum mismatch! Recorded: " + recordedChecksum);
+                    throw new IllegalStateException(
+                            "Migration version 10 checksum mismatch! Recorded: " + recordedChecksum);
                 }
             } else if (version == 11) {
                 if (!expectedV11Checksum.equals(recordedChecksum)) {
-                    throw new IllegalStateException("Migration version 11 checksum mismatch! Recorded: " + recordedChecksum);
+                    throw new IllegalStateException(
+                            "Migration version 11 checksum mismatch! Recorded: " + recordedChecksum);
                 }
             } else if (version == 12) {
-                if (!expectedV12Checksum.equals(recordedChecksum)) {
-                    throw new IllegalStateException("Migration version 12 checksum mismatch! Recorded: " + recordedChecksum);
+                if (!expectedV12Checksum.equals(recordedChecksum)
+                        && !expectedV12CrLfChecksum.equals(recordedChecksum)) {
+                    throw new IllegalStateException(
+                            "Migration version 12 checksum mismatch! Recorded: " + recordedChecksum);
+                }
+            } else if (version == 13) {
+                if (!expectedV13Checksum.equals(recordedChecksum)) {
+                    throw new IllegalStateException(
+                            "Migration version 13 checksum mismatch! Recorded: " + recordedChecksum);
                 }
             } else {
                 throw new IllegalStateException("Unknown migration version found in database: " + version);
@@ -464,8 +460,7 @@ public class MigrationRunner {
                 executeSqlScript(v2Sql);
                 jdbcTemplate.update(
                         "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (2, 'M1b review corrections', ?, ?, ?)",
-                        expectedV2Checksum, Instant.now().toString(), CODE_VERSION
-                );
+                        expectedV2Checksum, Instant.now().toString(), CODE_VERSION);
             });
             versions.add(2);
         }
@@ -475,8 +470,7 @@ public class MigrationRunner {
                 executeSqlScript(v3Sql);
                 jdbcTemplate.update(
                         "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (3, 'M2 historical datasets and import', ?, ?, ?)",
-                        expectedV3Checksum, Instant.now().toString(), CODE_VERSION
-                );
+                        expectedV3Checksum, Instant.now().toString(), CODE_VERSION);
             });
             versions.add(3);
         }
@@ -486,8 +480,7 @@ public class MigrationRunner {
                 executeSqlScript(v4Sql);
                 jdbcTemplate.update(
                         "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (4, 'M3 backtest engine and baseline', ?, ?, ?)",
-                        expectedV4Checksum, Instant.now().toString(), CODE_VERSION
-                );
+                        expectedV4Checksum, Instant.now().toString(), CODE_VERSION);
             });
             versions.add(4);
         }
@@ -497,8 +490,7 @@ public class MigrationRunner {
                 executeSqlScript(v5Sql);
                 jdbcTemplate.update(
                         "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (5, 'M3 backtest engine hardening', ?, ?, ?)",
-                        expectedV5Checksum, Instant.now().toString(), CODE_VERSION
-                );
+                        expectedV5Checksum, Instant.now().toString(), CODE_VERSION);
             });
             versions.add(5);
         }
@@ -532,8 +524,7 @@ public class MigrationRunner {
                 executeSqlScript(v11Sql);
                 jdbcTemplate.update(
                         "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (11, 'M4 terminal signal item integrity', ?, ?, ?)",
-                        expectedV11Checksum, Instant.now().toString(), CODE_VERSION
-                );
+                        expectedV11Checksum, Instant.now().toString(), CODE_VERSION);
             });
             versions.add(11);
         }
@@ -543,10 +534,14 @@ public class MigrationRunner {
                 executeSqlScript(v12Sql);
                 jdbcTemplate.update(
                         "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (12, 'M5 paper tracking and proposals', ?, ?, ?)",
-                        expectedV12Checksum, Instant.now().toString(), CODE_VERSION
-                );
+                        expectedV12Checksum, Instant.now().toString(), CODE_VERSION);
             });
             versions.add(12);
+        }
+
+        if (!versions.contains(13)) {
+            executeMigrationWithFkToggle(v13Sql, 13, "M5 corrective paper provenance", expectedV13Checksum);
+            versions.add(13);
         }
 
         validateCurrentSchema();
@@ -557,49 +552,44 @@ public class MigrationRunner {
     private void seedFreshDefaults(String now) {
         // Seed default legacy demo portfolio for single-user local workstation
         jdbcTemplate.update(
-                "INSERT INTO portfolios (id, owner_id, name, mode, base_currency, initial_cash, created_at, paper_started_at, rounding_policy_version) " +
+                "INSERT INTO portfolios (id, owner_id, name, mode, base_currency, initial_cash, created_at, paper_started_at, rounding_policy_version) "
+                        +
                         "VALUES ('portfolio-legacy-demo-default', 'default', 'Legacy Demo Portfolio', 'LEGACY_DEMO', 'USD', '10000.00', ?, NULL, 'v1-half-even')",
-                now
-        );
+                now);
 
         jdbcTemplate.update(
-                "INSERT INTO portfolio_state (portfolio_id, cash_amount, revision) VALUES ('portfolio-legacy-demo-default', '10000.00', 1)"
-        );
+                "INSERT INTO portfolio_state (portfolio_id, cash_amount, revision) VALUES ('portfolio-legacy-demo-default', '10000.00', 1)");
 
         jdbcTemplate.update(
-                "INSERT INTO operations (id, portfolio_id, kind, idempotency_key, payload_hash, result_json, business_at, created_at) " +
+                "INSERT INTO operations (id, portfolio_id, kind, idempotency_key, payload_hash, result_json, business_at, created_at) "
+                        +
                         "VALUES ('op-initial-funding-default', 'portfolio-legacy-demo-default', 'INITIAL_FUNDING', 'seed-initial-funding', 'seed-hash', '{\"seeded\":true}', ?, ?)",
-                now, now
-        );
+                now, now);
 
         jdbcTemplate.update(
-                "INSERT INTO ledger_entries (id, portfolio_id, operation_id, sequence, entry_type, listing_id, signed_quantity_delta, signed_cash_delta, acquisition_cost_delta, currency, business_at, recorded_at, legacy_record_id) " +
+                "INSERT INTO ledger_entries (id, portfolio_id, operation_id, sequence, entry_type, listing_id, signed_quantity_delta, signed_cash_delta, acquisition_cost_delta, currency, business_at, recorded_at, legacy_record_id) "
+                        +
                         "VALUES ('ledger-initial-funding-default', 'portfolio-legacy-demo-default', 'op-initial-funding-default', 1, 'INITIAL_FUNDING', NULL, '0', '10000.00', '0.00', 'USD', ?, ?, NULL)",
-                now, now
-        );
+                now, now);
 
         // Seed default watchlist in legacy_watchlist AND compatibility watchlist
         for (String ticker : DEFAULT_TICKERS) {
             String watchId = UUID.randomUUID().toString();
             jdbcTemplate.update(
                     "INSERT INTO legacy_watchlist (id, portfolio_id, ticker, added_at) VALUES (?, 'portfolio-legacy-demo-default', ?, ?)",
-                    watchId, ticker, now
-            );
+                    watchId, ticker, now);
             jdbcTemplate.update(
                     "INSERT OR IGNORE INTO watchlist (id, user_id, ticker, added_at) VALUES (?, 'default', ?, ?)",
-                    watchId, ticker, now
-            );
+                    watchId, ticker, now);
         }
 
         // Seed legacy compatibility tables
         jdbcTemplate.update(
                 "INSERT OR IGNORE INTO users_profile (id, cash_balance, created_at) VALUES ('default', 10000.0, ?)",
-                now
-        );
+                now);
         jdbcTemplate.update(
                 "INSERT OR IGNORE INTO portfolio_snapshots (id, user_id, total_value, recorded_at) VALUES (?, 'default', 10000.0, ?)",
-                UUID.randomUUID().toString(), now
-        );
+                UUID.randomUUID().toString(), now);
     }
 
     private void syncLegacyCompatibilityTables() {
@@ -633,6 +623,11 @@ public class MigrationRunner {
                         stmt.execute(stmtSql);
                     }
                 }
+                try (var stmt = conn.createStatement(); var violations = stmt.executeQuery("PRAGMA foreign_key_check")) {
+                    if (violations.next()) {
+                        throw new IllegalStateException("Migration version " + version + " violates foreign keys");
+                    }
+                }
                 try (var ps = conn.prepareStatement(
                         "INSERT INTO schema_migrations (version, description, checksum, applied_at, code_version) VALUES (?, ?, ?, ?, ?)")) {
                     ps.setInt(1, version);
@@ -647,6 +642,7 @@ public class MigrationRunner {
                 conn.rollback();
                 throw e;
             } finally {
+                conn.setAutoCommit(true);
                 try (var stmt = conn.createStatement()) {
                     stmt.execute("PRAGMA foreign_keys = ON;");
                 } catch (Exception ignored) {
@@ -715,8 +711,10 @@ public class MigrationRunner {
         requireColumns("paper_proposals", Set.of(
                 "id", "portfolio_id", "cycle_id", "strategy_id", "strategy_version", "dataset_id", "dataset_checksum",
                 "calendar_id", "calendar_version", "evaluation_session_date", "input_cutoff_instant", "evaluation_instant",
-                "scheduled_open_session_date", "scheduled_open_instant", "reason_code", "portfolio_state_version", "status", "created_at"
+                "scheduled_open_session_date", "scheduled_open_instant", "reason_code", "portfolio_state_version", "status", "created_at",
+                "reinvestment_receivable_id"
         ));
+        requireColumns("paper_proposal_items", Set.of("cutoff_estimated_units"));
         requireColumns("paper_execution_intents", Set.of(
                 "id", "portfolio_id", "order_type", "scheduled_session_date", "scheduled_open_instant", "approval_mode", "status", "created_at"
         ));
@@ -727,11 +725,13 @@ public class MigrationRunner {
         ));
         requireColumns("paper_receivables", Set.of(
                 "id", "portfolio_id", "listing_id", "action_id", "action_type", "record_instant", "ex_date", "payment_date",
-                "gross_amount", "withholding_tax", "net_amount", "status", "created_at"
+                "gross_amount", "withholding_tax", "net_amount", "status", "created_at",
+                "source_namespace", "payment_instant", "availability_instant", "dataset_id", "dataset_checksum", "terms_hash"
         ));
         requireColumns("paper_valuations", Set.of(
                 "id", "portfolio_id", "session_date", "observation_kind", "observation_instant", "cash_balance",
-                "positions_market_value", "receivables_value", "is_complete", "adopted_dataset_id", "adopted_dataset_checksum"
+                "positions_market_value", "receivables_value", "is_complete", "adopted_dataset_id", "adopted_dataset_checksum",
+                "portfolio_state_revision"
         ));
 
         requireColumns("chat_requests", Set.of(
@@ -918,13 +918,13 @@ public class MigrationRunner {
                 return;
             }
         }
-        throw new IllegalStateException("Versioned schema is missing unique columns on " + table + ": " + expectedColumns);
+        throw new IllegalStateException(
+                "Versioned schema is missing unique columns on " + table + ": " + expectedColumns);
     }
 
     private void requireTrigger(String trigger) {
         Integer count = jdbcTemplate.queryForObject(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name = ?", Integer.class, trigger
-        );
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name = ?", Integer.class, trigger);
         if (count == null || count != 1) {
             throw new IllegalStateException("Versioned schema is missing required trigger: " + trigger);
         }

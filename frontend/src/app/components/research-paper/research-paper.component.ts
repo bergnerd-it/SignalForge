@@ -1,7 +1,10 @@
-import { Component, OnInit, OnDestroy } from '@angular/core';
+import { Component, OnInit, OnDestroy, ChangeDetectorRef } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Subscription } from 'rxjs';
+import { ActivatedRoute, NavigationEnd, Router } from '@angular/router';
+import { Location } from '@angular/common';
+import { filter } from 'rxjs/operators';
 import { ResearchService } from '../../services/research.service';
 import {
   ResearchPortfolioSummary,
@@ -11,8 +14,13 @@ import {
   PaperModeHistory,
   AssistantChatRequest,
   AssistantChatResponse,
-  FactCard,
-  EvidenceReference,
+  PaperExecutionIntent,
+  PaperReceivable,
+  PaperProcessedAction,
+  PaperDatasetAdoption,
+  PaperPageMetadata,
+  PaperPageName,
+  PaperPageState,
 } from '../../models/research.model';
 
 @Component({
@@ -28,8 +36,20 @@ export class ResearchPaperComponent implements OnInit, OnDestroy {
   public proposals: PaperProposal[] = [];
   public valuations: PaperValuation[] = [];
   public modeHistory: PaperModeHistory[] = [];
+  public intents: PaperExecutionIntent[] = [];
+  public receivables: PaperReceivable[] = [];
+  public processedActions: PaperProcessedAction[] = [];
+  public adoptions: PaperDatasetAdoption[] = [];
+  public paperPages: PaperPageState = {
+    proposals: { total: 0, limit: 50, offset: 0, isComplete: true },
+    valuations: { total: 0, limit: 200, offset: 0, isComplete: true },
+    intents: { total: 0, limit: 100, offset: 0, isComplete: true },
+    receivables: { total: 0, limit: 100, offset: 0, isComplete: true },
+    actions: { total: 0, limit: 100, offset: 0, isComplete: true },
+    adoptions: { total: 0, limit: 100, offset: 0, isComplete: true },
+  };
 
-  public activeTab: 'proposals' | 'valuations' | 'positions' | 'modeHistory' | 'assistant' = 'proposals';
+  public activeTab: 'proposals' | 'valuations' | 'positions' | 'intents' | 'events' | 'modeHistory' | 'assistant' = 'proposals';
   public isLoading: boolean = false;
   public errorMessage: string | null = null;
   public modeNotice: string | null = null;
@@ -58,22 +78,49 @@ export class ResearchPaperComponent implements OnInit, OnDestroy {
 
   private subscriptions: Subscription = new Subscription();
 
-  constructor(public readonly researchService: ResearchService) {}
+  public get valuationChartPoints(): string {
+    const values = [...this.valuations]
+      .reverse()
+      .filter((valuation) => valuation.totalEquity !== null)
+      .map((valuation) => Number(valuation.totalEquity))
+      .filter((value) => Number.isFinite(value));
+    if (values.length === 0) return '';
+    const minimum = Math.min(...values);
+    const maximum = Math.max(...values);
+    const range = maximum - minimum || 1;
+    return values.map((value, index) => {
+      const x = values.length === 1 ? 50 : (index * 100) / (values.length - 1);
+      const y = 38 - ((value - minimum) / range) * 34;
+      return `${x},${y}`;
+    }).join(' ');
+  }
+
+  constructor(
+    public readonly researchService: ResearchService,
+    private readonly route: ActivatedRoute,
+    private readonly router: Router,
+    private readonly location: Location,
+    private readonly cdr: ChangeDetectorRef
+  ) {}
 
   ngOnInit(): void {
-    const initialRouteId = this.extractPortfolioIdFromUrl();
+    const initialRouteId = this.routePortfolioId();
     if (initialRouteId) {
       this.researchService.selectPortfolio(initialRouteId);
     }
 
-    if (typeof window !== 'undefined') {
-      window.addEventListener('popstate', this.handlePopState);
-    }
+    this.subscriptions.add(
+      this.router.events.pipe(filter((event): event is NavigationEnd => event instanceof NavigationEnd)).subscribe(() => {
+        const id = this.routePortfolioId();
+        if (id) this.researchService.selectPortfolio(id);
+      })
+    );
 
     this.subscriptions.add(
       this.researchService.portfolios$.subscribe((list) => {
         this.portfolios = list;
-        const currentRouteId = this.extractPortfolioIdFromUrl();
+        this.cdr.markForCheck();
+        const currentRouteId = this.routePortfolioId();
         if (list.length > 0 && !this.selectedPortfolio && !currentRouteId) {
           this.researchService.selectPortfolio(list[0].id);
         }
@@ -84,70 +131,112 @@ export class ResearchPaperComponent implements OnInit, OnDestroy {
       this.researchService.selectedPortfolio$.subscribe((detail) => {
         this.selectedPortfolio = detail;
         this.assistantResponse = null; // Clear context-specific evidence on portfolio switch
-        if (detail) {
-          this.researchService.loadProposals(detail.id);
-          this.researchService.loadValuations(detail.id);
-          this.researchService.loadModeHistory(detail.id);
-        }
+        this.cdr.markForCheck();
       })
     );
 
     this.subscriptions.add(
       this.researchService.proposals$.subscribe((props) => {
         this.proposals = props;
+        this.cdr.markForCheck();
       })
     );
 
     this.subscriptions.add(
       this.researchService.valuations$.subscribe((vals) => {
         this.valuations = vals;
+        this.cdr.markForCheck();
       })
     );
 
     this.subscriptions.add(
       this.researchService.modeHistory$.subscribe((hist) => {
         this.modeHistory = hist;
+        this.cdr.markForCheck();
       })
     );
+    this.subscriptions.add(this.researchService.intents$.subscribe((items) => {
+      this.intents = items;
+      this.cdr.markForCheck();
+    }));
+    this.subscriptions.add(this.researchService.receivables$.subscribe((items) => {
+      this.receivables = items;
+      this.cdr.markForCheck();
+    }));
+    this.subscriptions.add(this.researchService.actions$.subscribe((items) => {
+      this.processedActions = items;
+      this.cdr.markForCheck();
+    }));
+    this.subscriptions.add(this.researchService.adoptions$.subscribe((items) => {
+      this.adoptions = items;
+      this.cdr.markForCheck();
+    }));
+    this.subscriptions.add(this.researchService.paperPages$.subscribe((pages) => {
+      this.paperPages = pages;
+      this.cdr.markForCheck();
+    }));
 
     this.subscriptions.add(
       this.researchService.loading$.subscribe((loading) => {
         this.isLoading = loading;
+        this.cdr.markForCheck();
       })
     );
 
     this.subscriptions.add(
       this.researchService.error$.subscribe((err) => {
         this.errorMessage = err;
+        this.cdr.markForCheck();
       })
     );
   }
 
   ngOnDestroy(): void {
-    if (typeof window !== 'undefined') {
-      window.removeEventListener('popstate', this.handlePopState);
-    }
     this.subscriptions.unsubscribe();
   }
 
-  private handlePopState = (): void => {
-    const id = this.extractPortfolioIdFromUrl();
-    if (id) {
-      this.researchService.selectPortfolio(id);
+  private routePortfolioId(): string | null {
+    const activatedId = this.route.snapshot.paramMap.get('id');
+    if (activatedId) return activatedId;
+    let current = this.router.routerState.snapshot.root;
+    while (current) {
+      const id = current.paramMap.get('id');
+      if (id) return id;
+      if (!current.firstChild) break;
+      current = current.firstChild;
     }
-  };
-
-  private extractPortfolioIdFromUrl(): string | null {
-    if (typeof window === 'undefined') return null;
-    const match = window.location.pathname.match(/\/research\/portfolios\/([a-zA-Z0-9_-]+)/);
-    return match ? match[1] : null;
+    const routePattern = /^\/research\/portfolios\/([^/?#]+)\/?$/;
+    const match = routePattern.exec(this.location.path()) ||
+      (typeof window !== 'undefined' ? routePattern.exec(window.location.pathname) : null);
+    return match ? decodeURIComponent(match[1]) : null;
   }
 
   public onSelectPortfolio(id: string): void {
-    if (typeof window !== 'undefined') {
-      window.history.pushState({}, '', '/research/portfolios/' + id);
-    }
-    this.researchService.selectPortfolio(id);
+    void this.router.navigate(['/research/portfolios', id]);
+  }
+
+  public changePage(name: PaperPageName, direction: -1 | 1): void {
+    if (!this.selectedPortfolio) return;
+    const page = this.paperPages[name];
+    const offset = Math.max(0, page.offset + direction * page.limit);
+    if (offset === page.offset || (direction === 1 && page.isComplete)) return;
+    const loaders: Record<PaperPageName, (id: string, limit: number, pageOffset: number) => void> = {
+      proposals: (id, limit, pageOffset) => this.researchService.loadProposals(id, limit, pageOffset),
+      valuations: (id, limit, pageOffset) => this.researchService.loadValuations(id, limit, pageOffset),
+      intents: (id, limit, pageOffset) => this.researchService.loadIntents(id, limit, pageOffset),
+      receivables: (id, limit, pageOffset) => this.researchService.loadReceivables(id, limit, pageOffset),
+      actions: (id, limit, pageOffset) => this.researchService.loadActions(id, limit, pageOffset),
+      adoptions: (id, limit, pageOffset) => this.researchService.loadAdoptions(id, limit, pageOffset),
+    };
+    loaders[name](this.selectedPortfolio.id, page.limit, offset);
+  }
+
+  public pageStart(page: PaperPageMetadata): number {
+    return page.total === 0 ? 0 : page.offset + 1;
+  }
+
+  public pageEnd(page: PaperPageMetadata): number {
+    return Math.min(page.total, page.offset + page.limit);
   }
 
   public createPortfolio(): void {
@@ -160,12 +249,14 @@ export class ResearchPaperComponent implements OnInit, OnDestroy {
     }).subscribe({
       next: (created) => {
         this.showCreateModal = false;
+        this.cdr.markForCheck();
         if (created?.id) {
           this.onSelectPortfolio(created.id);
         }
       },
       error: (err) => {
         this.errorMessage = 'Failed to create paper portfolio: ' + (err.error?.message || err.message);
+        this.cdr.markForCheck();
       },
     });
   }
@@ -186,9 +277,11 @@ export class ResearchPaperComponent implements OnInit, OnDestroy {
     }).subscribe({
       next: () => {
         this.showActivateModal = false;
+        this.cdr.markForCheck();
       },
       error: (err) => {
         this.errorMessage = 'Activation error: ' + (err.error?.message || err.message);
+        this.cdr.markForCheck();
       },
     });
   }
@@ -200,9 +293,11 @@ export class ResearchPaperComponent implements OnInit, OnDestroy {
     }).subscribe({
       next: () => {
         this.showAdoptModal = false;
+        this.cdr.markForCheck();
       },
       error: (err) => {
         this.errorMessage = 'Adoption error: ' + (err.error?.message || err.message);
+        this.cdr.markForCheck();
       },
     });
   }
@@ -212,9 +307,11 @@ export class ResearchPaperComponent implements OnInit, OnDestroy {
     this.researchService.evaluatePortfolio(this.selectedPortfolio.id).subscribe({
       next: () => {
         this.activeTab = 'proposals';
+        this.cdr.markForCheck();
       },
       error: (err) => {
         this.errorMessage = 'Evaluation error: ' + (err.error?.message || err.message);
+        this.cdr.markForCheck();
       },
     });
   }
@@ -225,6 +322,7 @@ export class ResearchPaperComponent implements OnInit, OnDestroy {
       next: () => {},
       error: (err) => {
         this.errorMessage = 'Acceptance error: ' + (err.error?.message || err.message);
+        this.cdr.markForCheck();
       },
     });
   }
@@ -237,6 +335,7 @@ export class ResearchPaperComponent implements OnInit, OnDestroy {
       next: () => {},
       error: (err) => {
         this.errorMessage = 'Rejection error: ' + (err.error?.message || err.message);
+        this.cdr.markForCheck();
       },
     });
   }
@@ -257,9 +356,11 @@ export class ResearchPaperComponent implements OnInit, OnDestroy {
         } else {
           this.modeNotice = 'AUTO_PAPER enabled: future proposals will be automatically scheduled and executed at eligible market opens.';
         }
+        this.cdr.markForCheck();
       },
       error: (err) => {
         this.errorMessage = 'Mode toggle error: ' + (err.error?.message || err.message);
+        this.cdr.markForCheck();
       },
     });
   }
@@ -270,6 +371,7 @@ export class ResearchPaperComponent implements OnInit, OnDestroy {
       next: () => {},
       error: (err) => {
         this.errorMessage = 'Process events error: ' + (err.error?.message || err.message);
+        this.cdr.markForCheck();
       },
     });
   }
@@ -279,6 +381,7 @@ export class ResearchPaperComponent implements OnInit, OnDestroy {
     this.researchService.exportAuditZip(this.selectedPortfolio.id).subscribe({
       error: (err) => {
         this.errorMessage = 'Failed to download audit archive: ' + (err.error?.message || err.message);
+        this.cdr.markForCheck();
       },
     });
   }
@@ -304,10 +407,12 @@ export class ResearchPaperComponent implements OnInit, OnDestroy {
         this.assistantResponse = res;
         this.isAssistantThinking = false;
         this.assistantMessage = '';
+        this.cdr.markForCheck();
       },
       error: (err) => {
         this.errorMessage = 'Assistant error: ' + (err.error?.message || err.message);
         this.isAssistantThinking = false;
+        this.cdr.markForCheck();
       },
     });
   }
