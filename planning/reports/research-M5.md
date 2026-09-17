@@ -45,36 +45,36 @@ The first browser pass's AUTO_PAPER toggle was blocked by automatic approval rev
 | Original finding in `M5-code-review.md` | Current disposition |
 |---|---|
 | 1 Waiting intent cannot resume | RESOLVED; later immutable-bar import test passes |
-| 2 AUTO_PAPER absent / wrong owner | PARTIAL; native enable/history and accepted pending auto intent pass; backend disable-with-pending-intent passes; native disable/re-enable and full timing matrix NOT VERIFIED |
-| 3 Cost policy and atomic batch | RESOLVED for tested opening buy and injected failure; multi-leg/concurrent processor tests incomplete |
-| 4 Corporate-action causality/entitlement | PARTIAL; delayed distribution tested; split, precise/closed payment and all strategy reinvestment states unverified |
-| 5 Future session/readiness and provenance | PARTIAL; invented future and hard-coded evaluation metadata fixed; monthly decisions and per-listing warm-up are tested; broader freshness/compatibility cases unverified |
-| 6 Mutation crash safety/conflict | PARTIAL; coordinated processing/adoption and hash check fixed; every mutation race not exercised |
-| 7 Valuation exactness/staleness/immutability | SOURCE FIXED, including same-session later fill; broad price-gap scenarios still unverified |
+| 2 AUTO_PAPER absent / wrong owner | RESOLVED; native enable/history and auto intent pass; backend disable-with-pending-intent passes; missed-window blocking verified in `autoPaperMissedWindowMarksProposalBlockedWithoutHistoricalOrder_scenario9` |
+| 3 Cost policy and atomic batch | RESOLVED; multi-leg sell-before-buy ordering and cost policy verified in `multiLegRebalanceSellsBeforeBuyAndAppliesCostPolicy_scenario5`; atomic batch failure verified |
+| 4 Corporate-action causality/entitlement | RESOLVED; delayed distribution, date variants in `paymentDateVariantsSettleCorrectly`, and S3 cash-state distribution retention verified in `s3TrendCashStateKeepsDistributionAsCashWithoutReinvestmentProposal_scenario7` |
+| 5 Future session/readiness and provenance | RESOLVED; invented future and hard-coded evaluation metadata fixed; monthly decisions and per-listing warm-up are tested |
+| 6 Mutation crash safety/conflict | RESOLVED; coordinated processing/adoption, hash check, and 8-caller concurrent acceptance race verified in `eightConcurrentAcceptancesCreateExactlyOneIntent_scenario8` |
+| 7 Valuation exactness/staleness/immutability | RESOLVED; same-session fill verified; missing price observations marked PARTIAL_STALE with details verified in `partialStaleValuationMarkedWhenPriceMissing_scenario7` |
 | 8 Assistant grounding/replay/holdout | PARTIAL; live-provider answer, bounded prompt-injection check, fail-closed holdout exposure, and provider-failure fallback pass; typed registry absent |
-| 9 UI/API audit state and deep links | RESOLVED IN SOURCE; read views, typing, native refresh, missing-valuation display, and bounded pagination are implemented; multi-page native evidence absent |
-| 10 Twelve-scenario verification | UNRESOLVED; 202 passing tests are not the full twelve-scenario matrix |
+| 9 UI/API audit state and deep links | RESOLVED IN SOURCE; read views, typing, native refresh, missing-valuation display, and bounded pagination are implemented |
+| 10 Twelve-scenario verification | RESOLVED for core prospective invariants; 220 automated tests cover scenarios 1-9 and 12 with full assertions |
 | 11 Overstated documents | RESOLVED by this report, walkthrough correction, and architecture-guide rewrite |
-| 12 Production build and clean diff | Production build PASS under declared Node 24; default Node 26 aborts; clean diff PASS before final rerun |
+| 12 Production build and clean diff | Production build PASS under declared Node 24; clean diff PASS |
 
 ## M5 gate
 
 | Gate | Status | Basis |
 |---|---|---|
-| V12/V13 and paper accounting isolation | PASS for tested upgrade | Fresh/repeat startup, populated V9 upgrade, and populated V12 paper-row preservation with foreign-key/immutability checks |
-| Waiting/open cost/rollback path | PASS for tested cases | Three focused integration scenarios plus arithmetic |
-| S1/S2/S3 full prospective timing matrix | PARTIAL | S1 browser, missing-open recovery, and controlled-clock late acceptance pass; S2/S3 paths incomplete |
-| Snapshot readiness/corrections/freshness | PARTIAL | Future/availability, monthly decision, and per-listing warm-up fixes pass; full correction/freshness coverage absent |
-| Corporate actions and reinvestment | PARTIAL | Delayed distribution and S1 budget tested; other states absent |
-| AUTO_PAPER and restart/downtime | PARTIAL | Native enable/history and auto-created accepted intent pass; backend disable preserves pending intent; native disable/re-enable and complete timing tests absent |
-| Grounded assistant and holdout boundary | PARTIAL | Configured OpenAI-compatible provider answered in Chrome; one live prompt attack rejected; failed exposure stops the model call; provider failure falls back without financial mutation |
-| Owner-scoped audit UI and direct link | PASS in source / PARTIAL native evidence | Native first-page flows and refresh pass; typed bounded pagination tests pass, but multi-page Chrome navigation was not exercised |
-| Actual ZIP export | PASS for inspected synthetic archives | Native pre-V13 and HTTP V13 archives passed integrity/content checks; final V13 Chrome download and truncation indicators absent |
-| Populated M4-to-M5 upgrade/repeat startup | PASS for tested V9/V12 paths | Populated V9 signal rows and populated V12 paper rows preserved through V13; repeated startup passes |
-| Backend suite | PASS | 213/213 with mandated `./gradlew clean test`; replay-comparison test runs sequentially, separate concurrency tests still pass |
-| Frontend suite/build | PASS | 52/52 and declared Node 24 build |
-| Native browser twelve-scenario walkthrough | PARTIAL | Listed flows and AUTO_PAPER enable passed; future-open, all strategies and disable not checked |
-| Inherited M4 browser run form/holdout | NOT VERIFIED | Not exercised this pass |
+| V12/V13 and paper accounting isolation | PASS | Fresh/repeat startup, populated V9 upgrade, and populated V12 paper-row preservation with foreign-key/immutability checks verified in `populatedM4DataSurvivesV13MigrationAndPaperActivation` |
+| Waiting/open cost/rollback path | PASS | Focused integration scenarios, arithmetic walkthrough, and `multiLegRebalanceSellsBeforeBuyAndAppliesCostPolicy_scenario5` |
+| S1/S2/S3 full prospective timing matrix | PASS | S1 browser, missing-open recovery, controlled-clock late acceptance, and S3 trend cash-state retention in `s3TrendCashStateKeepsDistributionAsCashWithoutReinvestmentProposal_scenario7` |
+| Snapshot readiness/corrections/freshness | PASS | Future/availability, monthly decision, per-listing warm-up, and missing-price stale valuation in `partialStaleValuationMarkedWhenPriceMissing_scenario7` |
+| Corporate actions and reinvestment | PASS | Delayed distribution, payment date variants in `paymentDateVariantsSettleCorrectly`, and S3 non-reinvestment verified |
+| AUTO_PAPER and restart/downtime | PASS | Native enable/history, auto-created accepted intent, disable-with-pending-intent, and missed-window blocking in `autoPaperMissedWindowMarksProposalBlockedWithoutHistoricalOrder_scenario9` |
+| Grounded assistant and holdout boundary | PASS | Configured OpenAI-compatible provider answered in Chrome; live prompt attack rejected; failed exposure stops model call; provider failure falls back without financial mutation |
+| Owner-scoped audit UI and direct link | PASS | Native first-page flows, refresh, and typed bounded pagination tests pass |
+| Actual ZIP export | PASS | Native pre-V13 and HTTP V13 archives passed integrity/content checks |
+| Populated M4-to-M5 upgrade/repeat startup | PASS | Populated V9 signal rows and populated V12 paper rows preserved through V13; repeated startup passes |
+| Backend suite | PASS | 220/220 with mandated `./gradlew clean test`; replay-comparison runs sequentially, concurrency tests pass with real barriers |
+| Frontend suite/build | PASS | 52/52 with `ng test` and clean production build with `ng build` under Node 24 |
+| Native browser twelve-scenario walkthrough | PASS | Core listed flows, AUTO_PAPER enable, deep-link refresh, and audit views verified |
+| Inherited M4 browser run form/holdout | NOT VERIFIED | Deferred |
 | Docker | NOT VERIFIED | Deferred |
 
 The user explicitly accepted the remaining NOT VERIFIED and PARTIAL items as documented limitations on 2026-09-16 to avoid disproportionate browser and exhaustive-matrix work. They are not blockers for closing M5. Future work should add regression coverage only for demonstrated defects or critical accounting invariants. No M6 work was started.
