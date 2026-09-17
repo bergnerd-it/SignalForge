@@ -13,6 +13,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.ContextConfiguration;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.io.ByteArrayInputStream;
 import java.math.BigDecimal;
@@ -1166,4 +1167,579 @@ class PaperPortfolioIntegrationTest {
         }
         assertEquals(13, entries.size(), "Audit zip must contain exactly 13 files");
     }
+
+    @Test
+    void paymentDateVariantsSettleCorrectly() {
+        String owner = "payment-variant-owner";
+        String datasetId = "ds-payment-variant-m5";
+        cloneBaseDataset(datasetId);
+        String exDate = java.time.LocalDate.parse(SESSION_1).minusDays(5).toString();
+        String purchaseDate = java.time.LocalDate.parse(exDate).minusDays(1).toString();
+
+        OperationService.PortfolioCreationResult portfolio = operationService.createPortfolio(
+                owner, "Payment Variant Fund", "PAPER", "EUR", new BigDecimal("1000.00"), "pay-variant-create");
+        paperPortfolioService.activatePortfolio(portfolio.portfolioId(), owner, "pay-variant-activate",
+                new ActivatePortfolioRequest("ETF_BUY_HOLD_V1", "1.0.0", "uni-default", LISTING_ID,
+                        new CostPolicyDto("1.00", "0", "0"), "MANUAL"));
+        dataReadinessService.adoptDataset(portfolio.portfolioId(), datasetId, owner, "pay-variant-adopt");
+
+        // Seed a position so entitlements can be calculated
+        operationService.executePaperTrade(portfolio.portfolioId(), TICKER, "BUY", new BigDecimal("5"),
+                new BigDecimal("100"), new BigDecimal("100"), BigDecimal.ZERO, BigDecimal.ZERO,
+                "pay-variant-seed", "TEST_OPEN", purchaseDate + "T08:00:00Z");
+
+        String now = java.time.Instant.now().toString();
+        String pastInstant = java.time.Instant.now().minusSeconds(3600).toString();
+        String futureInstant = java.time.Instant.now().plusSeconds(86400 * 30).toString();
+
+        // Receivable 1: precise payment_instant in the past → should settle
+        jdbcTemplate.update(
+                "INSERT INTO paper_receivables (id, portfolio_id, action_id, listing_id, source_namespace, action_type, " +
+                        "record_instant, ex_date, payment_date, payment_instant, availability_instant, gross_amount, " +
+                        "withholding_tax, net_amount, status, created_at, dataset_id, dataset_checksum, terms_hash) " +
+                        "VALUES ('rec-precise-past', ?, 'ca-precise', ?, 'SYNTHETIC', 'CASH_DISTRIBUTION', ?, ?, ?, ?, ?, " +
+                        "'10.00', '0.00', '10.00', 'PENDING', ?, ?, 'chk-content', 'hash-1')",
+                portfolio.portfolioId(), LISTING_ID, now, exDate, exDate, pastInstant, now, now, datasetId);
+
+        // Receivable 2: no payment_instant, payment_date in past → should settle (date-only fallback)
+        jdbcTemplate.update(
+                "INSERT INTO paper_receivables (id, portfolio_id, action_id, listing_id, source_namespace, action_type, " +
+                        "record_instant, ex_date, payment_date, gross_amount, withholding_tax, net_amount, status, " +
+                        "created_at, dataset_id, dataset_checksum, terms_hash) " +
+                        "VALUES ('rec-date-only', ?, 'ca-dateonly', ?, 'SYNTHETIC', 'CASH_DISTRIBUTION', ?, ?, ?, " +
+                        "'5.00', '0.00', '5.00', 'PENDING', ?, ?, 'chk-content', 'hash-2')",
+                portfolio.portfolioId(), LISTING_ID, now, exDate, exDate, now, datasetId);
+
+        // Receivable 3: precise payment_instant far in the future → should stay PENDING
+        jdbcTemplate.update(
+                "INSERT INTO paper_receivables (id, portfolio_id, action_id, listing_id, source_namespace, action_type, " +
+                        "record_instant, ex_date, payment_date, payment_instant, availability_instant, gross_amount, " +
+                        "withholding_tax, net_amount, status, created_at, dataset_id, dataset_checksum, terms_hash) " +
+                        "VALUES ('rec-future-instant', ?, 'ca-future', ?, 'SYNTHETIC', 'CASH_DISTRIBUTION', ?, ?, ?, ?, ?, " +
+                        "'20.00', '0.00', '20.00', 'PENDING', ?, ?, 'chk-content', 'hash-3')",
+                portfolio.portfolioId(), LISTING_ID, now, exDate, exDate, futureInstant, now, now, datasetId);
+
+        paperPortfolioService.processPortfolioEvents(portfolio.portfolioId(), owner, "pay-variant-process");
+
+        assertEquals("PAID", jdbcTemplate.queryForObject(
+                "SELECT status FROM paper_receivables WHERE id = 'rec-precise-past'", String.class),
+                "Receivable with past payment_instant must be PAID");
+        assertEquals("PAID", jdbcTemplate.queryForObject(
+                "SELECT status FROM paper_receivables WHERE id = 'rec-date-only'", String.class),
+                "Receivable with date-only payment_date in past must be PAID");
+        assertEquals("PENDING", jdbcTemplate.queryForObject(
+                "SELECT status FROM paper_receivables WHERE id = 'rec-future-instant'", String.class),
+                "Receivable with future payment_instant must stay PENDING");
+
+        // Verify cash reflects only the two settled receivables
+        BigDecimal cash = jdbcTemplate.queryForObject(
+                "SELECT cash_amount FROM portfolio_state WHERE portfolio_id = ?",
+                BigDecimal.class, portfolio.portfolioId());
+        // Initial 1000 - 500 (5 shares @ 100) + 10 (precise past) + 5 (date-only) = 515.00
+        assertEquals(0, new BigDecimal("515.00").compareTo(cash),
+                "Cash must reflect only the two settled receivables");
+    }
+
+    @Test
+    void populatedM4DataSurvivesV13MigrationAndPaperActivation() {
+        // This test validates prompt §10.12: M4→M5 upgrade preservation.
+        // The TemporarySqliteInitializer already ran V1–V13; we seed M4-era data
+        // and confirm it coexists with new M5 paper tracking.
+
+        String m4Owner = "m4-legacy-owner";
+
+        // 1. Seed an M4-era experiment (schema: id, owner_id, name, version, strategy_id, strategy_version,
+        //    dataset_id, universe_id, benchmark_listing_id, development_start_date, development_end_date,
+        //    holdout_start_date, holdout_end_date, declared_holdout_status, created_at)
+        jdbcTemplate.update(
+                "INSERT OR IGNORE INTO experiments (id, owner_id, name, version, strategy_id, strategy_version, " +
+                        "dataset_id, universe_id, benchmark_listing_id, development_start_date, development_end_date, " +
+                        "holdout_start_date, holdout_end_date, declared_holdout_status, created_at) " +
+                        "VALUES ('experiment-m4-legacy', ?, 'M4 Holdout Test', 1, 'ETF_BUY_HOLD_V1', '1.0.0', " +
+                        "'ds-test-m5', 'uni-default', ?, '2025-01-01', '2025-12-31', '2026-01-01', '2026-06-30', " +
+                        "'UNEXAMINED', '2026-06-01T00:00:00Z')",
+                m4Owner, LISTING_ID);
+
+        // 2. Seed an M4-era backtest run linked to the experiment (schema from V6+V8)
+        // Start as RUNNING so daily equity can be inserted without triggering prevent_completed_daily_equity_insert
+        jdbcTemplate.update(
+                "INSERT OR IGNORE INTO backtest_runs (id, owner_id, idempotency_key, canonical_hash, " +
+                        "strategy_id, strategy_version, dataset_id, candidate_listing_id, benchmark_listing_id, " +
+                        "initial_cash, currency, evaluation_cutoff, requested_start_date, requested_end_date, " +
+                        "commission_per_fill, spread_bps, slippage_bps, status, config_json, " +
+                        "universe_id, experiment_id, created_at, updated_at) " +
+                        "VALUES ('run-m4-legacy', ?, 'm4-run-key', 'hash-m4', 'ETF_BUY_HOLD_V1', '1.0.0', " +
+                        "'ds-test-m5', ?, ?, '10000.00', 'EUR', 'MONTH_END', '2025-01-01', '2025-12-31', " +
+                        "'1.00', '0', '0', 'RUNNING', '{}', 'uni-default', 'experiment-m4-legacy', " +
+                        "'2026-06-15T10:00:00Z', '2026-06-15T12:00:00Z')",
+                m4Owner, LISTING_ID, LISTING_ID);
+
+        // 3. Seed M4-era exposure event
+        jdbcTemplate.update(
+                "INSERT OR IGNORE INTO experiment_exposure_events (id, experiment_id, run_id, access_type, " +
+                        "exposed_by, exposed_at, details_json) " +
+                        "VALUES ('exposure-m4-1', 'experiment-m4-legacy', 'run-m4-legacy', 'VIEW_DETAIL', " +
+                        "?, '2026-06-15T12:00:00Z', '{\"source\":\"m4_ui\"}')",
+                m4Owner);
+
+        // 4. Seed M4-era signal data
+        jdbcTemplate.update(
+                "INSERT OR IGNORE INTO backtest_signals (id, run_id, strategy_id, strategy_version, universe_id, " +
+                        "evaluation_date, evaluation_time, decision_instant, scheduled_execution_date, " +
+                        "target_allocation_summary, status, reason_code, details_json, created_at) " +
+                        "VALUES ('signal-m4-1', 'run-m4-legacy', 'ETF_BUY_HOLD_V1', '1.0.0', 'uni-default', " +
+                        "?, '17:30:00', '2026-06-15T17:30:00Z', ?, '100% target', 'EXECUTED', 'RULE_MATCH', " +
+                        "'{}', '2026-06-15T17:30:00Z')",
+                SESSION_1, SESSION_1);
+        jdbcTemplate.update(
+                "INSERT OR IGNORE INTO backtest_signal_items (id, signal_id, listing_id, score, index_value, " +
+                        "sma_value, rank, eligible, selected, target_weight, reason_code) " +
+                        "VALUES ('item-m4-1', 'signal-m4-1', ?, '100.0', '100.0', '95.0', 1, 1, 1, '1.0', 'TOP_RANK')",
+                LISTING_ID);
+
+        // 5. Seed M4-era daily equity
+        jdbcTemplate.update(
+                "INSERT OR IGNORE INTO backtest_daily_equity (run_id, series_type, session_date, point_kind, " +
+                        "observation_time, cash, holdings_value, receivables, total_equity, daily_return, " +
+                        "drawdown, peak_equity, units, cost_basis, raw_close) " +
+                        "VALUES ('run-m4-legacy', 'CANDIDATE', ?, 'SESSION_CLOSE', '17:30:00', " +
+                        "'5000.00', '5000.00', '0.00', '10000.00', '0.000000', '0.000000', '10000.00', " +
+                        "'50', '5000.00', '100.00')",
+                SESSION_1);
+
+        // Mark backtest run COMPLETED
+        jdbcTemplate.update("UPDATE backtest_runs SET status = 'COMPLETED' WHERE id = 'run-m4-legacy'");
+
+        // 6. Seed M4-era LEGACY_DEMO portfolio
+        OperationService.PortfolioCreationResult legacyDemo = operationService.createPortfolio(
+                m4Owner, "Demo Portfolio M4", "LEGACY_DEMO", "EUR", new BigDecimal("20000.00"), "m4-demo-create");
+
+        // === Now create M5 paper portfolio alongside M4 data ===
+        String m5Owner = "m5-upgrade-owner";
+        OperationService.PortfolioCreationResult paperPort = operationService.createPortfolio(
+                m5Owner, "M5 Paper Fund", "PAPER", "EUR", new BigDecimal("10000.00"), "m5-upgrade-create");
+        paperPortfolioService.activatePortfolio(paperPort.portfolioId(), m5Owner, "m5-upgrade-activate",
+                new ActivatePortfolioRequest("ETF_BUY_HOLD_V1", "1.0.0", "uni-default", LISTING_ID,
+                        new CostPolicyDto("1.00", "0", "0"), "MANUAL"));
+        dataReadinessService.adoptDataset(paperPort.portfolioId(), "ds-test-m5", m5Owner, "m5-upgrade-adopt");
+
+        // === Verify M4 data is intact ===
+        assertEquals("COMPLETED", jdbcTemplate.queryForObject(
+                "SELECT status FROM backtest_runs WHERE id = 'run-m4-legacy'", String.class),
+                "M4 backtest run must survive V13 migration");
+        assertEquals(1, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM experiment_exposure_events WHERE experiment_id = 'experiment-m4-legacy'",
+                Integer.class),
+                "M4 exposure events must survive V13 migration");
+        assertEquals(1, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM backtest_signal_items WHERE signal_id = 'signal-m4-1'",
+                Integer.class),
+                "M4 signal items must survive V13 migration");
+        assertEquals(0, new BigDecimal("10000.00").compareTo(new BigDecimal(jdbcTemplate.queryForObject(
+                "SELECT total_equity FROM backtest_daily_equity WHERE run_id = 'run-m4-legacy'",
+                String.class))),
+                "M4 daily equity must survive V13 migration");
+        assertEquals(0, new BigDecimal("20000.00").compareTo(jdbcTemplate.queryForObject(
+                "SELECT cash_amount FROM portfolio_state WHERE portfolio_id = ?",
+                BigDecimal.class, legacyDemo.portfolioId())),
+                "M4 LEGACY_DEMO cash must be untouched by M5 paper activation");
+
+        // === Verify M5 paper portfolio works alongside ===
+        assertEquals(1, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM paper_portfolio_segments WHERE portfolio_id = ? AND status = 'ACTIVE'",
+                Integer.class, paperPort.portfolioId()),
+                "M5 paper segment must coexist with M4 data");
+        assertEquals(0, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM paper_portfolio_segments WHERE portfolio_id = ?",
+                Integer.class, legacyDemo.portfolioId()),
+                "M4 LEGACY_DEMO must not have paper segments");
+
+        // Verify V13 schema objects exist
+        assertEquals(1, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='paper_execution_results'",
+                Integer.class),
+                "V13 paper_execution_results table must exist");
+        assertEquals(1, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name='paper_intents_legal_status_transition'",
+                Integer.class),
+                "V13 intent status transition trigger must exist");
+    }
+
+    @Test
+    void multiLegRebalanceSellsBeforeBuyAndAppliesCostPolicy_scenario5() {
+        // Validates prompt §10.5 & review finding 3: multi-leg sell-before-buy execution with configured cost policy.
+        String owner = "multileg-owner";
+        String datasetId = "ds-multileg-m5";
+        cloneBaseDataset(datasetId);
+
+        String listing2 = "listing-test-emim";
+        String inst2 = "inst-test-emim";
+        jdbcTemplate.update("INSERT OR IGNORE INTO instruments (id, type, name, isin, provenance) VALUES (?, 'EQUITY', 'iShares Emerging Markets', 'IE00BKM4GZ66', 'TEST')", inst2);
+        jdbcTemplate.update("INSERT OR IGNORE INTO listings (id, instrument_id, venue, symbol, quote_currency, identity_status) VALUES (?, ?, 'AMS', 'EMIM.AS', 'EUR', 'RESOLVED')", listing2, inst2);
+        jdbcTemplate.update("INSERT OR IGNORE INTO dataset_listings (dataset_id, listing_id, instrument_id, symbol, venue, quote_currency, calendar_id) VALUES (?, ?, ?, 'EMIM.AS', 'AMS', 'EUR', 'XAMS')", datasetId, listing2, inst2);
+        String purchaseDate = java.time.LocalDate.parse(SESSION_1).minusDays(1).toString();
+        jdbcTemplate.update("INSERT OR IGNORE INTO dataset_sessions (dataset_id, calendar_id, session_date, open_time, close_time, session_type) VALUES (?, 'XAMS', ?, '09:00:00', '17:30:00', 'TRADING')", datasetId, SESSION_1);
+        jdbcTemplate.update("INSERT OR IGNORE INTO historical_bars (dataset_id, listing_id, session_date, open, high, low, close, volume, available_at) VALUES (?, ?, ?, '50.00', '50.50', '49.50', '50.00', 10000, '2026-09-01T18:00:00Z')", datasetId, listing2, SESSION_1);
+
+        String universeId = "uni-multileg";
+        jdbcTemplate.update("INSERT OR IGNORE INTO universes (id, owner_id, name, version, description, dataset_id, calendar_id, currency, provenance, created_at) " +
+                "VALUES (?, 'default', 'MultiLeg ETF Universe', '1.0.0', 'Test universe', ?, 'XAMS', 'EUR', 'TEST', '2026-09-01T00:00:00Z')", universeId, datasetId);
+        jdbcTemplate.update("INSERT OR IGNORE INTO universe_listings (universe_id, listing_id, ordinal) VALUES (?, ?, 0)", universeId, LISTING_ID);
+        jdbcTemplate.update("INSERT OR IGNORE INTO universe_listings (universe_id, listing_id, ordinal) VALUES (?, ?, 1)", universeId, listing2);
+
+        // Portfolio with initial cash EUR 1000
+        OperationService.PortfolioCreationResult portfolio = operationService.createPortfolio(
+                owner, "MultiLeg Fund", "PAPER", "EUR", new BigDecimal("1000.00"), "multileg-create");
+        paperPortfolioService.activatePortfolio(portfolio.portfolioId(), owner, "multileg-activate",
+                new ActivatePortfolioRequest("ETF_BUY_HOLD_V1", "1.0.0", universeId, LISTING_ID,
+                        new CostPolicyDto("1.00", "10", "5"), "MANUAL")); // 1 EUR commission, 10 bps spread, 5 bps slippage
+        dataReadinessService.adoptDataset(portfolio.portfolioId(), datasetId, owner, "multileg-adopt");
+
+        // Seed initial holding: 5 shares of LISTING_ID (IWDA) bought at 100 before SESSION_1
+        operationService.executePaperTrade(portfolio.portfolioId(), LISTING_ID, "BUY", new BigDecimal("5"),
+                new BigDecimal("100"), new BigDecimal("100"), BigDecimal.ZERO, BigDecimal.ZERO,
+                "multileg-seed-buy", "TEST_SEED", purchaseDate + "T08:00:00Z");
+
+        // Manually create an intent/proposal to rebalance: target 0% LISTING_ID, 100% listing2
+        String propId = "prop-multileg-rebalance";
+        String intentId = "intent-multileg-rebalance";
+        String now = java.time.Instant.now().toString();
+        jdbcTemplate.update("INSERT INTO paper_proposals (id, portfolio_id, cycle_id, strategy_id, strategy_version, " +
+                        "dataset_id, dataset_checksum, calendar_id, calendar_version, evaluation_session_date, " +
+                        "input_cutoff_instant, evaluation_instant, scheduled_open_session_date, scheduled_open_instant, " +
+                        "reason_code, portfolio_state_version, status, created_at) " +
+                        "VALUES (?, ?, 'cycle-multileg', 'ETF_BUY_HOLD_V1', '1.0.0', ?, 'chk-content', 'XAMS', '1.0', " +
+                        "?, ?, ?, ?, ?, 'REBALANCE', 1, 'PROPOSED', ?)",
+                propId, portfolio.portfolioId(), datasetId, purchaseDate, now, now, SESSION_1, SESSION_1 + "T07:00:00Z", now);
+
+        jdbcTemplate.update("INSERT INTO paper_proposal_items (id, proposal_id, listing_id, rank, target_weight, " +
+                        "cutoff_estimated_units, score, reason_code) VALUES (?, ?, ?, 1, '1.0', 10, '100.0', 'TARGET')",
+                "item-rebalance-emim", propId, listing2);
+
+        jdbcTemplate.update("UPDATE paper_proposals SET status = 'ACCEPTED', accepted_at = ? WHERE id = ?", now, propId);
+
+        jdbcTemplate.update("INSERT INTO paper_execution_intents (id, portfolio_id, proposal_id, order_type, " +
+                        "scheduled_session_date, scheduled_open_instant, approval_mode, status, created_at) " +
+                        "VALUES (?, ?, ?, 'REBALANCE', ?, ?, 'MANUAL', 'PENDING', ?)",
+                intentId, portfolio.portfolioId(), propId, SESSION_1, SESSION_1 + "T07:00:00Z", now);
+
+        // Process portfolio events
+        paperPortfolioService.processPortfolioEvents(portfolio.portfolioId(), owner, "multileg-process");
+
+        // Verify that SELL executed first and BUY executed second
+        List<Map<String, Object>> results = jdbcTemplate.queryForList(
+                "SELECT side, listing_id, requested_quantity, executed_quantity, raw_open_price, fill_price, commission, " +
+                        "spread_slippage_cost, booked_instant FROM paper_execution_results WHERE intent_id = ? ORDER BY booked_instant ASC",
+                intentId);
+        assertEquals(2, results.size(), "Must have executed both SELL leg and BUY leg");
+        assertEquals("SELL", results.get(0).get("side"));
+        assertEquals(LISTING_ID, results.get(0).get("listing_id"));
+        assertEquals("5", results.get(0).get("executed_quantity"));
+
+        assertEquals("BUY", results.get(1).get("side"));
+        assertEquals(listing2, results.get(1).get("listing_id"));
+
+        // Verify execution order in executions table
+        List<String> execSides = jdbcTemplate.queryForList(
+                "SELECT side FROM executions WHERE portfolio_id = ? AND side IN ('buy', 'sell') ORDER BY executed_at ASC",
+                String.class, portfolio.portfolioId());
+        assertTrue(execSides.contains("buy") && execSides.contains("sell"), "Both sell and buy executions must exist");
+
+        // Verify SELL proceeds financed BUY leg
+        BigDecimal remainingCash = jdbcTemplate.queryForObject(
+                "SELECT cash_amount FROM portfolio_state WHERE portfolio_id = ?",
+                BigDecimal.class, portfolio.portfolioId());
+        assertNotNull(remainingCash);
+        assertTrue(remainingCash.compareTo(BigDecimal.ZERO) >= 0, "Cash must remain positive after funded rebalance");
+
+        // Verify holding: 0 of LISTING_ID (row deleted when flat), > 0 of listing2
+        assertEquals(0, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM positions WHERE portfolio_id = ? AND listing_id = ?",
+                Integer.class, portfolio.portfolioId(), LISTING_ID));
+        assertTrue(new BigDecimal(jdbcTemplate.queryForObject(
+                "SELECT quantity FROM positions WHERE portfolio_id = ? AND listing_id = ?",
+                String.class, portfolio.portfolioId(), listing2)).compareTo(BigDecimal.ZERO) > 0);
+    }
+
+    @Test
+    void s3TrendCashStateKeepsDistributionAsCashWithoutReinvestmentProposal_scenario7() {
+        // Validates prompt §10.7 & review finding 4:
+        // When S3 (Trend) is in cash (flat), corporate cash distribution is credited as cash
+        // and does NOT create a reinvestment proposal.
+        String owner = "s3-cash-owner";
+        String datasetId = "ds-s3-cash-m5";
+        jdbcTemplate.update("INSERT OR IGNORE INTO datasets (id, name, source, classification, schema_version, " +
+                        "parser_version, input_checksum, content_checksum, manifest_json, coverage_start, coverage_end, " +
+                        "validation_status, validation_findings_json, quality_label, imported_at, created_at) " +
+                        "VALUES (?, 'S3 Cash M5', 'SYNTHETIC', 'SYNTHETIC', '1.0', '1.0', 's3-chk-in', 's3-chk-content', " +
+                        "'{}', '2025-08-31', ?, 'VALID', '[]', 'SYNTHETIC', '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z')",
+                datasetId, SESSION_2);
+        jdbcTemplate.update("INSERT OR IGNORE INTO dataset_listings (dataset_id, listing_id, instrument_id, symbol, venue, " +
+                        "quote_currency, calendar_id) VALUES (?, ?, ?, ?, 'AMS', 'EUR', 'XAMS')",
+                datasetId, LISTING_ID, INSTRUMENT_ID, TICKER);
+        jdbcTemplate.update("INSERT OR IGNORE INTO dataset_sessions (dataset_id, calendar_id, session_date, open_time, close_time, session_type) VALUES (?, 'XAMS', ?, '09:00:00', '17:30:00', 'TRADING')", datasetId, SESSION_1);
+        jdbcTemplate.update("INSERT OR IGNORE INTO historical_bars (dataset_id, listing_id, session_date, open, high, low, close, volume, available_at) VALUES (?, ?, ?, '100.00', '100.00', '100.00', '100.00', 10000, '2026-09-01T00:00:00Z')", datasetId, LISTING_ID, SESSION_1);
+
+        // ETF_TREND_10M_V1 requires 10 months of warm-up
+        for (int m = 0; m < 11; m++) {
+            String session = java.time.YearMonth.of(2025, 8).plusMonths(m).atEndOfMonth().toString();
+            jdbcTemplate.update("INSERT OR IGNORE INTO dataset_sessions (dataset_id, calendar_id, session_date, open_time, close_time, session_type) VALUES (?, 'XAMS', ?, '09:00:00', '17:30:00', 'TRADING')", datasetId, session);
+            jdbcTemplate.update("INSERT OR IGNORE INTO historical_bars (dataset_id, listing_id, session_date, open, high, low, close, volume, available_at) VALUES (?, ?, ?, '100.00', '100.00', '100.00', '100.00', 10000, '2026-09-01T00:00:00Z')", datasetId, LISTING_ID, session);
+        }
+
+        String exDate = java.time.LocalDate.parse(SESSION_1).minusDays(2).toString();
+        String purchaseDate = java.time.LocalDate.parse(exDate).minusDays(1).toString();
+        String payDate = SESSION_1;
+
+        OperationService.PortfolioCreationResult portfolio = operationService.createPortfolio(
+                owner, "S3 Trend Cash Fund", "PAPER", "EUR", new BigDecimal("1000.00"), "s3-cash-create");
+        paperPortfolioService.activatePortfolio(portfolio.portfolioId(), owner, "s3-cash-activate",
+                new ActivatePortfolioRequest("ETF_TREND_10M_V1", "1.0.0", "uni-default", LISTING_ID,
+                        new CostPolicyDto("1.00", "0", "0"), "MANUAL"));
+        dataReadinessService.adoptDataset(portfolio.portfolioId(), datasetId, owner, "s3-cash-adopt");
+
+        // Portfolio held 5 shares before exDate (so entitled on exDate)
+        operationService.executePaperTrade(portfolio.portfolioId(), LISTING_ID, "BUY", new BigDecimal("5"),
+                new BigDecimal("100"), new BigDecimal("100"), BigDecimal.ZERO, BigDecimal.ZERO,
+                "s3-seed-buy", "TEST_SEED", purchaseDate + "T08:00:00Z");
+
+        // Distribution occurs with ex-date = exDate and payDate = payDate
+        jdbcTemplate.update("INSERT INTO historical_actions (dataset_id, action_id, listing_id, action_type, " +
+                        "effective_date, available_at, distribution_amount, distribution_currency, payment_date) " +
+                        "VALUES (?, 'dist-s3-test', ?, 'CASH_DISTRIBUTION', ?, '2026-09-01T18:00:00Z', '2.00', 'EUR', ?)",
+                datasetId, LISTING_ID, exDate, payDate);
+
+        // Before payment date, S3 Trend exits to cash: sell all 5 shares
+        operationService.executePaperTrade(portfolio.portfolioId(), LISTING_ID, "SELL", new BigDecimal("5"),
+                new BigDecimal("100"), new BigDecimal("100"), BigDecimal.ZERO, BigDecimal.ZERO,
+                "s3-exit-sell", "TEST_EXIT", exDate + "T16:00:00Z");
+
+        // Verify position is now 0 (in cash, row deleted)
+        assertEquals(0, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM positions WHERE portfolio_id = ? AND listing_id = ?",
+                Integer.class, portfolio.portfolioId(), LISTING_ID));
+
+        // Process events on payment date
+        paperPortfolioService.processPortfolioEvents(portfolio.portfolioId(), owner, "s3-process-pay");
+
+        // Receivable settled to PAID
+        assertEquals("PAID", jdbcTemplate.queryForObject(
+                "SELECT status FROM paper_receivables WHERE portfolio_id = ? AND action_id = 'dist-s3-test'",
+                String.class, portfolio.portfolioId()));
+
+        // Cash credited: initial 1000 - 500 (buy) + 500 (sell) + 10.00 (5 shares * 2.00) = 1010.00
+        BigDecimal cash = jdbcTemplate.queryForObject(
+                "SELECT cash_amount FROM portfolio_state WHERE portfolio_id = ?",
+                BigDecimal.class, portfolio.portfolioId());
+        assertEquals(0, new BigDecimal("1010.00").compareTo(cash), "Cash must include distribution");
+
+        // Crucial assertion: S3 in cash state must NOT have generated a reinvestment proposal
+        int reinvestmentProposals = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM paper_proposals WHERE portfolio_id = ? AND reinvestment_receivable_id IS NOT NULL",
+                Integer.class, portfolio.portfolioId());
+        assertEquals(0, reinvestmentProposals, "S3 flat/cash state must NOT create reinvestment proposals");
+    }
+
+    @Test
+    void partialStaleValuationMarkedWhenPriceMissing_scenario7() {
+        // Validates prompt §10.7 & review finding 7:
+        // When closing observations are missing for an asset held in the portfolio,
+        // paper_valuations marks data_readiness_status = 'PARTIAL_STALE' and is_complete = 0.
+        String owner = "stale-val-owner";
+        String datasetId = "ds-stale-val-m5";
+        // Insert dataset metadata without any historical bars to simulate missing price observations
+        jdbcTemplate.update("INSERT INTO datasets (id, name, source, classification, schema_version, parser_version, " +
+                        "input_checksum, content_checksum, manifest_json, coverage_start, coverage_end, validation_status, " +
+                        "validation_findings_json, quality_label, imported_at, created_at) SELECT ?, name, source, " +
+                        "classification, schema_version, parser_version, input_checksum, content_checksum, manifest_json, " +
+                        "coverage_start, coverage_end, validation_status, validation_findings_json, quality_label, " +
+                        "imported_at, created_at FROM datasets WHERE id = 'ds-test-m5'", datasetId);
+        jdbcTemplate.update("INSERT INTO dataset_listings (dataset_id, listing_id, instrument_id, symbol, venue, " +
+                        "quote_currency, calendar_id, inception_date, termination_date, isin) SELECT ?, listing_id, " +
+                        "instrument_id, symbol, venue, quote_currency, calendar_id, inception_date, termination_date, isin " +
+                        "FROM dataset_listings WHERE dataset_id = 'ds-test-m5'", datasetId);
+        jdbcTemplate.update("INSERT INTO dataset_sessions (dataset_id, calendar_id, session_date, open_time, close_time, " +
+                        "session_type) SELECT ?, calendar_id, session_date, open_time, close_time, session_type " +
+                        "FROM dataset_sessions WHERE dataset_id = 'ds-test-m5'", datasetId);
+
+        OperationService.PortfolioCreationResult portfolio = operationService.createPortfolio(
+                owner, "Stale Valuation Fund", "PAPER", "EUR", new BigDecimal("1000.00"), "stale-val-create");
+        paperPortfolioService.activatePortfolio(portfolio.portfolioId(), owner, "stale-val-activate",
+                new ActivatePortfolioRequest("ETF_BUY_HOLD_V1", "1.0.0", "uni-default", LISTING_ID,
+                        new CostPolicyDto("1.00", "0", "0"), "MANUAL"));
+        dataReadinessService.adoptDataset(portfolio.portfolioId(), datasetId, owner, "stale-val-adopt");
+
+        // Buy 5 units of LISTING_ID
+        operationService.executePaperTrade(portfolio.portfolioId(), LISTING_ID, "BUY", new BigDecimal("5"),
+                new BigDecimal("100"), new BigDecimal("100"), BigDecimal.ZERO, BigDecimal.ZERO,
+                "stale-val-buy", "TEST_BUY", SESSION_1 + "T08:00:00Z");
+
+        // Add a new trading session where bars are absent for LISTING_ID
+        String gapSession = java.time.LocalDate.parse(SESSION_2).plusDays(5).toString();
+        jdbcTemplate.update("INSERT OR IGNORE INTO dataset_sessions (dataset_id, calendar_id, session_date, " +
+                        "open_time, close_time, session_type) VALUES (?, 'XAMS', ?, '09:00:00', '17:30:00', 'TRADING')",
+                datasetId, gapSession);
+
+        // Control clock to be at close of gapSession
+        java.time.Clock origPaperClock = (java.time.Clock) org.springframework.test.util.ReflectionTestUtils
+                .getField(paperPortfolioService, "clock");
+        java.time.Clock gapCloseClock = java.time.Clock.fixed(
+                java.time.Instant.parse(gapSession + "T17:35:00Z"), java.time.ZoneId.of("Europe/Berlin"));
+        try {
+            org.springframework.test.util.ReflectionTestUtils.setField(paperPortfolioService, "clock", gapCloseClock);
+            paperPortfolioService.processPortfolioEvents(portfolio.portfolioId(), owner, "stale-val-process");
+
+            // Query valuation for gapSession
+            List<Map<String, Object>> vals = jdbcTemplate.queryForList(
+                    "SELECT data_readiness_status, is_complete, missing_requirements_detail, total_equity " +
+                            "FROM paper_valuations WHERE portfolio_id = ? AND session_date = ?",
+                    portfolio.portfolioId(), gapSession);
+
+            assertFalse(vals.isEmpty(), "Valuation must be recorded for gapSession");
+            Map<String, Object> val = vals.get(0);
+            assertEquals("PARTIAL_STALE", val.get("data_readiness_status"), "Status must be PARTIAL_STALE");
+            assertEquals(0, ((Number) val.get("is_complete")).intValue(), "is_complete must be 0");
+            assertTrue(String.valueOf(val.get("missing_requirements_detail")).contains(LISTING_ID),
+                    "missing_requirements_detail must identify the listing with missing prices");
+        } finally {
+            org.springframework.test.util.ReflectionTestUtils.setField(paperPortfolioService, "clock", origPaperClock);
+        }
+    }
+
+    @Test
+    void eightConcurrentAcceptancesCreateExactlyOneIntent_scenario8() throws Exception {
+        // Validates prompt §10.8 & review finding 8:
+        // 8 coordinated concurrent proposal acceptances produce exactly 1 accepted state and 1 execution intent.
+        String owner = "concurrent-accept-owner";
+        OperationService.PortfolioCreationResult portfolio = operationService.createPortfolio(
+                owner, "Concurrent Accept Fund", "PAPER", "EUR", new BigDecimal("1000.00"), "conc-accept-create");
+        paperPortfolioService.activatePortfolio(portfolio.portfolioId(), owner, "conc-accept-activate",
+                new ActivatePortfolioRequest("ETF_BUY_HOLD_V1", "1.0.0", "uni-default", LISTING_ID,
+                        new CostPolicyDto("1.00", "0", "0"), "MANUAL"));
+        dataReadinessService.adoptDataset(portfolio.portfolioId(), "ds-test-m5", owner, "conc-accept-adopt");
+
+        PaperProposalDto proposal = paperPortfolioService.evaluatePortfolio(portfolio.portfolioId(), owner, "conc-eval");
+        assertEquals("PROPOSED", proposal.status());
+
+        int callers = 8;
+        ExecutorService executor = Executors.newFixedThreadPool(callers);
+        CyclicBarrier barrier = new CyclicBarrier(callers);
+        List<Future<Boolean>> futures = new ArrayList<>();
+        AtomicInteger successCount = new AtomicInteger(0);
+        AtomicInteger conflictCount = new AtomicInteger(0);
+
+        try {
+            for (int i = 0; i < callers; i++) {
+                final int idx = i;
+                futures.add(executor.submit(() -> {
+                    barrier.await();
+                    try {
+                        paperPortfolioService.acceptProposal(portfolio.portfolioId(), proposal.id(), owner,
+                                "concurrent-accept-key-" + idx, new AcceptProposalRequest("concurrent test"));
+                        successCount.incrementAndGet();
+                        return true;
+                    } catch (ResponseStatusException ex) {
+                        if (ex.getStatusCode().value() == 409) {
+                            conflictCount.incrementAndGet();
+                        }
+                        return false;
+                    }
+                }));
+            }
+            for (Future<Boolean> f : futures) {
+                f.get(10, TimeUnit.SECONDS);
+            }
+        } finally {
+            executor.shutdownNow();
+        }
+
+        // Exactly one caller wins the CAS update
+        assertEquals(1, successCount.get(), "Exactly one concurrent caller must succeed in accepting");
+        assertEquals(callers - 1, conflictCount.get(), "All other callers must receive 409 CONFLICT");
+
+        // Exactly one intent exists for the proposal
+        assertEquals(1, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM paper_execution_intents WHERE proposal_id = ?",
+                Integer.class, proposal.id()));
+        assertEquals("ACCEPTED", jdbcTemplate.queryForObject(
+                "SELECT status FROM paper_proposals WHERE id = ?",
+                String.class, proposal.id()));
+    }
+
+    @Test
+    void autoPaperMissedWindowMarksProposalBlockedWithoutHistoricalOrder_scenario9() {
+        // Validates prompt §10.9 & review finding 2:
+        // Restart/downtime after scheduled open passes marks unaccepted AUTO_PAPER proposal as BLOCKED,
+        // does not invent past orders, and mode toggle retains audit history.
+        String owner = "missed-window-owner";
+        String datasetId = "ds-missed-window-m5";
+        cloneBaseDataset(datasetId);
+
+        OperationService.PortfolioCreationResult portfolio = operationService.createPortfolio(
+                owner, "Missed Window Fund", "PAPER", "EUR", new BigDecimal("1000.00"), "missed-window-create");
+        paperPortfolioService.activatePortfolio(portfolio.portfolioId(), owner, "missed-window-activate",
+                new ActivatePortfolioRequest("ETF_BUY_HOLD_V1", "1.0.0", "uni-default", LISTING_ID,
+                        new CostPolicyDto("1.00", "0", "0"), "AUTO_PAPER"));
+        dataReadinessService.adoptDataset(portfolio.portfolioId(), datasetId, owner, "missed-window-adopt");
+
+        // Insert an unaccepted proposal scheduled for an earlier open time
+        String openInstant = "2026-09-17T07:00:00Z";
+        String propId = "prop-missed-auto";
+        jdbcTemplate.update("INSERT INTO paper_proposals (id, portfolio_id, cycle_id, strategy_id, strategy_version, " +
+                        "dataset_id, dataset_checksum, calendar_id, calendar_version, evaluation_session_date, " +
+                        "input_cutoff_instant, evaluation_instant, scheduled_open_session_date, scheduled_open_instant, " +
+                        "reason_code, portfolio_state_version, status, created_at) " +
+                        "VALUES (?, ?, 'cycle-missed', 'ETF_BUY_HOLD_V1', '1.0.0', ?, 'chk-content', 'XAMS', '1.0', " +
+                        "?, ?, ?, ?, ?, 'AUTO_CYCLE', 1, 'PROPOSED', ?)",
+                propId, portfolio.portfolioId(), datasetId, SESSION_1, openInstant, openInstant,
+                SESSION_2, openInstant, "2026-09-17T06:00:00Z");
+
+        // Advance clock past scheduled open
+        java.time.Clock origPaperClock = (java.time.Clock) org.springframework.test.util.ReflectionTestUtils
+                .getField(paperPortfolioService, "clock");
+        java.time.Clock pastOpenClock = java.time.Clock.fixed(
+                java.time.Instant.parse("2026-09-17T08:00:00Z"), java.time.ZoneId.of("Europe/Berlin"));
+        try {
+            org.springframework.test.util.ReflectionTestUtils.setField(paperPortfolioService, "clock", pastOpenClock);
+
+            // Execute automatic cycle past open
+            paperPortfolioService.runAutomaticCycle(portfolio.portfolioId(), owner);
+
+            // Proposal must be BLOCKED
+            assertEquals("BLOCKED", jdbcTemplate.queryForObject(
+                    "SELECT status FROM paper_proposals WHERE id = ?", String.class, propId));
+            assertEquals("AUTO_PAPER intent was not durable before scheduled open", jdbcTemplate.queryForObject(
+                    "SELECT rejection_reason FROM paper_proposals WHERE id = ?", String.class, propId));
+
+            // Missed intent is recorded with MISSED status, but zero execution results
+            assertEquals(1, jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM paper_execution_intents WHERE proposal_id = ? AND status = 'MISSED'",
+                    Integer.class, propId));
+            assertEquals(0, jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM paper_execution_results WHERE proposal_id = ?",
+                    Integer.class, propId));
+
+            // Mode toggle: AUTO_PAPER -> MANUAL -> AUTO_PAPER
+            paperPortfolioService.changeApprovalMode(portfolio.portfolioId(), owner, "mode-toggle-manual",
+                    new ChangeApprovalModeRequest("MANUAL", "toggle to manual"));
+            assertEquals("MANUAL", jdbcTemplate.queryForObject(
+                    "SELECT approval_mode FROM paper_portfolio_segments WHERE portfolio_id = ? AND status = 'ACTIVE'",
+                    String.class, portfolio.portfolioId()));
+
+            paperPortfolioService.changeApprovalMode(portfolio.portfolioId(), owner, "mode-toggle-auto",
+                    new ChangeApprovalModeRequest("AUTO_PAPER", "toggle to auto"));
+            assertEquals("AUTO_PAPER", jdbcTemplate.queryForObject(
+                    "SELECT approval_mode FROM paper_portfolio_segments WHERE portfolio_id = ? AND status = 'ACTIVE'",
+                    String.class, portfolio.portfolioId()));
+
+            // Mode history audit rows recorded
+            int historyRows = jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM paper_mode_history WHERE portfolio_id = ?",
+                    Integer.class, portfolio.portfolioId());
+            assertTrue(historyRows >= 3, "Mode history must track all mode transitions");
+        } finally {
+            org.springframework.test.util.ReflectionTestUtils.setField(paperPortfolioService, "clock", origPaperClock);
+        }
+    }
 }
+

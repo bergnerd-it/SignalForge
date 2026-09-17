@@ -37,7 +37,7 @@ public class PaperPortfolioService {
     private final PaperStrategyAdapter strategyAdapter;
     private final PaperMutationService mutationService;
     private final Clock clock;
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper;
     private final Map<String, ReentrantLock> portfolioLocks = new ConcurrentHashMap<>();
 
     // -------------------------------------------------------------
